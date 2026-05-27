@@ -63,6 +63,10 @@ let
     makeWrapper ${resolvedPkgs.bun}/bin/bun $out/bin/drishti \
       --add-flags "${drishtiBuilt}/lib/drishti/packages/app/src/server/main.ts" \
       --set DRISHTI_DIST_DIR "${drishti-client}" \
+      `# DRISHTI_AGENT_DRV is derived from the drishti-agent let-binding above.` \
+      `# drvPath is a STRING interpolation, not a Nix dependency edge — if the` \
+      `# attribute is renamed or split, this wrapper compiles fine but points at` \
+      `# a stale .drv and HostSession crashes at \`nix copy --derivation\` time.` \
       --set-default DRISHTI_AGENT_DRV "${drishti-agent.drvPath}" \
       --prefix PATH : ${resolvedPkgs.lib.makeBinPath [ resolvedPkgs.openssh resolvedPkgs.nix ]}
   '';
