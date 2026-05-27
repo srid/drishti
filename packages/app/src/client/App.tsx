@@ -214,7 +214,9 @@ function Header(props: {
             {props.count} {props.count === 1 ? "process" : "processes"}
           </span>
         </div>
-        <span class="text-xs text-gray-500">poll: every 2s</span>
+        <span class="text-xs text-gray-500">
+          poll: every {(props.system.pollIntervalMs / 1000).toFixed(1)}s
+        </span>
       </div>
       <div class="flex flex-wrap gap-4 border-t border-gray-100 px-4 py-1.5 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-300">
         <span>

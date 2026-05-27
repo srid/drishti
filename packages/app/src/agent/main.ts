@@ -73,7 +73,10 @@ async function main(): Promise<void> {
   const reader = createProcReader();
   log(`drishti-agent: os=${reader.os}, pid=${process.pid}`);
 
-  const systemStore = inMemoryStore(await reader.readSystem());
+  const systemStore = inMemoryStore({
+    ...(await reader.readSystem()),
+    pollIntervalMs: POLL_INTERVAL_MS,
+  });
   const processSnapshot = new Map<Pid, Process>();
   for (const [pid, value] of await reader.readProcesses())
     processSnapshot.set(pid, value);
@@ -162,7 +165,10 @@ async function main(): Promise<void> {
         reader.readSystem(),
         reader.readProcesses(),
       ]);
-      fragment.ctx.cells.system.set(nextSystem);
+      fragment.ctx.cells.system.set({
+        ...nextSystem,
+        pollIntervalMs: POLL_INTERVAL_MS,
+      });
       const upserts: Array<[Pid, Process]> = [];
       const removes: Pid[] = [];
       for (const [pid, value] of nextProcesses) {

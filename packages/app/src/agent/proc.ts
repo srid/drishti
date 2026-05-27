@@ -36,9 +36,13 @@ import type {
 
 const exec = promisify(execCb);
 
+/** Hardware/OS observations only — pollIntervalMs is owned by the
+ *  agent's run loop and spliced in at publish time. */
+type RawSystemInfo = Omit<SystemInfo, "pollIntervalMs">;
+
 export interface ProcReader {
   os: SystemInfo["os"];
-  readSystem: () => Promise<SystemInfo>;
+  readSystem: () => Promise<RawSystemInfo>;
   readProcesses: () => Promise<Map<Pid, Process>>;
   /** Per-core busy% since the last call. The first call seeds the
    *  baseline and returns 0% across the board (no delta to measure

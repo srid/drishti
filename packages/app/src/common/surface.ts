@@ -43,6 +43,10 @@ const SystemSchema = z.object({
   /** Resolved hostname inside the agent (parent shows this in the
    *  header chip — useful when the parent ssh'd by an alias). */
   hostname: z.string(),
+  /** Agent's poll cadence in milliseconds — the UI displays this so
+   *  the cadence is single-sourced at the agent (which actually owns
+   *  the setInterval). */
+  pollIntervalMs: z.number(),
 });
 
 /** Parent-to-agent link lifecycle. Owned by the parent's `HostSession`;
@@ -62,6 +66,7 @@ export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
   uptime: 0,
   os: "unknown",
   hostname: "",
+  pollIntervalMs: 0,
 };
 
 export const DEFAULT_CONNECTION: z.infer<typeof ConnectionSchema> = {
