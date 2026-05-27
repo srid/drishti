@@ -154,7 +154,7 @@ export function buildRouter(opts: BuildRouterOptions) {
   // the only reliable recovery is to re-issue the subscriptions on the
   // *new* client. The outer loop is what implements "reconnect → state
   // reconciles, no ghosts".
-  void bridgeAgentToParent(session, fragment, browserSnapshotBus);
+  void bridgeAgentToParent(session, fragment, processCache, browserSnapshotBus);
 
   // `implementSurface` returns a router *fragment* — `{ surface: ... }`
   // wrapping the per-key namespaces. Passing it directly to RPCHandler
@@ -200,6 +200,7 @@ function log(line: string): void {
 async function bridgeAgentToParent(
   session: HostSession<typeof surface.contract>,
   fragment: FragmentCtx,
+  processCache: Map<Pid, Process>,
   browserSnapshotBus: Channel<ProcessesSnapshotMsg>,
 ): Promise<void> {
   log("pinning HostSession (parent-lifetime ref)…");
@@ -223,7 +224,7 @@ async function bridgeAgentToParent(
     log("agent client ready; starting pumps");
     await Promise.allSettled([
       pumpSystemCell(client, session, fragment),
-      pumpProcessesSnapshot(client, fragment, browserSnapshotBus),
+      pumpProcessesSnapshot(client, fragment, processCache, browserSnapshotBus),
       pumpCpuCores(client, fragment),
     ]);
     log("bridge: pumps ended (link likely died) — awaiting next client");
@@ -287,14 +288,14 @@ async function pumpSystemCell(
 async function pumpProcessesSnapshot(
   client: SshcientAgent,
   fragment: FragmentCtx,
+  processCache: Map<Pid, Process>,
   browserSnapshotBus: Channel<ProcessesSnapshotMsg>,
 ): Promise<void> {
-  const seenPids = new Set<Pid>();
   let frames = 0;
   try {
     for await (const msg of await client.surface.processesSnapshot.get({})) {
       frames += 1;
-      applySnapshotMessage(msg, seenPids, fragment, frames);
+      applySnapshotMessage(msg, processCache, fragment, frames);
       // Independent activity: re-publish to browser subscribers via
       // the parent's local bus. Verbatim forward — no inspection of
       // frame contents here; the mirror logic above is the only
@@ -309,25 +310,23 @@ async function pumpProcessesSnapshot(
 
 /** Apply one `processesSnapshot` frame to the parent's local
  *  collection — full reset on `snapshot`, incremental delta on
- *  `delta`. Mutates `seenPids` so subsequent snapshots can drop
- *  PIDs that disappeared between yields. */
+ *  `delta`. Reads `processCache` directly for the live-PID set; the
+ *  framework's `upsert`/`remove` keep the cache and the per-key
+ *  channels in lockstep, so there's no separate shadow set to
+ *  maintain here. */
 function applySnapshotMessage(
   msg: ProcessesSnapshotMsg,
-  seenPids: Set<Pid>,
+  processCache: Map<Pid, Process>,
   fragment: FragmentCtx,
   frameNumber: number,
 ): void {
   if (msg.kind === "snapshot") {
     const next = new Set(msg.entries.map(([pid]) => pid));
-    for (const pid of [...seenPids]) {
-      if (!next.has(pid)) {
-        fragment.ctx.collections.processes.remove(pid);
-        seenPids.delete(pid);
-      }
+    for (const pid of [...processCache.keys()]) {
+      if (!next.has(pid)) fragment.ctx.collections.processes.remove(pid);
     }
     for (const [pid, value] of msg.entries) {
       fragment.ctx.collections.processes.upsert(pid, value);
-      seenPids.add(pid);
     }
     log(
       `processes: snapshot frame #${frameNumber} — ${msg.entries.length} PIDs (cold-start or reconnect)`,
@@ -336,15 +335,13 @@ function applySnapshotMessage(
   }
   for (const [pid, value] of msg.upserts) {
     fragment.ctx.collections.processes.upsert(pid, value);
-    seenPids.add(pid);
   }
   for (const pid of msg.removes) {
     fragment.ctx.collections.processes.remove(pid);
-    seenPids.delete(pid);
   }
   if (msg.upserts.length > 0 || msg.removes.length > 0) {
     log(
-      `processes: delta frame #${frameNumber} — upsert=${msg.upserts.length} remove=${msg.removes.length} total=${seenPids.size}`,
+      `processes: delta frame #${frameNumber} — upsert=${msg.upserts.length} remove=${msg.removes.length} total=${processCache.size}`,
     );
   }
 }
