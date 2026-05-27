@@ -6,7 +6,13 @@ in
 pkgs.mkShell {
   name = "drishti-shell";
 
-  env = drishtiEnv;
+  # `@tailwindcss/cli` transitively dlopen()s `@parcel/watcher`'s native
+  # binding, which requires `libstdc++.so.6` at runtime. Expose stdenv's
+  # libstdc++ on LD_LIBRARY_PATH for both `bun install` (lifecycle
+  # scripts) and the dev server's `buildClient` shell-out.
+  env = drishtiEnv // {
+    LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib";
+  };
 
   shellHook = ''
     # Hydrate node_modules/@kolu/{surface,surface-nix-host} from the nix
