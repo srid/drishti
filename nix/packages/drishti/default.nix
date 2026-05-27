@@ -9,7 +9,7 @@
 # Client bundling: re-uses `packages/app/src/server/build.ts` — the same
 # TS code path the dev server invokes when DRISHTI_DIST_DIR is unset.
 # One bundle pipeline; two callers.
-{ stdenv, lib, bun2nix, kolu-surface, kolu-surface-nix-host }:
+{ stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-nix-host }:
 # `@tailwindcss/cli` transitively dlopen()s `@parcel/watcher`'s native
 # binding, which requires `libstdc++.so.6` at runtime even when we don't
 # use --watch. Expose stdenv's libstdc++ via LD_LIBRARY_PATH during the
@@ -36,7 +36,13 @@ stdenv.mkDerivation {
   version = "0.1.0";
   inherit src;
 
-  nativeBuildInputs = [ bun2nix.hook ];
+  # `bun2nix.hook` propagates its own bun (currently 1.3.8) via
+  # propagated-build-inputs; on aarch64-darwin that version has a
+  # hoisted-linker bug that surfaces as "AccessDenied: Failed to open
+  # node_modules folder" on `babel-plugin-jsx-dom-expressions`.
+  # Listing our npins-pinned `bun` first wins on PATH and produces a
+  # reproducible install across both linux-x64 and darwin-arm64.
+  nativeBuildInputs = [ bun bun2nix.hook ];
 
   bunDeps = bun2nix.fetchBunDeps {
     bunNix = ../../../bun.nix;
