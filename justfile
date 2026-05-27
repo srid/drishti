@@ -3,6 +3,8 @@
 # be `git add`ed before nix develop sees them.
 nix_shell := if env('IN_NIX_SHELL', '') != '' { '' } else { 'nix develop ' + justfile_directory() + ' --accept-flake-config -c' }
 
+mod ci 'ci/mod.just'
+
 # List available recipes
 default:
     @just --list
