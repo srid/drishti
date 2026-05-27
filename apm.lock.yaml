@@ -1,0 +1,83 @@
+lockfile_version: '1'
+generated_at: '2026-05-27T21:07:00.412990+00:00'
+apm_version: 0.15.0
+dependencies:
+- repo_url: anthropics/claude-code
+  host: github.com
+  resolved_commit: b7339920b69f4a395c28727a1e2305dc5b122cb2
+  resolved_ref: main
+  virtual_path: plugins/frontend-design/skills/frontend-design
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .claude/skills/frontend-design
+  content_hash: sha256:e8118284a6365753790d44bb2758a6032b3af27fa84696428d9233f2be0f4e78
+- repo_url: juspay/justci
+  host: github.com
+  resolved_commit: 6165126f4bdd1aae7ee5453fcdaf73b4e6200456
+  resolved_ref: main
+  package_type: apm_package
+  deployed_files:
+  - .claude/rules/workflow.md
+  - .claude/skills/ci
+  deployed_file_hashes:
+    .claude/rules/workflow.md: sha256:babf61cdd29cfc8f03b3d20f17b4bf13ef5f173dc05640bc83c505dca4b42010
+  content_hash: sha256:60745725e99f0ca9de52b079a325dfc9640c8b1404b5f988951833218b50130e
+- repo_url: juspay/nix-chrome-devtools-mcp
+  host: github.com
+  resolved_commit: 407e0abef0d0e5c7bc401819d0a815b8c49c6674
+  package_type: apm_package
+  deployed_files:
+  - .claude/skills/nix-chrome-devtools-mcp
+  content_hash: sha256:1af1b958b54a863cd9aae61bc4078969abed77f5a9f8539e73ee4a1c53349bc3
+- repo_url: juspay/skills
+  host: github.com
+  resolved_commit: e5791cf388499456c8083a1667ecc1bd6c35fe2c
+  virtual_path: skills/nix-for-dev
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .claude/skills/nix-for-dev
+  content_hash: sha256:222bee6d02ef727eff965ae224683604c59d387c3e4ce47582543a8550b86bc4
+- repo_url: juspay/skills
+  host: github.com
+  resolved_commit: e5791cf388499456c8083a1667ecc1bd6c35fe2c
+  virtual_path: skills/nix-justfile
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .claude/skills/nix-justfile
+  content_hash: sha256:8f48e067e59da48c3ac90b4e2228ebb4ecfd988375b40efe831339d9a493accd
+- repo_url: srid/agency
+  host: github.com
+  resolved_commit: d2e2ffd0bb12f99b81d084ceca6bf99bda4b3587
+  resolved_ref: master
+  package_type: apm_package
+  deployed_files:
+  - .claude/agents/hickey.md
+  - .claude/agents/lowy.md
+  - .claude/hooks/agency/scripts/do-stop-guard.sh
+  - .claude/rules/apm-sources.md
+  - .claude/skills/code-police
+  - .claude/skills/do
+  - .claude/skills/elegance
+  - .claude/skills/fact-check
+  - .claude/skills/forge-pr
+  - .claude/skills/hickey
+  - .claude/skills/lowy
+  - .claude/skills/ralph
+  - .claude/skills/talk
+  deployed_file_hashes:
+    .claude/agents/hickey.md: sha256:10d9a4350a85752dc6658af8e0efb3d8be41803a2b6c73464e3d5b7a840435ad
+    .claude/agents/lowy.md: sha256:05aff7f6a91149a42c1fb9a3ca382a6f77bc39ac8a8d45436d443dd3349fb11e
+    .claude/hooks/agency/scripts/do-stop-guard.sh: sha256:cb033f86c15ffd3d09d8e4b74a61f55a70def4cc4131cc013b7368a2d23f3f33
+    .claude/rules/apm-sources.md: sha256:0d34f182279b93803855bd7f7b27a57e7cf3117ce4291d31a46294c629ee75d5
+  content_hash: sha256:b6cf9bc23f3cb4529a8c3390e38700cf46251eb787543b994941feceb83dc7c7
+mcp_servers:
+- chrome-devtools
+mcp_configs:
+  chrome-devtools:
+    name: chrome-devtools
+    transport: stdio
+    registry: false
+    command: .agents/skills/nix-chrome-devtools-mcp/bin/serve

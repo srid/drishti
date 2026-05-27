@@ -1,0 +1,21 @@
+name: sshcient
+version: 1.0.0
+type: hybrid
+
+target: claude
+
+# `target: claude` triggers an apm bug: skill-shipped MCP launchers (here, the
+# chrome-devtools server bundled with juspay/nix-chrome-devtools-mcp) declare
+# their command using the cross-tool path `.agents/skills/<name>/...`, but the
+# claude target deploys skills to `.claude/skills/<name>/...`. Without the
+# upstream fix, .mcp.json points at a path that does not exist on disk.
+# Fix: https://github.com/microsoft/apm/pull/1465 -- once that ships in an apm
+# release, regenerating .mcp.json via `apm install` is a no-op.
+dependencies:
+  apm:
+    - srid/agency#master
+    - juspay/justci#main
+    - anthropics/claude-code/plugins/frontend-design/skills/frontend-design#main
+    - juspay/skills/skills/nix-for-dev
+    - juspay/skills/skills/nix-justfile
+    - juspay/nix-chrome-devtools-mcp
