@@ -73,6 +73,10 @@ export async function buildClient(distDir: string): Promise<void> {
   const TAILWIND_BIN = createRequire(import.meta.url).resolve(
     "@tailwindcss/cli/package.json",
   ).replace(/package\.json$/, "dist/index.mjs");
+  if (!(await Bun.file(TAILWIND_BIN).exists()))
+    throw new Error(
+      `Tailwind CLI not found at ${TAILWIND_BIN} — ensure @tailwindcss/cli is installed at workspace root.`,
+    );
   const cssProc = Bun.spawn(
     [
       "bun",
