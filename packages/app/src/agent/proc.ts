@@ -213,7 +213,7 @@ async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
     ]);
     // /proc/<pid>/stat: see proc(5). After comm (in parens — may contain
     // spaces), fields are space-separated. utime + stime are fields 14-15
-    // (0-indexed 13-14) AFTER the comm field.
+    // (0-indexed 11-12 after the comm field, since state is at index 0).
     const commEnd = statRaw.lastIndexOf(")");
     const tail = statRaw.slice(commEnd + 2).split(" ");
     const utime = Number(tail[11] ?? 0);
@@ -241,6 +241,10 @@ async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
       command: truncate(command, 200),
     };
   } catch {
+    // ENOENT is expected for PIDs that vanish between readdir and the
+    // per-file reads. Any other error (EPERM on a kernel thread, I/O
+    // error, parse failure) is also safe to skip — the worst outcome is
+    // a missing row in the process table for one poll cycle.
     return null;
   }
 }
