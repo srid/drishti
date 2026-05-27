@@ -1,0 +1,31 @@
+{
+  "pins": {
+    "kolu": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "juspay",
+        "repo": "kolu"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "8daaf529c319a1cfad3ca3d55ce403cd15c3cdb7",
+      "url": "https://github.com/juspay/kolu/archive/8daaf529c319a1cfad3ca3d55ce403cd15c3cdb7.tar.gz",
+      "hash": "sha256-BXRNaL9T/GQ6YHUAFdQd2UnliN3h5lN3yPuevcW35Rw="
+    },
+    "nixpkgs": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "nixos",
+        "repo": "nixpkgs"
+      },
+      "branch": "nixpkgs-unstable",
+      "submodules": false,
+      "revision": "f8573b9c935cfaa162dd62cc9e75ae2db86f85df",
+      "url": "https://github.com/nixos/nixpkgs/archive/f8573b9c935cfaa162dd62cc9e75ae2db86f85df.tar.gz",
+      "hash": "sha256-hpXH0z3K9xv0fHaje136KY872VT2T5uwxtezlAskQgY="
+    }
+  },
+  "version": 7
+}
