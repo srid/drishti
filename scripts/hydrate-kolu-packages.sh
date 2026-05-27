@@ -23,6 +23,10 @@ while [ $# -gt 0 ]; do
   src=$1
   dest=$2
   shift 2
+  if [ ! -d "$src" ]; then
+    echo "hydrate-kolu-packages.sh: source is not a directory: $src" >&2
+    exit 1
+  fi
   mkdir -p "node_modules/$(dirname "$dest")"
   rm -rf "node_modules/$dest"
   cp -rL "$src" "node_modules/$dest"
