@@ -98,12 +98,14 @@ async function main(): Promise<void> {
     channel: inMemoryChannelByName(),
     cells: {
       system: { store: systemStore },
-      // `connection` lives in the shared surface so the browser can
-      // subscribe via snapshot-then-delta. The agent has no visibility
-      // into the parent↔agent link from the inside (the link's health
-      // is the parent's observation, not the agent's), so the agent
-      // serves the default and the parent overrides on its own surface
-      // implementation.
+      // ⚠ **INERT STUB — DO NOT WRITE TO THIS CELL.**
+      // `connection` is declared on the shared surface so the browser
+      // can subscribe to parent-published lifecycle. The agent has no
+      // visibility into its own SSH transport state from the inside,
+      // so this store stays at `DEFAULT_CONNECTION` for the lifetime
+      // of the process. The parent's router has independent write
+      // authority on its own implementation of the same surface.
+      // (See the warning in common/surface.ts on `ConnectionSchema`.)
       connection: { store: inMemoryStore({ ...DEFAULT_CONNECTION }) },
     },
     collections: {

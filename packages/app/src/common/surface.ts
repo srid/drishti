@@ -49,12 +49,22 @@ const SystemSchema = z.object({
   pollIntervalMs: z.number(),
 });
 
-/** Parent-to-agent link lifecycle. Owned by the parent's `HostSession`;
- *  the agent has no business reporting on a link it doesn't see from
- *  the inside. The browser subscribes via `useCell(connection)`, which
- *  yields the current value synchronously to a new subscriber — the
- *  overlay attaches before `connect()` returns and still sees the
- *  initial `connecting` state. */
+/** Parent-to-agent link lifecycle.
+ *
+ *  ⚠ **Parent-only write authority.** The cell lives on the shared
+ *  surface so the browser can subscribe to it via snapshot-then-delta,
+ *  but the *value* is owned by the parent's `HostSession`. The agent
+ *  has no visibility into the link from the inside (a process can't
+ *  observe its own SSH transport state) and must NOT publish updates
+ *  here — see the inert stub in `agent/main.ts`. Any direct-to-agent
+ *  client would see `DEFAULT_CONNECTION` forever; that's by design,
+ *  since direct-to-agent connections imply the link is local and
+ *  always-up.
+ *
+ *  The browser subscribes via `useCell(connection)`, which yields the
+ *  current value synchronously to a new subscriber — the overlay
+ *  attaches before `connect()` returns and still sees the initial
+ *  `connecting` state. */
 const ConnectionSchema = z.object({
   state: z.enum(["copying", "connecting", "connected", "disconnected"]),
 });
