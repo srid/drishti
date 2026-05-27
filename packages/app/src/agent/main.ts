@@ -199,8 +199,15 @@ async function main(): Promise<void> {
       // Collection<K,T>. Small-N (4-32 cores) so per-key fan-out is
       // exactly the right shape: each core gets its own reactive
       // subscription in the browser.
-      for (const [core, value] of reader.readCpuCores()) {
+      // Evict cores that disappeared (hot-unplug / VM CPU resize) so
+      // stale bars don't linger in the browser strip.
+      const nextCores = reader.readCpuCores();
+      for (const [core, value] of nextCores) {
         fragment.ctx.collections.cpuCores.upsert(core, value);
+      }
+      for (const core of cpuCoreSnapshot.keys()) {
+        if (!nextCores.has(core))
+          fragment.ctx.collections.cpuCores.remove(core);
       }
     } catch (err) {
       log(`tick error: ${(err as Error).message}`);
