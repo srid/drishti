@@ -10,6 +10,7 @@
 // calls that break at runtime. Bun.build accepts a `plugins` array
 // directly, so we drive the build ourselves.
 
+import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { transformAsync } from "@babel/core";
@@ -65,20 +66,13 @@ export async function buildClient(distDir: string): Promise<void> {
   // Tailwind v4 CSS — invoke @tailwindcss/cli via its in-tree binary
   // path instead of `bunx`. `bunx` resolves by name and falls back to
   // a network fetch when the local copy doesn't match — the Nix build
-  // sandbox has no network, so that fallback fails. Walking up from
-  // this file is the boring, sandbox-safe resolution.
-  const TAILWIND_BIN = resolve(
-    CLIENT_DIR,
-    "..",
-    "..",
-    "..",
-    "..",
-    "node_modules",
-    "@tailwindcss",
-    "cli",
-    "dist",
-    "index.mjs",
-  );
+  // sandbox has no network, so that fallback fails. `createRequire`
+  // walks Node's standard resolution from this file outward, so the
+  // path stays correct regardless of where in the workspace tree the
+  // build.ts file ends up.
+  const TAILWIND_BIN = createRequire(import.meta.url).resolve(
+    "@tailwindcss/cli/package.json",
+  ).replace(/package\.json$/, "dist/index.mjs");
   const cssProc = Bun.spawn(
     [
       "bun",
