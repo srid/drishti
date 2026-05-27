@@ -228,7 +228,9 @@ async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
         ? cmdlineRaw.replace(/\0/g, " ").trim()
         : statRaw.slice(statRaw.indexOf("(") + 1, commEnd);
     return {
-      user: userFromUid(uid),
+      // Best-effort user display — /etc/passwd lookup synchronous would
+      // block, so render the uid (and humanize uid 0 → "root").
+      user: uid === 0 ? "root" : String(uid),
       ticks: utime + stime,
       startTime,
       memPct: round2(memPct),
@@ -237,17 +239,6 @@ async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
   } catch {
     return null;
   }
-}
-
-const uidNameCache = new Map<number, string>();
-function userFromUid(uid: number): string {
-  const cached = uidNameCache.get(uid);
-  if (cached !== undefined) return cached;
-  // Best-effort name resolution — /etc/passwd lookup synchronous would
-  // block; just use uid as the display.
-  const name = uid === 0 ? "root" : String(uid);
-  uidNameCache.set(uid, name);
-  return name;
 }
 
 // ── darwin: ps + sysctl reader ──────────────────────────────────────────
