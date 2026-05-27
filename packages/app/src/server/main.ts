@@ -10,7 +10,7 @@
  *
  * Configuration (env vars):
  *
- *   HOST                          ssh target (default: localhost)
+ *   HOST (or first positional arg)  ssh target (default: localhost)
  *   DRISHTI_AGENT_DRV (required) path to the agent's `.drv`; the
  *                                 derivation is shipped to the target
  *                                 host and realised there for the right
@@ -33,7 +33,7 @@ import type { surface } from "../common/surface";
 import { buildClient } from "./build";
 import { buildRouter } from "./router";
 
-const HOST = process.env.HOST ?? "localhost";
+const HOST = process.argv[2] ?? process.env.HOST ?? "localhost";
 const DRV_PATH = process.env.DRISHTI_AGENT_DRV;
 const PORT = Number(process.env.PORT ?? 7720);
 
