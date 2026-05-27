@@ -41,7 +41,7 @@ dev host='localhost' *args: install
     echo "» target host: {{ host }} (system=$sys)"
     drv=$(nix eval --raw "{{ justfile_directory() }}#packages.$sys.drishti-agent.drvPath")
     echo "» agent .drv:  $drv"
-    DRISHTI_HOST={{ host }} \
+    HOST={{ host }} \
     DRISHTI_AGENT_DRV=$drv \
     {{ nix_shell }} bun --cwd packages/app dev {{ args }}
 
