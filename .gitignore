@@ -15,3 +15,6 @@ state/
 # Nix
 /result
 /result-*
+
+# justci transient state
+/.ci/
