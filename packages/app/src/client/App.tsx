@@ -17,6 +17,7 @@ import { streamCall } from "@kolu/surface/client";
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import {
+  type ConnectionState,
   type CoreId,
   type CpuCore,
   DEFAULT_CONNECTION,
@@ -26,7 +27,7 @@ import {
 } from "../common/surface";
 import { app } from "./wire";
 
-const STATE_COLOR: Record<string, string> = {
+const STATE_COLOR: Record<ConnectionState, string> = {
   connected: "text-emerald-500",
   disconnected: "text-red-500",
   copying: "text-amber-500",
