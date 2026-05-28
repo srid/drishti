@@ -17,7 +17,7 @@ Requirements:
 - The remote host must be `ssh`-reachable with **passwordless** auth and a working **`nix-daemon`** that **trusts your user** (`trusted-users` in `nix.conf`) — drishti provisions the agent by shipping its `.drv` to the remote with `nix copy --derivation` and realising it there.
 - Localhost works without any remote setup.
 
-Mixed-architecture host sets are supported: the monitor wrapper bakes a `{system → drv}` map for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`, and the parent probes each host's `uname -ms` on add (via [`@kolu/surface-nix-host`'s `resolveSystem`](https://github.com/juspay/kolu/pull/1009)) to pick the matching `.drv`. A macOS user can drive a Linux remote (or both) from one `nix run` invocation.
+Mixed-architecture host sets are supported: the monitor wrapper bakes a `{system → drv}` map for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`, and the parent probes each host's nix-system on add (via [`@kolu/surface-nix-host`'s `resolveSystem`](https://github.com/juspay/kolu/pull/1009), which asks the host's own Nix for `builtins.currentSystem`) to pick the matching `.drv`. A macOS user can drive a Linux remote (or both) from one `nix run` invocation.
 
 ## Architecture
 
@@ -68,7 +68,7 @@ just nix-build                    # build the wrapped monitor binary
 just regenerate-bun-nix           # after any bun.lock change
 ```
 
-`just dev` exports `DRISHTI_AGENT_DRVS_JSON` (the per-system `.drv` map from the flake's `agentDrvsJson` attribute) and boots Bun in watch mode. The parent probes each host's `uname -ms` on add and picks the matching `.drv` from the map — so one dev session can mix architectures. The dev server invokes `buildClient()` at startup so a single `bun --watch` covers both server-TS and client-bundle rebuilds. Browser refresh is manual — there's no HMR.
+`just dev` exports `DRISHTI_AGENT_DRVS_JSON` (the per-system `.drv` map from the flake's `agentDrvsJson` attribute) and boots Bun in watch mode. The parent probes each host's nix-system on add (asking the host's own Nix for `builtins.currentSystem`) and picks the matching `.drv` from the map — so one dev session can mix architectures. The dev server invokes `buildClient()` at startup so a single `bun --watch` covers both server-TS and client-bundle rebuilds. Browser refresh is manual — there's no HMR.
 
 The first connect to a fresh remote ships the agent closure over `ssh` (`nix copy --derivation` then `nix-store --realise`); subsequent connects reuse it. The progress is streamed to the browser via the `connection` cell.
 
