@@ -16,9 +16,11 @@
 
 import { streamCall } from "@kolu/surface/client";
 import {
+  createEffect,
   createMemo,
   createSignal,
   For,
+  on,
   onCleanup,
   Show,
 } from "solid-js";
@@ -65,6 +67,25 @@ export default function App() {
   // order, and the admin collection's keys stream is order-preserving.
   // Sorting here would silently override the upstream invariant.
   const hostList = createMemo<string[]>(() => [...hosts.keys()]);
+
+  // Drive per-host socket disposal from the parent that owns the admin
+  // subscription, NOT from inside `TabChip`. The chip is pure display;
+  // putting `disposeHostSurface` in its `onCleanup` would make a view
+  // component the authoritative trigger for transport-lifetime events
+  // (and routing dispose through `wire.ts` subscribing to admin would
+  // complect the transport module with the admin schema). This effect
+  // diffs the host set against the previous tick and disposes any
+  // socket whose host is no longer present.
+  let prevHosts: ReadonlySet<string> = new Set();
+  createEffect(
+    on(hostList, (current) => {
+      const next = new Set(current);
+      for (const host of prevHosts) {
+        if (!next.has(host)) disposeHostSurface(host);
+      }
+      prevHosts = next;
+    }),
+  );
 
   const [activeHost, setActiveHost] = createSignal<string | null>(null);
   // Keep the active host in sync with the host set: pick the first if
@@ -162,10 +183,10 @@ function TabChip(props: {
     () => (connection.value() ?? DEFAULT_CONNECTION).state,
   );
 
-  // The chip owns the per-host PartySocket via the wire.ts cache. When
-  // the host is removed from the admin collection the chip unmounts;
-  // we tear down the socket so partysocket doesn't keep retrying.
-  onCleanup(() => disposeHostSurface(props.host));
+  // Pure display. Per-host socket disposal is driven by `MultiHostApp`'s
+  // host-removal effect — see the `prevHosts` diff there. Keeping that
+  // out of the chip prevents two writers (server `registry.remove` and
+  // client `TabChip.onCleanup`) on the same logical lifecycle event.
 
   const baseClasses =
     "flex items-center gap-2 border-r border-gray-200 px-3 py-1.5 text-xs dark:border-gray-800";
