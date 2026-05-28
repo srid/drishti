@@ -7,11 +7,14 @@ import {
 } from "./archMap";
 
 describe("unameToNixSystem", () => {
-  it("maps the four supported uname -ms outputs", () => {
+  it("maps the three supported uname -ms outputs", () => {
     expect(unameToNixSystem("Linux x86_64")).toBe("x86_64-linux");
     expect(unameToNixSystem("Linux aarch64")).toBe("aarch64-linux");
     expect(unameToNixSystem("Darwin arm64")).toBe("aarch64-darwin");
-    expect(unameToNixSystem("Darwin x86_64")).toBe("x86_64-darwin");
+  });
+
+  it("returns null for Intel Mac (x86_64-darwin not in flake systems list)", () => {
+    expect(unameToNixSystem("Darwin x86_64")).toBeNull();
   });
 
   it("trims trailing newline (uname output is line-terminated)", () => {

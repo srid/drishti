@@ -19,11 +19,19 @@
 import { spawn } from "node:child_process";
 import { isLocalHost } from "@kolu/surface-nix-host";
 
+// Entries must stay a subset of `flake.nix`'s `systems` list — the
+// monitor only bakes drvs for the systems that list names, and a uname
+// string mapped here without a matching baked drv would resolve fine
+// then fail downstream with a misleading "no .drv baked" error. An
+// unmapped uname instead throws "unsupported `uname -ms` output" at
+// the probe layer, which is the clearer failure.
+//
+// `x86_64-darwin` (Intel Mac) is intentionally absent: not in the
+// flake's `systems` list. Add it here only after adding it there.
 export const UNAME_TO_NIX_SYSTEM: Readonly<Record<string, string>> = {
   "Linux x86_64": "x86_64-linux",
   "Linux aarch64": "aarch64-linux",
   "Darwin arm64": "aarch64-darwin",
-  "Darwin x86_64": "x86_64-darwin",
 };
 
 /** Pure mapping from `uname -ms` output → nix-system, or `null` for
