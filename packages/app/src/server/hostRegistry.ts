@@ -1,0 +1,133 @@
+/**
+ * Per-host session + handler registry — single source of truth for
+ * "which hosts this parent server knows about". Owns:
+ *
+ *   - One `HostSession` per host (via the kolu pool, keyed by
+ *     `(host, drvPath, binary)`).
+ *   - One `RPCHandler` per host (built from `buildRouter({session})`).
+ *   - The set of open browser WebSockets per host (for eviction on
+ *     remove — partysocket auto-reconnects, so we close on the server
+ *     side to make a removal stick).
+ *   - The on-disk persistence of the host set (delegated to
+ *     `hostsStore.ts`).
+ *
+ * The admin router's `readAll` projects from this registry via
+ * `snapshot()` — there is no shadow data store; admin and registry
+ * cannot diverge by construction.
+ *
+ * Insertion order is preserved (JavaScript `Map` semantics) so the
+ * tab strip displays hosts in the order the user added them.
+ */
+
+import { RPCHandler } from "@orpc/server/ws";
+import {
+  getHostSession,
+  type HostSession,
+} from "@kolu/surface-nix-host";
+import type { WebSocket as WsConn } from "ws";
+import type { HostEntry } from "../common/admin-surface";
+import type { surface } from "../common/surface";
+import { saveHosts } from "./hostsStore";
+import { buildRouter } from "./router";
+
+interface HostHandle {
+  session: HostSession<typeof surface.contract>;
+  // biome-ignore lint/suspicious/noExplicitAny: matches existing router-handler cast (see implementSurface fragment shape).
+  handler: RPCHandler<any>;
+}
+
+export interface HostRegistry {
+  has(host: string): boolean;
+  /** Project the live host set into the admin surface's wire shape.
+   *  Called by the admin router's `readAll` on every new subscriber. */
+  snapshot(): Map<string, HostEntry>;
+  // biome-ignore lint/suspicious/noExplicitAny: matches existing router-handler cast.
+  getHandler(host: string): RPCHandler<any> | undefined;
+  /** Spawn a new host session and persist the host set. Throws if the
+   *  host already exists. The admin router publishes the per-key channel
+   *  update AFTER this resolves, so a new subscriber never sees a host
+   *  whose handler isn't ready. */
+  add(host: string): Promise<void>;
+  /** Close any open browser WSes for the host, destroy the session, and
+   *  persist the host set. Same ordering guarantee as `add`: the admin
+   *  router publishes the removal AFTER this resolves. */
+  remove(host: string): Promise<void>;
+  registerConnection(host: string, ws: WsConn): void;
+  unregisterConnection(host: string, ws: WsConn): void;
+}
+
+export interface HostRegistryOptions {
+  initialHosts: readonly string[];
+  drvPath: string;
+  hostsFile: string;
+  log: (line: string) => void;
+}
+
+export function buildHostRegistry(opts: HostRegistryOptions): HostRegistry {
+  const entries = new Map<string, HostHandle>();
+  const wsConnectionsByHost = new Map<string, Set<WsConn>>();
+
+  const buildEntry = (host: string): HostHandle => {
+    const session = getHostSession<typeof surface.contract>({
+      host,
+      drvPath: opts.drvPath,
+      binary: "drishti-agent",
+    });
+    const { router } = buildRouter({ session });
+    // biome-ignore lint/suspicious/noExplicitAny: implementSurface's Lazy<Router> spread isn't accepted by oRPC's Router<any, T> input type; runtime shape is valid.
+    const handler = new RPCHandler(router as any);
+    return { session, handler };
+  };
+
+  for (const host of opts.initialHosts) entries.set(host, buildEntry(host));
+
+  return {
+    has: (host) => entries.has(host),
+    snapshot: () => {
+      const out = new Map<string, HostEntry>();
+      for (const host of entries.keys()) out.set(host, { host });
+      return out;
+    },
+    getHandler: (host) => entries.get(host)?.handler,
+
+    async add(host) {
+      if (entries.has(host)) throw new Error("host already exists");
+      entries.set(host, buildEntry(host));
+      await saveHosts(opts.hostsFile, [...entries.keys()]);
+      opts.log(`added host: ${host} (total ${entries.size})`);
+    },
+
+    async remove(host) {
+      const entry = entries.get(host);
+      if (entry === undefined) return;
+      const sockets = wsConnectionsByHost.get(host);
+      if (sockets !== undefined) {
+        for (const ws of sockets) {
+          try {
+            ws.close(1000, "host removed");
+          } catch {
+            /* best-effort */
+          }
+        }
+        wsConnectionsByHost.delete(host);
+      }
+      entry.session.destroy();
+      entries.delete(host);
+      await saveHosts(opts.hostsFile, [...entries.keys()]);
+      opts.log(`removed host: ${host} (total ${entries.size})`);
+    },
+
+    registerConnection(host, ws) {
+      let set = wsConnectionsByHost.get(host);
+      if (set === undefined) {
+        set = new Set();
+        wsConnectionsByHost.set(host, set);
+      }
+      set.add(ws);
+    },
+
+    unregisterConnection(host, ws) {
+      wsConnectionsByHost.get(host)?.delete(ws);
+    },
+  };
+}
