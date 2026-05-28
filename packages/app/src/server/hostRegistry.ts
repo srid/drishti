@@ -128,6 +128,11 @@ export async function buildHostRegistry(
     },
 
     async remove(host) {
+      // If add() is in-flight for this host, remove() would be a no-op
+      // (entry not yet in `entries`) — but add() would complete after,
+      // leaving a live session that the user already removed. Throw
+      // instead so the caller can surface a "try again" error.
+      if (adding.has(host)) throw new Error("host add in progress, try again");
       const entry = entries.get(host);
       if (entry === undefined) return;
       const sockets = wsConnectionsByHost.get(host);
