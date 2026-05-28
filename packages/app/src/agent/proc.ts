@@ -247,8 +247,8 @@ async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
       ticks: utime + stime,
       startTime,
       memPct: round2(memPct),
-      command: truncate(command, 200),
-      cwd: truncate(cwdResult, 200),
+      command: truncate(command, PROC_STRING_MAX),
+      cwd: truncate(cwdResult, PROC_STRING_MAX),
     };
   } catch {
     // ENOENT is expected for PIDs that vanish between readdir and the
@@ -298,7 +298,7 @@ function darwinReader(): ProcReader {
           user,
           cpuPct: Number(cpu),
           memPct: Number(mem),
-          command: truncate(command, 200),
+          command: truncate(command, PROC_STRING_MAX),
           // darwin has no cheap per-pid cwd source (`lsof -p` per pid is
           // a fork per row); leave blank — the UI hides it when empty.
           cwd: "",
@@ -344,6 +344,10 @@ function stubReader(): ProcReader {
 }
 
 // ── Tiny helpers ─────────────────────────────────────────────────────────
+
+/** Wire cap for per-process string fields (command, cwd, …). One
+ *  constant so a change to the limit stays in parity across platforms. */
+const PROC_STRING_MAX = 200;
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
