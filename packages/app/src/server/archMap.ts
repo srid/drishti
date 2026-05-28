@@ -47,6 +47,28 @@ export async function resolveSystem(host: string): Promise<string> {
   return sys;
 }
 
+/** Compose the probe with the build-time `system → drvPath` map. The
+ *  map is supplied by the caller (parsed from `DRISHTI_AGENT_DRVS_JSON`
+ *  in `main.ts`) — `archMap.ts` doesn't own the map, just the
+ *  composition. The two failure modes are intentionally distinct:
+ *  `resolveSystem` throws "unsupported \`uname -ms\` output" when the
+ *  OS isn't in `UNAME_TO_NIX_SYSTEM`; the throw below fires when the OS
+ *  *is* known but no .drv was baked for it (e.g. Intel Mac targeting a
+ *  monitor that only baked `aarch64-darwin`). */
+export async function resolveDrvForHost(
+  host: string,
+  drvBySystem: Readonly<Record<string, string>>,
+): Promise<string> {
+  const sys = await resolveSystem(host);
+  const drv = drvBySystem[sys];
+  if (drv === undefined) {
+    throw new Error(
+      `${host}: no agent .drv baked for system=${sys} (known: ${Object.keys(drvBySystem).join(", ")})`,
+    );
+  }
+  return drv;
+}
+
 function capture(cmd: string, args: readonly string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, [...args], { stdio: ["ignore", "pipe", "pipe"] });

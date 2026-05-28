@@ -29,7 +29,7 @@ import { WebSocketServer } from "ws";
 import { destroyAllSessions } from "@kolu/surface-nix-host";
 import { ADMIN_HOST_SENTINEL } from "../common/admin-surface";
 import { buildAdminRouter } from "./admin-router";
-import { resolveSystem } from "./archMap";
+import { resolveDrvForHost } from "./archMap";
 import { buildClient } from "./build";
 import { buildHostRegistry } from "./hostRegistry";
 import { loadHosts, resolveHostsFile, saveHosts } from "./hostsStore";
@@ -78,16 +78,8 @@ async function main(): Promise<void> {
     `agent drvs (${Object.keys(agentDrvBySystem).length}): ${Object.keys(agentDrvBySystem).join(", ")}`,
   );
 
-  const resolveDrvPath = async (host: string): Promise<string> => {
-    const sys = await resolveSystem(host);
-    const drv = agentDrvBySystem[sys];
-    if (drv === undefined) {
-      throw new Error(
-        `${host}: no agent .drv baked for system=${sys} (known: ${Object.keys(agentDrvBySystem).join(", ")})`,
-      );
-    }
-    return drv;
-  };
+  const resolveDrvPath = (host: string): Promise<string> =>
+    resolveDrvForHost(host, agentDrvBySystem);
 
   const hostsFile = resolveHostsFile();
   const cliHosts = argv._.host;
