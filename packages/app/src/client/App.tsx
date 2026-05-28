@@ -511,9 +511,11 @@ function ProcessRow(props: {
       <td class="max-w-md truncate px-3 py-0.5 text-left text-gray-700 dark:text-gray-300">
         <span>{proc()?.command ?? ""}</span>
         <Show when={proc()?.cwd}>
-          <span class="ml-2 text-gray-400 dark:text-gray-500" title="cwd">
-            @ {proc()?.cwd}
-          </span>
+          {(cwd) => (
+            <span class="ml-2 text-gray-400 dark:text-gray-500" title="cwd">
+              @ {cwd()}
+            </span>
+          )}
         </Show>
       </td>
       <td class="px-3 py-0.5 text-right">
