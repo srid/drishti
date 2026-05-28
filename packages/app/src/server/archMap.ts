@@ -96,14 +96,16 @@ function capture(cmd: string, args: readonly string[]): Promise<string> {
     proc.stderr?.on("data", (c: string) => {
       stderr += c;
     });
-    proc.on("close", (code) => {
+    proc.on("close", (code, signal) => {
       if (code === 0) resolve(stdout);
-      else
-        reject(
-          new Error(
-            `${cmd} exited ${code}${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
-          ),
-        );
+      else {
+        const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
+        const exit =
+          code !== null
+            ? `exited ${code}`
+            : `killed by signal ${signal ?? "unknown"}`;
+        reject(new Error(`${cmd} ${exit}${detail}`));
+      }
     });
     proc.on("error", (err) => reject(err));
   });
