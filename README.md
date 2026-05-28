@@ -5,35 +5,41 @@ A live process monitor that runs against any host you can `ssh` into. Browser So
 ## Quick start
 
 ```sh
-nix run github:srid/drishti                  # localhost
-nix run github:srid/drishti -- user@host     # remote
+nix run github:srid/drishti                            # localhost (default)
+nix run github:srid/drishti -- user@host               # one remote
+nix run github:srid/drishti -- localhost a.lan b.lan   # multiple hosts (tabbed UI)
 ```
 
-Open <http://localhost:7720>.
+Open <http://localhost:7720>. The UI shows one tab per host with a live connection-state dot; click a tab to view its htop. Use the `+ add host` button in the tab strip to add hosts at runtime; the `×` on each tab removes one. Added/removed hosts persist to `$XDG_STATE_HOME/drishti/hosts.json` (override with `DRISHTI_HOSTS_FILE`), so `nix run github:srid/drishti` with no args restores the last session.
 
 Requirements:
 
 - The remote host must be `ssh`-reachable with **passwordless** auth and a working **`nix-daemon`** that **trusts your user** (`trusted-users` in `nix.conf`) — drishti provisions the agent by shipping its `.drv` to the remote with `nix copy --derivation` and realising it there.
 - Localhost works without any remote setup.
+- All configured hosts must share the agent architecture of the host `just dev` probed at startup (or of the system that built the wrapper binary for `nix run`). Mixing architectures in one parent isn't supported yet.
 
 `nix run github:srid/drishti -- user@host` works on `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`; the agent's `.drv` is resolved per-system so the binary built on the remote matches its architecture.
 
 ## Architecture
 
 ```
-Browser (SolidJS UI)
-   │  WebSocket (oRPC)
+Browser (SolidJS UI, tab strip)
+   │  one WebSocket per host  ─────────┐
+   ▼                                   ▼
+Parent server (Bun, drishti)    Admin surface (host set)
+   │  ssh stdio (oRPC) ×N
    ▼
-Parent server (Bun, drishti)
-   │  ssh stdio (oRPC)
-   ▼
-Remote host: drishti-agent
+Host 1: drishti-agent     Host 2: drishti-agent     …
    │  /proc on linux, sysctl on darwin
    ▼
 Kernel
 ```
 
-Three primitives carry the entire surface:
+Host identity lives only at the transport layer: each browser tab opens its own WebSocket to `/rpc/ws?host=<id>`; the parent dispatches to a per-host `RPCHandler` (built once per host from the same surface schema). The per-host `surface` schema (system / processes / cpuCores / connection cells) is scalar — no host dimension anywhere in the primitives.
+
+A separate **admin surface** at `/rpc/ws?host=__admin__` exposes the *set* of hosts as a `Collection<string, HostEntry>` plus `addHost` / `removeHost` procedures. The tab strip subscribes to the collection; the `+` / `×` buttons call the procedures.
+
+Per-host primitives:
 
 | Primitive | Path | Purpose |
 |---|---|---|
@@ -43,15 +49,24 @@ Three primitives carry the entire surface:
 | **Collection** | `cpuCores` | Per-core CPU usage (`Collection<K,T>` showcase). |
 | **Procedure** | `process.kill` | The only mutation — sends `TERM` / `KILL` / `HUP` / `INT`. |
 
+Admin surface primitives:
+
+| Primitive | Path | Purpose |
+|---|---|---|
+| **Collection** | `hosts` | Configured hosts; key = host string. |
+| **Procedure** | `hosts.add` | Spin up a new host session; persists to the hosts file. |
+| **Procedure** | `hosts.remove` | Tear down a host session; persists removal. |
+
 ## Development
 
 ```sh
-just dev                  # parent server :7720, host=localhost
-just dev user@somehost    # any ssh target with passwordless access
-just typecheck            # tsc --noEmit across the workspace
-just fmt                  # nixpkgs-fmt everything *.nix
-just nix-build            # build the wrapped monitor binary
-just regenerate-bun-nix   # after any bun.lock change
+just dev                          # parent server :7720, host=localhost
+just dev user@somehost            # any ssh target with passwordless access
+just dev localhost a.lan b.lan    # multiple hosts (first one drives arch probe)
+just typecheck                    # tsc --noEmit across the workspace
+just fmt                          # nixpkgs-fmt everything *.nix
+just nix-build                    # build the wrapped monitor binary
+just regenerate-bun-nix           # after any bun.lock change
 ```
 
 `just dev` probes the target host's architecture (`ssh $host uname -ms`), resolves the matching `drishti-agent` `.drv` via `nix eval`, exports it as `DRISHTI_AGENT_DRV`, and boots Bun in watch mode. The dev server invokes `buildClient()` at startup so a single `bun --watch` covers both server-TS and client-bundle rebuilds. Browser refresh is manual — there's no HMR.
@@ -81,10 +96,18 @@ drishti/
 │  └─ hydrate-kolu-packages.sh
 └─ packages/app/
    └─ src/
-      ├─ agent/{main.ts, proc.ts}     # remote-side agent
-      ├─ common/surface.ts            # shared typed surface
-      ├─ server/{main.ts, router.ts, build.ts}  # parent server + bundler
-      └─ client/{App.tsx, …}          # SolidJS UI
+      ├─ agent/{main.ts, proc.ts}              # remote-side agent
+      ├─ common/{surface.ts, admin-surface.ts} # per-host + admin surfaces
+      ├─ server/                                # parent server
+      │  ├─ main.ts                             #   multi-host WS dispatch
+      │  ├─ router.ts                           #   per-host router fragment
+      │  ├─ admin-router.ts                     #   host-set router fragment
+      │  ├─ hostsStore.ts                       #   $XDG_STATE_HOME/drishti/hosts.json
+      │  └─ build.ts                            #   client bundler
+      └─ client/                                # SolidJS UI
+         ├─ App.tsx                             #   MultiHostApp + TabStrip + HostView
+         ├─ wire.ts                             #   surfaceForHost(host) + adminClient()
+         └─ {main.tsx, index.html, styles.css}
 ```
 
 ### How `@kolu/surface` is wired

@@ -1,20 +1,27 @@
 /**
- * Remote process monitor — htop-flavoured single-page UI.
+ * Multi-host process monitor.
  *
- * Header strip = host + connection chip + live process count + load /
- * mem / uptime / OS, with a usage bar across the top.
- * Body = process table sorted by descending CPU% (click headers to
- * re-sort by user / mem / pid); a search box above the table filters
- * by PID, user, or command substring.
+ * `<MultiHostApp>` is the new root: it subscribes to the admin surface's
+ * `hosts` collection, renders a `<TabStrip>` at the top, and mounts a
+ * single `<HostView>` for the active tab. Switching tabs unmounts the
+ * previous `HostView` (via `<Show keyed>`), tearing down its `system` /
+ * `processesSnapshot` / `cpuCores` subscriptions through Solid's
+ * `onCleanup`. Tab chips stay mounted across switches so their per-host
+ * `connection` cell subscriptions stay live and the dot colors keep
+ * updating.
  *
- * The "connecting overlay" attaches before `connect()` returns —
- * the parent's `connection` cell yields its current value synchronously
- * to a new subscriber, so the overlay still sees the initial
- * `state === "connecting"` (or `"copying"`).
+ * `<HostView>` is the prior single-host body, now parametric on `host`.
+ * The per-host data shape (cells/collections/streams) is unchanged.
  */
 
 import { streamCall } from "@kolu/surface/client";
-import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import {
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  Show,
+} from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import {
   type ConnectionState,
@@ -25,7 +32,11 @@ import {
   type Pid,
   type Process,
 } from "../common/surface";
-import { app } from "./wire";
+import {
+  adminClient,
+  disposeHostSurface,
+  surfaceForHost,
+} from "./wire";
 
 const STATE_COLOR: Record<ConnectionState, string> = {
   connected: "text-emerald-500",
@@ -34,23 +45,254 @@ const STATE_COLOR: Record<ConnectionState, string> = {
   connecting: "text-amber-500",
 };
 
+const DOT_BG: Record<ConnectionState, string> = {
+  connected: "bg-emerald-500",
+  disconnected: "bg-red-500",
+  copying: "bg-amber-500",
+  connecting: "bg-amber-500",
+};
+
 type SortKey = "cpu" | "mem" | "pid" | "user";
 
 export default function App() {
-  // System cell: snapshot-then-delta of OS metrics from the remote
-  // agent. Server authority — the parent forwards the agent's reads.
+  const admin = adminClient();
+  const hosts = admin.collections.hosts.use({
+    onError: (err) => console.error("admin.hosts subscription failed", err),
+  });
+
+  const hostList = createMemo<string[]>(() =>
+    [...hosts.keys()].sort((a, b) => a.localeCompare(b)),
+  );
+
+  const [activeHost, setActiveHost] = createSignal<string | null>(null);
+  // Keep the active host in sync with the host set: pick the first if
+  // none is selected yet, or fall back when the active one is removed.
+  const resolvedActive = createMemo<string | null>(() => {
+    const list = hostList();
+    const current = activeHost();
+    if (list.length === 0) return null;
+    if (current !== null && list.includes(current)) return current;
+    return list[0] ?? null;
+  });
+
+  const onAdd = async (host: string): Promise<string | null> => {
+    try {
+      const res = await admin.rpc.surface.hosts.add({ host });
+      if (!res.ok) return res.error ?? "add failed";
+      setActiveHost(host);
+      return null;
+    } catch (err) {
+      return (err as Error).message;
+    }
+  };
+
+  const onRemove = async (host: string) => {
+    try {
+      await admin.rpc.surface.hosts.remove({ host });
+      if (activeHost() === host) setActiveHost(null);
+    } catch (err) {
+      console.error(`remove ${host} failed`, err);
+    }
+  };
+
+  return (
+    <div class="min-h-screen bg-gray-50 p-4 font-mono text-sm dark:bg-gray-950">
+      <div class="mx-auto max-w-6xl overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
+        <TabStrip
+          hosts={hostList()}
+          active={resolvedActive()}
+          onSelect={(h) => setActiveHost(h)}
+          onAdd={onAdd}
+          onRemove={onRemove}
+        />
+        <Show
+          when={resolvedActive()}
+          fallback={
+            <div class="px-4 py-12 text-center text-gray-500 dark:text-gray-400">
+              <div class="mb-2 text-lg">No hosts configured</div>
+              <div class="text-xs">Use the + button above to add one.</div>
+            </div>
+          }
+          keyed
+        >
+          {(host) => <HostView host={host} />}
+        </Show>
+      </div>
+    </div>
+  );
+}
+
+// ── Tab strip ──────────────────────────────────────────────────────────
+
+function TabStrip(props: {
+  hosts: readonly string[];
+  active: string | null;
+  onSelect: (h: string) => void;
+  onAdd: (h: string) => Promise<string | null>;
+  onRemove: (h: string) => Promise<void>;
+}) {
+  return (
+    <div class="flex flex-wrap items-stretch border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/60">
+      <For each={props.hosts}>
+        {(host) => (
+          <TabChip
+            host={host}
+            active={props.active === host}
+            onSelect={() => props.onSelect(host)}
+            onClose={() => props.onRemove(host)}
+          />
+        )}
+      </For>
+      <AddHostForm onAdd={props.onAdd} />
+    </div>
+  );
+}
+
+function TabChip(props: {
+  host: string;
+  active: boolean;
+  onSelect: () => void;
+  onClose: () => void;
+}) {
+  const app = surfaceForHost(props.host);
+  const connection = app.cells.connection.use({});
+  const state = createMemo<ConnectionState>(
+    () => (connection.value() ?? DEFAULT_CONNECTION).state,
+  );
+
+  // The chip owns the per-host PartySocket via the wire.ts cache. When
+  // the host is removed from the admin collection the chip unmounts;
+  // we tear down the socket so partysocket doesn't keep retrying.
+  onCleanup(() => disposeHostSurface(props.host));
+
+  const baseClasses =
+    "flex items-center gap-2 border-r border-gray-200 px-3 py-1.5 text-xs dark:border-gray-800";
+  const inactiveClasses = "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60";
+  const activeClasses =
+    "bg-white text-gray-900 shadow-[inset_0_-2px_0_0_theme(colors.indigo.500)] dark:bg-gray-900 dark:text-gray-100";
+  return (
+    <div class={`${baseClasses} ${props.active ? activeClasses : inactiveClasses}`}>
+      <button
+        type="button"
+        class="flex items-center gap-2"
+        onClick={props.onSelect}
+        title={`${props.host} — ${state()}`}
+      >
+        <span
+          class={`inline-block h-2 w-2 rounded-full ${DOT_BG[state()]} ${state() === "copying" || state() === "connecting" ? "animate-pulse" : ""}`}
+        />
+        <span class="font-semibold">{props.host}</span>
+      </button>
+      <button
+        type="button"
+        class="ml-1 text-gray-400 hover:text-red-500"
+        title={`Remove ${props.host}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          void props.onClose();
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+function AddHostForm(props: {
+  onAdd: (h: string) => Promise<string | null>;
+}) {
+  const [open, setOpen] = createSignal(false);
+  const [value, setValue] = createSignal("");
+  const [error, setError] = createSignal<string | null>(null);
+  const [pending, setPending] = createSignal(false);
+
+  const close = () => {
+    setOpen(false);
+    setValue("");
+    setError(null);
+    setPending(false);
+  };
+
+  const submit = async () => {
+    const host = value().trim();
+    if (host.length === 0) return;
+    setPending(true);
+    setError(null);
+    const err = await props.onAdd(host);
+    setPending(false);
+    if (err === null) close();
+    else setError(err);
+  };
+
+  return (
+    <div class="flex items-center px-2 py-1.5 text-xs">
+      <Show
+        when={open()}
+        fallback={
+          <button
+            type="button"
+            class="rounded border border-gray-300 px-2 py-0.5 font-semibold text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+            title="Add host"
+            onClick={() => setOpen(true)}
+          >
+            + add host
+          </button>
+        }
+      >
+        <form
+          class="flex items-center gap-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
+        >
+          <input
+            type="text"
+            class="w-48 rounded border border-gray-300 bg-gray-50 px-2 py-0.5 focus:border-emerald-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800"
+            placeholder="user@host or hostname"
+            autofocus
+            disabled={pending()}
+            value={value()}
+            onInput={(e) => setValue(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") close();
+            }}
+          />
+          <button
+            type="submit"
+            class="rounded border border-emerald-500 bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-950/40 dark:text-emerald-300"
+            disabled={pending() || value().trim().length === 0}
+          >
+            add
+          </button>
+          <button
+            type="button"
+            class="px-1 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200"
+            onClick={close}
+          >
+            cancel
+          </button>
+          <Show when={error()}>
+            {(msg) => <span class="ml-2 text-red-500">{msg()}</span>}
+          </Show>
+        </form>
+      </Show>
+    </div>
+  );
+}
+
+// ── Per-host body (the prior single-host App, now parametric) ──────────
+
+function HostView(props: { host: string }) {
+  // `surfaceForHost` returns the cached client — the same instance the
+  // tab chip is using for the `connection` cell. Multiple consumers on
+  // one socket is the supported shape; oRPC multiplexes calls per
+  // procedure-path on the wire.
+  const app = surfaceForHost(props.host);
+
   const system = app.cells.system.use({});
-  // Connection cell: snapshot-then-delta of the parent-to-agent link
-  // lifecycle. Independent of `system` — the link can be "copying" or
-  // "disconnected" while `system` still holds the last good snapshot.
   const connection = app.cells.connection.use({});
 
-  // Processes table — driven by the bulk `processesSnapshot` stream,
-  // NOT the per-key `processes` collection. For a 600+ row htop view,
-  // N+1 per-key WS subscribes drip rows one at a time even over local
-  // WS; one snapshot frame lands the whole table at once. The framework
-  // collection stays available on the surface for small-N use cases
-  // (per-key reactivity is exactly what you want for a few keys).
   const [processes, setProcesses] = createStore<Record<Pid, Process>>({});
   const ctl = new AbortController();
   onCleanup(() => ctl.abort());
@@ -89,10 +331,6 @@ export default function App() {
     Object.keys(processes).map((k) => Number(k)),
   );
 
-  // CPU cores — `Collection<K,T>` via the framework's per-key hook.
-  // Small-N (typical 4-32), so per-key fan-out is exactly the right
-  // shape; each core gets its own reactive subscription, the strip
-  // updates per-cell independently.
   const cores = app.collections.cpuCores.use({
     onError: (err) => console.error("cpuCores subscription failed", err),
   });
@@ -100,9 +338,6 @@ export default function App() {
     [...cores.keys()].sort((a, b) => a - b),
   );
 
-  /** Pre-resolved {pid, proc} entries — sorted, filtered, ready to render.
-   *  Reads run through the SolidJS Store's per-key reactive proxy so
-   *  only changed PIDs invalidate the memo's inputs. */
   const visibleRows = createMemo(() => {
     const q = filter().trim().toLowerCase();
     const rows: Array<{ pid: Pid; proc: Process }> = [];
@@ -132,33 +367,31 @@ export default function App() {
   };
 
   return (
-    <div class="min-h-screen bg-gray-50 p-4 font-mono text-sm dark:bg-gray-950">
-      <div class="mx-auto max-w-6xl overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
-        <Header
-          system={currentSystem()}
-          connection={currentConnection()}
-          count={allPids().length}
+    <>
+      <Header
+        system={currentSystem()}
+        connection={currentConnection()}
+        count={allPids().length}
+      />
+      <Show
+        when={currentConnection().state === "connected"}
+        fallback={<ConnectingOverlay state={currentConnection().state} />}
+      >
+        <CpuStrip coreIds={coreIds()} getCore={(id) => cores.byKey(id)?.()} />
+        <FilterBar
+          filter={filter()}
+          onFilter={setFilter}
+          visible={visibleRows().length}
+          total={allPids().length}
         />
-        <Show
-          when={currentConnection().state === "connected"}
-          fallback={<ConnectingOverlay state={currentConnection().state} />}
-        >
-          <CpuStrip coreIds={coreIds()} getCore={(id) => cores.byKey(id)?.()} />
-          <FilterBar
-            filter={filter()}
-            onFilter={setFilter}
-            visible={visibleRows().length}
-            total={allPids().length}
-          />
-          <ProcessTable
-            rows={visibleRows()}
-            sortKey={sortKey()}
-            onSort={setSortKey}
-            onKill={killProcess}
-          />
-        </Show>
-      </div>
-    </div>
+        <ProcessTable
+          rows={visibleRows()}
+          sortKey={sortKey()}
+          onSort={setSortKey}
+          onKill={killProcess}
+        />
+      </Show>
+    </>
   );
 }
 
@@ -248,7 +481,6 @@ function Header(props: {
   );
 }
 
-/** Thin top bar showing total memory usage at a glance. */
 function UsageBar(props: { pct: number }) {
   const colour = () => {
     if (props.pct > 85) return "bg-red-500";
@@ -404,17 +636,12 @@ function SortableTh(props: {
   );
 }
 
-/** htop-ish band: green low / amber mid / red high. */
 function pctClass(pct: number): string {
   if (pct > 50) return "font-semibold text-red-500";
   if (pct > 10) return "text-amber-500";
   return "text-gray-700 dark:text-gray-400";
 }
 
-/** Per-core CPU strip — one cell per core, each its own
- *  `Collection<K,T>` per-key subscription. Re-renders only the cells
- *  whose core changed (Solid `<For keyed>` semantics + per-key
- *  reactive identity from `app.collections.cpuCores.use()`). */
 function CpuStrip(props: {
   coreIds: readonly CoreId[];
   getCore: (id: CoreId) => CpuCore | undefined;
