@@ -28,8 +28,15 @@ install:
       "$DRISHTI_KOLU_SURFACE" @kolu/surface \
       "$DRISHTI_KOLU_SURFACE_NIX_HOST" @kolu/surface-nix-host'
 
+# Pre-populate the nix store with crates.io tarballs that nixpkgs' fetchurl
+# can't download (crates.io returns 403 for curl/* User-Agent). Idempotent;
+# once crates are cached this is a few nix-store metadata lookups. Drop this
+# recipe once upstream fetchurl / bun2nix sidesteps the UA filter.
+_prefetch-crates:
+    {{ nix_shell }} sh scripts/ci-prefetch-crates.sh
+
 # Build all flake outputs via devour-flake.
-nix:
+nix: _prefetch-crates
     nix build github:srid/devour-flake -L --no-link --print-out-paths --override-input flake .
 
 # TypeScript type checking
