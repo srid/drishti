@@ -1,0 +1,19 @@
+{
+  "name": "drishti-workspaces",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "bun --cwd packages/app typecheck",
+    "dev": "bun --cwd packages/app dev"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.8.0"
+  },
+  "overrides": {
+    "@babel/helper-module-imports": "^7.29.7"
+  }
+}

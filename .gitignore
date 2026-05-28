@@ -1,6 +1,20 @@
 /.do-results.json
 /apm_modules/
 
-
 # APM dependencies
 apm_modules/
+
+# Build artifacts and dependencies
+node_modules/
+dist/
+state/
+
+# Session artifacts (talk-mode HTML)
+/talk-*.html
+
+# Nix
+/result
+/result-*
+
+# justci transient state
+/.ci/
