@@ -71,6 +71,13 @@ export async function buildHostRegistry(
   opts: HostRegistryOptions,
 ): Promise<HostRegistry> {
   const entries = new Map<string, HostHandle>();
+  // In-flight `add()` calls. With async arch-probing, two concurrent
+  // adds for the same host both pass the `entries.has` guard and the
+  // second `entries.set` orphans the first session. Tracking the
+  // in-flight set separately (instead of a null sentinel inside the
+  // entries map) keeps `remove`/`getHandler`/`snapshot` from having to
+  // know that a "host exists" can mean "session being spawned".
+  const adding = new Set<string>();
   const wsConnectionsByHost = new Map<string, Set<WsConn>>();
 
   const buildEntry = async (host: string): Promise<HostHandle> => {
@@ -101,7 +108,7 @@ export async function buildHostRegistry(
   for (const [host, handle] of seeded) entries.set(host, handle);
 
   return {
-    has: (host) => entries.has(host),
+    has: (host) => entries.has(host) || adding.has(host),
     snapshot: () => {
       const out = new Map<string, HostEntry>();
       for (const host of entries.keys()) out.set(host, { host });
@@ -110,8 +117,17 @@ export async function buildHostRegistry(
     getHandler: (host) => entries.get(host)?.handler,
 
     async add(host) {
-      if (entries.has(host)) throw new Error("host already exists");
-      entries.set(host, await buildEntry(host));
+      if (entries.has(host) || adding.has(host)) {
+        throw new Error("host already exists");
+      }
+      adding.add(host);
+      let handle: HostHandle;
+      try {
+        handle = await buildEntry(host);
+      } finally {
+        adding.delete(host);
+      }
+      entries.set(host, handle);
       await saveHosts(opts.hostsFile, [...entries.keys()]);
       opts.log(`added host: ${host} (total ${entries.size})`);
     },
