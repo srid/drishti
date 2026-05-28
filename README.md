@@ -17,7 +17,7 @@ Requirements:
 - The remote host must be `ssh`-reachable with **passwordless** auth and a working **`nix-daemon`** that **trusts your user** (`trusted-users` in `nix.conf`) — drishti provisions the agent by shipping its `.drv` to the remote with `nix copy --derivation` and realising it there.
 - Localhost works without any remote setup.
 
-Mixed-architecture host sets are supported: the monitor wrapper bakes a `{system → drv}` map for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`, and the parent probes each host's `uname -ms` on add to pick the matching `.drv`. A macOS user can drive a Linux remote (or both) from one `nix run` invocation.
+Mixed-architecture host sets are supported: the monitor wrapper bakes a `{system → drv}` map for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`, and the parent probes each host's `uname -ms` on add (via [`@kolu/surface-nix-host`'s `resolveSystem`](https://github.com/juspay/kolu/pull/1009)) to pick the matching `.drv`. A macOS user can drive a Linux remote (or both) from one `nix run` invocation.
 
 ## Architecture
 
@@ -102,7 +102,7 @@ drishti/
       │  ├─ router.ts                           #   per-host router fragment
       │  ├─ admin-router.ts                     #   host-set router fragment
       │  ├─ hostRegistry.ts                     #   per-host session pool
-      │  ├─ archMap.ts                          #   `uname -ms` → nix-system probe
+      │  ├─ archMap.ts                          #   compose kolu's resolveSystem with the drv map
       │  ├─ hostsStore.ts                       #   $XDG_STATE_HOME/drishti/hosts.json
       │  └─ build.ts                            #   client bundler
       └─ client/                                # SolidJS UI
