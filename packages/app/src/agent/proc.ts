@@ -209,8 +209,10 @@ interface LinuxProcRaw {
 async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
   try {
     // `/proc/<pid>/cwd` is a symlink that EACCES for other-user pids
-    // and ENOENT for kernel threads; resolve it via Promise.allSettled
-    // so a failure here doesn't drop the whole row.
+    // and ENOENT for kernel threads. The inline two-arg `.then(p => p,
+    // () => "")` catches the readlink rejection in place so it can't
+    // bubble out of the surrounding `Promise.all` and discard the rest
+    // of the row's reads.
     const [statRaw, statusRaw, cmdlineRaw, cwdResult] = await Promise.all([
       readFile(`/proc/${pid}/stat`, "utf-8"),
       readFile(`/proc/${pid}/status`, "utf-8"),
