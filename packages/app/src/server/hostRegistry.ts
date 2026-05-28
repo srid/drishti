@@ -58,19 +58,26 @@ export interface HostRegistry {
 
 export interface HostRegistryOptions {
   initialHosts: readonly string[];
-  drvPath: string;
+  /** Resolve a host string to its agent `.drv` path. The registry has
+   *  no business knowing how the answer was reached (arch probe, map
+   *  lookup, a static value for localhost-only dev) — it just awaits
+   *  the resolved path per host. */
+  resolveDrvPath: (host: string) => Promise<string>;
   hostsFile: string;
   log: (line: string) => void;
 }
 
-export function buildHostRegistry(opts: HostRegistryOptions): HostRegistry {
+export async function buildHostRegistry(
+  opts: HostRegistryOptions,
+): Promise<HostRegistry> {
   const entries = new Map<string, HostHandle>();
   const wsConnectionsByHost = new Map<string, Set<WsConn>>();
 
-  const buildEntry = (host: string): HostHandle => {
+  const buildEntry = async (host: string): Promise<HostHandle> => {
+    const drvPath = await opts.resolveDrvPath(host);
     const session = getHostSession<typeof surface.contract>({
       host,
-      drvPath: opts.drvPath,
+      drvPath,
       binary: "drishti-agent",
     });
     const { router } = buildRouter({ session });
@@ -79,7 +86,19 @@ export function buildHostRegistry(opts: HostRegistryOptions): HostRegistry {
     return { session, handler };
   };
 
-  for (const host of opts.initialHosts) entries.set(host, buildEntry(host));
+  // Parallel initial seeding — per-host arch probes are independent, so
+  // a single user dialing into five hosts shouldn't pay the round-trip
+  // serially. `Promise.all` propagates the first failure (Bun's default);
+  // a failing probe at boot is a misconfiguration we want loud and early.
+  const seeded = await Promise.all(
+    opts.initialHosts.map(
+      async (host): Promise<readonly [string, HostHandle]> => [
+        host,
+        await buildEntry(host),
+      ],
+    ),
+  );
+  for (const [host, handle] of seeded) entries.set(host, handle);
 
   return {
     has: (host) => entries.has(host),
@@ -92,7 +111,7 @@ export function buildHostRegistry(opts: HostRegistryOptions): HostRegistry {
 
     async add(host) {
       if (entries.has(host)) throw new Error("host already exists");
-      entries.set(host, buildEntry(host));
+      entries.set(host, await buildEntry(host));
       await saveHosts(opts.hostsFile, [...entries.keys()]);
       opts.log(`added host: ${host} (total ${entries.size})`);
     },

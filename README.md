@@ -16,9 +16,8 @@ Requirements:
 
 - The remote host must be `ssh`-reachable with **passwordless** auth and a working **`nix-daemon`** that **trusts your user** (`trusted-users` in `nix.conf`) — drishti provisions the agent by shipping its `.drv` to the remote with `nix copy --derivation` and realising it there.
 - Localhost works without any remote setup.
-- All configured hosts must share the agent architecture of the host `just dev` probed at startup (or of the system that built the wrapper binary for `nix run`). Mixing architectures in one parent isn't supported yet.
 
-`nix run github:srid/drishti -- user@host` works on `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`; the agent's `.drv` is resolved per-system so the binary built on the remote matches its architecture.
+Mixed-architecture host sets are supported: the monitor wrapper bakes a `{system → drv}` map for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`, and the parent probes each host's `uname -ms` on add to pick the matching `.drv`. A macOS user can drive a Linux remote (or both) from one `nix run` invocation.
 
 ## Architecture
 
@@ -62,14 +61,14 @@ Admin surface primitives:
 ```sh
 just dev                          # parent server :7720, host=localhost
 just dev user@somehost            # any ssh target with passwordless access
-just dev localhost a.lan b.lan    # multiple hosts (first one drives arch probe)
+just dev localhost a.lan b.lan    # multiple hosts (per-host arch probe)
 just typecheck                    # tsc --noEmit across the workspace
 just fmt                          # nixpkgs-fmt everything *.nix
 just nix-build                    # build the wrapped monitor binary
 just regenerate-bun-nix           # after any bun.lock change
 ```
 
-`just dev` probes the target host's architecture (`ssh $host uname -ms`), resolves the matching `drishti-agent` `.drv` via `nix eval`, exports it as `DRISHTI_AGENT_DRV`, and boots Bun in watch mode. The dev server invokes `buildClient()` at startup so a single `bun --watch` covers both server-TS and client-bundle rebuilds. Browser refresh is manual — there's no HMR.
+`just dev` exports `DRISHTI_AGENT_DRVS_JSON` (the per-system `.drv` map from the flake's `agentDrvsJson` attribute) and boots Bun in watch mode. The parent probes each host's `uname -ms` on add and picks the matching `.drv` from the map — so one dev session can mix architectures. The dev server invokes `buildClient()` at startup so a single `bun --watch` covers both server-TS and client-bundle rebuilds. Browser refresh is manual — there's no HMR.
 
 The first connect to a fresh remote ships the agent closure over `ssh` (`nix copy --derivation` then `nix-store --realise`); subsequent connects reuse it. The progress is streamed to the browser via the `connection` cell.
 
@@ -102,6 +101,8 @@ drishti/
       │  ├─ main.ts                             #   multi-host WS dispatch
       │  ├─ router.ts                           #   per-host router fragment
       │  ├─ admin-router.ts                     #   host-set router fragment
+      │  ├─ hostRegistry.ts                     #   per-host session pool
+      │  ├─ archMap.ts                          #   `uname -ms` → nix-system probe
       │  ├─ hostsStore.ts                       #   $XDG_STATE_HOME/drishti/hosts.json
       │  └─ build.ts                            #   client bundler
       └─ client/                                # SolidJS UI

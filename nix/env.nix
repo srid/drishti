@@ -1,5 +1,5 @@
 # Env vars whose values are Nix-store paths — used by the dev shell and
-# the build derivation. Other drishti env vars (DRISHTI_AGENT_DRV,
+# the build derivation. Other drishti env vars (DRISHTI_AGENT_DRVS_JSON,
 # DRISHTI_DIST_DIR, DRISHTI_STATE_DIR if it ever appears) live closer
 # to their consumer because they depend on runtime values; this file is
 # strictly for store-path env.

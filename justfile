@@ -20,30 +20,16 @@ install:
       "$DRISHTI_KOLU_SURFACE" @kolu/surface \
       "$DRISHTI_KOLU_SURFACE_NIX_HOST" @kolu/surface-nix-host'
 
-# Boot the parent server. Defaults host to localhost; pass a user@host to
-# target a remote. Resolves the agent's `.drv` for the *target host's*
-# architecture (probed via `ssh $host uname -ms`), then exports
-# DRISHTI_AGENT_DRV so the parent's HostSession can ship the derivation
-# to the host and realise it there.
+# Boot the parent server. Defaults to localhost; pass any number of
+# user@host targets after it. Exports DRISHTI_AGENT_DRVS_JSON (the
+# per-system agent .drv map from the flake) so the parent can probe each
+# host's arch on add and pick the matching .drv — no shell-side probe.
 dev host='localhost' *args: install
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ "{{ host }}" = "localhost" ] || [ "{{ host }}" = "127.0.0.1" ]; then
-      sys=$(nix eval --raw --impure --expr builtins.currentSystem)
-    else
-      uname_out=$(ssh -o BatchMode=yes {{ host }} uname -ms)
-      case "$uname_out" in
-        "Darwin arm64")  sys=aarch64-darwin ;;
-        "Darwin x86_64") sys=x86_64-darwin ;;
-        "Linux x86_64")  sys=x86_64-linux ;;
-        "Linux aarch64") sys=aarch64-linux ;;
-        *) echo "» unsupported remote uname: $uname_out" >&2; exit 1 ;;
-      esac
-    fi
-    echo "» target host: {{ host }} (system=$sys)"
-    drv=$(nix eval --raw "{{ justfile_directory() }}#packages.$sys.drishti-agent.drvPath")
-    echo "» agent .drv:  $drv"
-    DRISHTI_AGENT_DRV=$drv \
+    drvs_json=$(nix eval --raw "{{ justfile_directory() }}#agentDrvsJson")
+    echo "» agent drvs: $drvs_json"
+    DRISHTI_AGENT_DRVS_JSON="$drvs_json" \
     {{ nix_shell }} bun --cwd packages/app dev {{ host }} {{ args }}
 
 # TypeScript type checking

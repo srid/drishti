@@ -14,14 +14,22 @@
 #
 #   drishti        — the monitor (default attr). Wraps bun →
 #                     packages/app/src/server/main.ts; bakes
-#                     DRISHTI_AGENT_DRV (current-system agent .drv) and
-#                     DRISHTI_DIST_DIR (drishti-client). meta.mainProgram
-#                     is "drishti" so `nix run` resolves cleanly.
+#                     DRISHTI_AGENT_DRVS_JSON (system→drv map, sourced
+#                     from flake.nix) and DRISHTI_DIST_DIR (drishti-
+#                     client). meta.mainProgram is "drishti" so `nix run`
+#                     resolves cleanly.
 #
 # `b2n` carries the bun2nix helpers; passed in from flake.nix via
 # `lib.mkBun2nix { inherit pkgs; }` (juspay/bun2nix rawflake standalone API).
+#
+# `agentDrvBySystem` is the cross-system map flake.nix builds eagerly
+# (drvPath is pure eval; no IFD) and threads in here so the monitor can
+# pick the right agent at runtime per the remote host's `uname -ms`.
+# Only the `drishti` monitor needs it — `drishti-agent` and
+# `drishti-client` realize fine without it; throws on use if missing.
 { pkgs ? null
 , b2n ? null
+, agentDrvBySystem ? null
 }:
 let
   resolvedPkgs =
@@ -54,22 +62,29 @@ let
     cp -r ${drishtiBuilt}/lib/drishti/packages/app/dist $out
   '';
 
-  drishti = resolvedPkgs.runCommand "drishti"
-    {
-      nativeBuildInputs = [ resolvedPkgs.makeWrapper ];
-      meta.mainProgram = "drishti";
-    } ''
-    mkdir -p $out/bin
-    makeWrapper ${resolvedPkgs.bun}/bin/bun $out/bin/drishti \
-      --add-flags "${drishtiBuilt}/lib/drishti/packages/app/src/server/main.ts" \
-      --set DRISHTI_DIST_DIR "${drishti-client}" \
-      `# DRISHTI_AGENT_DRV is derived from the drishti-agent let-binding above.` \
-      `# drvPath is a STRING interpolation, not a Nix dependency edge — if the` \
-      `# attribute is renamed or split, this wrapper compiles fine but points at` \
-      `# a stale .drv and HostSession crashes at \`nix copy --derivation\` time.` \
-      --set-default DRISHTI_AGENT_DRV "${drishti-agent.drvPath}" \
-      --prefix PATH : ${resolvedPkgs.lib.makeBinPath [ resolvedPkgs.openssh resolvedPkgs.nix ]}
-  '';
+  drishti =
+    if agentDrvBySystem == null
+    then throw "the `drishti` monitor wrapper requires `agentDrvBySystem` — invoke via flake.nix (which threads in the per-system agent .drv map)"
+    else
+      resolvedPkgs.runCommand "drishti"
+        {
+          nativeBuildInputs = [ resolvedPkgs.makeWrapper ];
+          meta.mainProgram = "drishti";
+        } ''
+        mkdir -p $out/bin
+        makeWrapper ${resolvedPkgs.bun}/bin/bun $out/bin/drishti \
+          --add-flags "${drishtiBuilt}/lib/drishti/packages/app/src/server/main.ts" \
+          --set DRISHTI_DIST_DIR "${drishti-client}" \
+          `# DRISHTI_AGENT_DRVS_JSON: {system -> drvPath} JSON map. flake.nix` \
+          `# pre-evaluates one entry per system in its 'systems' list; the` \
+          `# server picks the right entry at runtime via 'uname -ms' on each` \
+          `# host (see packages/app/src/server/archMap.ts). drvPath is a STRING` \
+          `# interpolation, not a Nix dependency edge — rename the attribute` \
+          `# and this wrapper compiles fine but HostSession crashes at` \
+          `# 'nix copy --derivation' time.` \
+          --set-default DRISHTI_AGENT_DRVS_JSON '${builtins.toJSON agentDrvBySystem}' \
+          --prefix PATH : ${resolvedPkgs.lib.makeBinPath [ resolvedPkgs.openssh resolvedPkgs.nix ]}
+      '';
 in
 {
   inherit drishti drishti-agent drishti-client drishtiBuilt;
