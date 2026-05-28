@@ -42,10 +42,10 @@ export function unameToNixSystem(unameOut: string): string | null {
 }
 
 export async function resolveSystem(host: string): Promise<string> {
-  const [cmd, ...args] = isLocalHost(host)
-    ? ["uname", "-ms"]
-    : ["ssh", "-o", "BatchMode=yes", host, "uname", "-ms"];
-  const out = await capture(cmd as string, args);
+  const argv = isLocalHost(host)
+    ? (["uname", "-ms"] as const)
+    : (["ssh", "-o", "BatchMode=yes", host, "uname", "-ms"] as const);
+  const out = await capture(argv[0], argv.slice(1));
   const sys = unameToNixSystem(out);
   if (sys === null) {
     throw new Error(
