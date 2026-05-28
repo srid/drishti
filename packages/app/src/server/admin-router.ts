@@ -19,10 +19,7 @@ import {
   implementSurface,
   inMemoryChannelByName,
 } from "@kolu/surface/server";
-import {
-  ADMIN_HOST_SENTINEL,
-  adminSurface,
-} from "../common/admin-surface";
+import { adminSurface } from "../common/admin-surface";
 import type { HostRegistry } from "./hostRegistry";
 
 export interface AdminRouterOptions {
@@ -50,10 +47,9 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
     procedures: {
       hosts: {
         add: async ({ input }) => {
+          // `HostInputSchema` already rejects blank, whitespace-containing,
+          // and sentinel strings at validation time; no re-check needed here.
           const host = input.host.trim();
-          if (host === ADMIN_HOST_SENTINEL) {
-            return { ok: false, error: "host name reserved" };
-          }
           if (opts.registry.has(host)) {
             return { ok: false, error: "host already exists" };
           }
