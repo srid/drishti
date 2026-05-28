@@ -8,6 +8,10 @@ apm_modules/
 node_modules/
 dist/
 state/
+
+# Session artifacts (talk-mode HTML)
+/talk-*.html
+
 # Nix
 /result
 /result-*
