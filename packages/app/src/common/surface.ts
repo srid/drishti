@@ -21,6 +21,10 @@ const ProcessSchema = z.object({
   cpuPct: z.number(),
   memPct: z.number(),
   command: z.string(),
+  /** Current working directory. Empty string when unknown — kernel
+   *  threads have no cwd, other-user pids hit EACCES on `/proc/<pid>/cwd`,
+   *  and darwin has no cheap per-pid cwd source so it's blank there. */
+  cwd: z.string(),
 });
 
 const CpuCoreSchema = z.object({

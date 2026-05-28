@@ -225,7 +225,8 @@ function HostView(props: { host: string }) {
         if (
           String(pid).includes(q) ||
           proc.user.toLowerCase().includes(q) ||
-          proc.command.toLowerCase().includes(q)
+          proc.command.toLowerCase().includes(q) ||
+          proc.cwd.toLowerCase().includes(q)
         )
           filtered.push(pid);
       }
@@ -392,7 +393,7 @@ function FilterBar(props: {
     <div class="flex items-center gap-2 border-b border-gray-200 px-4 py-2 dark:border-gray-800">
       <input
         type="text"
-        placeholder="filter pid / user / command"
+        placeholder="filter pid / user / command / cwd"
         class="w-64 rounded border border-gray-300 bg-gray-50 px-2 py-0.5 text-xs focus:border-emerald-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800"
         value={props.filter}
         onInput={(e) => props.onFilter(e.currentTarget.value)}
@@ -508,7 +509,14 @@ function ProcessRow(props: {
         {mem().toFixed(1)}
       </td>
       <td class="max-w-md truncate px-3 py-0.5 text-left text-gray-700 dark:text-gray-300">
-        {proc()?.command ?? ""}
+        <span>{proc()?.command ?? ""}</span>
+        <Show when={proc()?.cwd}>
+          {(cwd) => (
+            <span class="ml-2 text-gray-400 dark:text-gray-500" title="cwd">
+              @ {cwd()}
+            </span>
+          )}
+        </Show>
       </td>
       <td class="px-3 py-0.5 text-right">
         <button
