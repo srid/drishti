@@ -1,6 +1,6 @@
 # drishti
 
-A live process monitor that runs against any host you can `ssh` into. Browser SolidJS UI ↔ local parent server (Bun) ↔ remote agent over `ssh` stdio. Built on [`@kolu/surface`](https://kolu.dev/blog/surface-framework/) for the typed reactive transport.
+A live process monitor that runs against any host you can `ssh` into. Browser SolidJS UI ↔ local parent server (Bun) ↔ remote agent over `ssh` stdio. Built on [`@kolu/surface`](https://kolu.dev/blog/surface-framework/) (with https://github.com/juspay/kolu/pull/984) for the typed reactive transport.
 
 ## Quick start
 
