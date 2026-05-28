@@ -15,7 +15,7 @@
  */
 
 import { exec as execCb } from "node:child_process";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, readlink } from "node:fs/promises";
 import {
   cpus,
   freemem,
@@ -168,6 +168,7 @@ function linuxReader(): ProcReader {
           cpuPct: round2(cpuPct),
           memPct: raw.memPct,
           command: raw.command,
+          cwd: raw.cwd,
         });
       }
       // Evict dead pids so the map doesn't grow without bound.
@@ -202,14 +203,22 @@ interface LinuxProcRaw {
   startTime: number;
   memPct: number;
   command: string;
+  cwd: string;
 }
 
 async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
   try {
-    const [statRaw, statusRaw, cmdlineRaw] = await Promise.all([
+    // `/proc/<pid>/cwd` is a symlink that EACCES for other-user pids
+    // and ENOENT for kernel threads; resolve it via Promise.allSettled
+    // so a failure here doesn't drop the whole row.
+    const [statRaw, statusRaw, cmdlineRaw, cwdResult] = await Promise.all([
       readFile(`/proc/${pid}/stat`, "utf-8"),
       readFile(`/proc/${pid}/status`, "utf-8"),
       readFile(`/proc/${pid}/cmdline`, "utf-8"),
+      readlink(`/proc/${pid}/cwd`).then(
+        (p) => p,
+        () => "",
+      ),
     ]);
     // /proc/<pid>/stat: see proc(5). After comm (in parens — may contain
     // spaces), fields are space-separated. utime + stime are fields 14-15
@@ -239,6 +248,7 @@ async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
       startTime,
       memPct: round2(memPct),
       command: truncate(command, 200),
+      cwd: truncate(cwdResult, 200),
     };
   } catch {
     // ENOENT is expected for PIDs that vanish between readdir and the
@@ -289,6 +299,9 @@ function darwinReader(): ProcReader {
           cpuPct: Number(cpu),
           memPct: Number(mem),
           command: truncate(command, 200),
+          // darwin has no cheap per-pid cwd source (`lsof -p` per pid is
+          // a fork per row); leave blank — the UI hides it when empty.
+          cwd: "",
         });
       }
       return out;
@@ -323,6 +336,7 @@ function stubReader(): ProcReader {
         cpuPct: 0,
         memPct: 0,
         command: `${process.execPath} ${process.argv.slice(1).join(" ")}`,
+        cwd: process.cwd(),
       });
       return out;
     },

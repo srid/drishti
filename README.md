@@ -44,7 +44,7 @@ Per-host primitives:
 | Primitive | Path | Purpose |
 |---|---|---|
 | **Cell** | `system` | Load averages, memory, uptime, OS, hostname. |
-| **Collection** | `processes` | Keyed by PID — `{ user, cpuPct, memPct, command }`. Snapshot-then-delta. |
+| **Collection** | `processes` | Keyed by PID — `{ user, cpuPct, memPct, command, cwd }`. Snapshot-then-delta. `cwd` is from `/proc/<pid>/cwd` on linux (empty on darwin / kernel threads / other-user pids). |
 | **Stream** | `processesSnapshot` | Bulk-snapshot variant for ~600-PID htop refresh in one frame. |
 | **Collection** | `cpuCores` | Per-core CPU usage (`Collection<K,T>` showcase). |
 | **Procedure** | `process.kill` | The only mutation — sends `TERM` / `KILL` / `HUP` / `INT`. |
