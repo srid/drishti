@@ -339,9 +339,11 @@ function applySnapshotMessage(
   for (const pid of msg.removes) {
     fragment.ctx.collections.processes.remove(pid);
   }
-  if (msg.upserts.length > 0 || msg.removes.length > 0) {
-    log(
-      `processes: delta frame #${frameNumber} — upsert=${msg.upserts.length} remove=${msg.removes.length} total=${processCache.size}`,
-    );
-  }
+  // Per-tick delta frames are intentionally NOT logged — the agent
+  // polls every 2s, so steady-state deltas would dominate stderr. The
+  // snapshot frame above and the stream-close/error logs in
+  // pumpProcessesSnapshot are the load-bearing signals; if you need
+  // per-tick visibility, attach a debugger or temporarily re-enable
+  // the line below.
+  // log(`processes: delta frame #${frameNumber} — upsert=… remove=… total=…`);
 }
