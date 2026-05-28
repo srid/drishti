@@ -45,7 +45,7 @@ import {
   surface,
 } from "../common/surface";
 
-type SshcientAgent = AgentClient<typeof surface.contract>;
+type DrishtiAgent = AgentClient<typeof surface.contract>;
 
 export interface BuildRouterOptions {
   session: HostSession<typeof surface.contract>;
@@ -211,9 +211,9 @@ async function bridgeAgentToParent(
     /* logged via state cell; loop handles recovery */
   });
 
-  let lastClient: SshcientAgent | null = null;
+  let lastClient: DrishtiAgent | null = null;
   while (!session.isDestroyed()) {
-    let client: SshcientAgent;
+    let client: DrishtiAgent;
     try {
       client = await waitForNextClient(session, lastClient);
     } catch (err) {
@@ -235,7 +235,7 @@ async function bridgeAgentToParent(
 /** Mirror the agent's `cpuCores` collection — small-N showcase of
  *  `mirrorRemoteCollection`. */
 function pumpCpuCores(
-  client: SshcientAgent,
+  client: DrishtiAgent,
   fragment: FragmentCtx,
 ): Promise<void> {
   return mirrorRemoteCollection<CoreId, CpuCore>({
@@ -256,7 +256,7 @@ function pumpCpuCores(
 
 /** Mirror the agent's system cell into the parent's local cell. */
 async function pumpSystemCell(
-  client: SshcientAgent,
+  client: DrishtiAgent,
   session: HostSession<typeof surface.contract>,
   fragment: FragmentCtx,
 ): Promise<void> {
@@ -286,7 +286,7 @@ async function pumpSystemCell(
  *  one-row-at-a-time fill). With the bulk stream, cold-start is O(1)
  *  RPCs regardless of process count. */
 async function pumpProcessesSnapshot(
-  client: SshcientAgent,
+  client: DrishtiAgent,
   fragment: FragmentCtx,
   processCache: Map<Pid, Process>,
   browserSnapshotBus: Channel<ProcessesSnapshotMsg>,
