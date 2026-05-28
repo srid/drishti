@@ -47,14 +47,16 @@ const CLIENT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "clien
 export async function buildClient(distDir: string): Promise<void> {
   await Bun.$`mkdir -p ${distDir}`;
 
-  // JS bundle.
+  // JS bundle. Minified — Bun emits a linked sourcemap so DevTools still
+  // surfaces original sources, but the wire/parse cost on first paint
+  // drops by ~3× vs. the unminified output.
   const jsResult = await Bun.build({
     entrypoints: [resolve(CLIENT_DIR, "main.tsx")],
     outdir: distDir,
     target: "browser",
     format: "esm",
     splitting: false,
-    minify: false,
+    minify: true,
     sourcemap: "linked",
     plugins: [solidJsxPlugin],
   });
