@@ -26,6 +26,7 @@ import { RPCHandler } from "@orpc/server/ws";
 import { cli } from "cleye";
 import { Hono } from "hono";
 import { WebSocketServer } from "ws";
+import { z } from "zod";
 import { destroyAllSessions } from "@kolu/surface-nix-host";
 import { ADMIN_HOST_SENTINEL } from "../common/admin-surface";
 import { buildAdminRouter } from "./admin-router";
@@ -58,18 +59,10 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
+  const drvMapSchema = z.record(z.string(), z.string().min(1));
   let agentDrvBySystem: Record<string, string>;
   try {
-    const parsed: unknown = JSON.parse(drvsJson);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("expected a JSON object");
-    }
-    for (const [k, v] of Object.entries(parsed)) {
-      if (typeof v !== "string" || v.length === 0) {
-        throw new Error(`entry ${JSON.stringify(k)} is not a non-empty string`);
-      }
-    }
-    agentDrvBySystem = parsed as Record<string, string>;
+    agentDrvBySystem = drvMapSchema.parse(JSON.parse(drvsJson));
   } catch (err) {
     log(`DRISHTI_AGENT_DRVS_JSON: invalid — ${(err as Error).message}`);
     process.exit(1);
