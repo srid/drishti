@@ -43,9 +43,8 @@ dev host='localhost' *args: install
     echo "» target host: {{ host }} (system=$sys)"
     drv=$(nix eval --raw "{{ justfile_directory() }}#packages.$sys.drishti-agent.drvPath")
     echo "» agent .drv:  $drv"
-    HOST={{ host }} \
     DRISHTI_AGENT_DRV=$drv \
-    {{ nix_shell }} bun --cwd packages/app dev {{ args }}
+    {{ nix_shell }} bun --cwd packages/app dev {{ host }} {{ args }}
 
 # TypeScript type checking
 typecheck: install
