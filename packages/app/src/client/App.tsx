@@ -192,24 +192,37 @@ function HostView(props: { host: string }) {
     [...cores.keys()].sort((a, b) => a - b),
   );
 
-  const visibleRows = createMemo(() => {
+  // `<For>` keys by reference identity (=== on array elements). Primitive
+  // PIDs make a memo that returns the SAME numbers ([…1234, 1235…]) reuse
+  // every existing row DOM — Solid only mounts new PIDs and unmounts gone
+  // ones. Returning `{pid, proc}` objects (the prior shape) made *every*
+  // tick allocate fresh row identities, so the whole table was torn down
+  // and rebuilt per snapshot (43 k tr add/remove vs 28 text changes in
+  // 6 s, observed). Field reads moved into <ProcessRow> below so per-cell
+  // reactivity updates only the changed cpuPct/memPct text nodes.
+  const visiblePids = createMemo<Pid[]>(() => {
     const q = filter().trim().toLowerCase();
-    const rows: Array<{ pid: Pid; proc: Process }> = [];
-    for (const pid of allPids()) {
-      const proc = processes[pid];
-      if (proc === undefined) continue;
-      if (
-        q.length > 0 &&
-        !String(pid).includes(q) &&
-        !proc.user.toLowerCase().includes(q) &&
-        !proc.command.toLowerCase().includes(q)
-      )
-        continue;
-      rows.push({ pid, proc });
+    const pids = allPids();
+    const key = sortKey();
+    const filtered: Pid[] = [];
+    if (q.length === 0) {
+      for (const pid of pids) {
+        if (processes[pid] !== undefined) filtered.push(pid);
+      }
+    } else {
+      for (const pid of pids) {
+        const proc = processes[pid];
+        if (proc === undefined) continue;
+        if (
+          String(pid).includes(q) ||
+          proc.user.toLowerCase().includes(q) ||
+          proc.command.toLowerCase().includes(q)
+        )
+          filtered.push(pid);
+      }
     }
-    const cmp = comparator(sortKey());
-    rows.sort(cmp);
-    return rows;
+    filtered.sort(pidComparator(key, processes));
+    return filtered;
   });
 
   const killProcess = async (pid: number, signal: "TERM" | "KILL") => {
@@ -235,11 +248,12 @@ function HostView(props: { host: string }) {
         <FilterBar
           filter={filter()}
           onFilter={setFilter}
-          visible={visibleRows().length}
+          visible={visiblePids().length}
           total={allPids().length}
         />
         <ProcessTable
-          rows={visibleRows()}
+          pids={visiblePids()}
+          processes={processes}
           sortKey={sortKey()}
           onSort={setSortKey}
           onKill={killProcess}
@@ -249,17 +263,25 @@ function HostView(props: { host: string }) {
   );
 }
 
-function comparator(key: SortKey): (a: Row, b: Row) => number {
+// Compare two PIDs by looking the procs up directly in the store. Cells
+// the comparator touches become tracked deps of the surrounding memo —
+// that's intentional: when cpuPct changes, the sort order must change
+// with it. Sorting ~500 numbers is microseconds; the prior bottleneck
+// was the DOM rebuild, not the sort.
+function pidComparator(
+  key: SortKey,
+  procs: Record<Pid, Process>,
+): (a: Pid, b: Pid) => number {
+  // visiblePids() pre-filters out missing entries, so the indexed
+  // lookups in here are always defined — assert past noUncheckedIndexedAccess.
   if (key === "cpu")
-    return (a, b) => b.proc.cpuPct - a.proc.cpuPct || a.pid - b.pid;
+    return (a, b) => procs[b]!.cpuPct - procs[a]!.cpuPct || a - b;
   if (key === "mem")
-    return (a, b) => b.proc.memPct - a.proc.memPct || a.pid - b.pid;
+    return (a, b) => procs[b]!.memPct - procs[a]!.memPct || a - b;
   if (key === "user")
-    return (a, b) => a.proc.user.localeCompare(b.proc.user) || a.pid - b.pid;
-  return (a, b) => a.pid - b.pid;
+    return (a, b) => procs[a]!.user.localeCompare(procs[b]!.user) || a - b;
+  return (a, b) => a - b;
 }
-
-type Row = { pid: Pid; proc: Process };
 
 function Header(props: {
   system: ReturnType<() => typeof DEFAULT_SYSTEM>;
@@ -392,7 +414,8 @@ function ConnectingOverlay(props: { state: string }) {
 }
 
 function ProcessTable(props: {
-  rows: readonly Row[];
+  pids: readonly Pid[];
+  processes: Record<Pid, Process>;
   sortKey: SortKey;
   onSort: (k: SortKey) => void;
   onKill: (pid: number, signal: "TERM" | "KILL") => void;
@@ -431,40 +454,64 @@ function ProcessTable(props: {
           </tr>
         </thead>
         <tbody>
-          <For each={props.rows}>
-            {(row) => (
-              <tr class="border-b border-gray-100 hover:bg-gray-50 dark:border-gray-800/50 dark:hover:bg-gray-800/40">
-                <td class="px-3 py-0.5 text-right tabular-nums">{row.pid}</td>
-                <td class="px-3 py-0.5 text-left">{row.proc.user}</td>
-                <td
-                  class={`px-3 py-0.5 text-right tabular-nums ${pctClass(row.proc.cpuPct)}`}
-                >
-                  {row.proc.cpuPct.toFixed(1)}
-                </td>
-                <td
-                  class={`px-3 py-0.5 text-right tabular-nums ${pctClass(row.proc.memPct)}`}
-                >
-                  {row.proc.memPct.toFixed(1)}
-                </td>
-                <td class="max-w-md truncate px-3 py-0.5 text-left text-gray-700 dark:text-gray-300">
-                  {row.proc.command}
-                </td>
-                <td class="px-3 py-0.5 text-right">
-                  <button
-                    type="button"
-                    class="rounded border border-gray-300 px-1.5 text-xs text-red-600 hover:bg-red-50 dark:border-gray-700 dark:text-red-400 dark:hover:bg-red-950/40"
-                    onClick={() => props.onKill(row.pid, "TERM")}
-                    title="Send SIGTERM"
-                  >
-                    kill
-                  </button>
-                </td>
-              </tr>
+          <For each={props.pids}>
+            {(pid) => (
+              <ProcessRow
+                pid={pid}
+                processes={props.processes}
+                onKill={props.onKill}
+              />
             )}
           </For>
         </tbody>
       </table>
     </div>
+  );
+}
+
+// One row per PID. The row is mounted once per PID and unmounted only
+// when the PID leaves the visible set; every snapshot tick only mutates
+// the text/className of cells whose underlying field changed. The
+// optional-chain on each field handles the one-frame window between
+// "PID removed from store" and "<For> reconciles its removal" — without
+// it Solid would throw on the undefined entry. Cells stay tracked
+// per-field via Solid's store proxy.
+function ProcessRow(props: {
+  pid: Pid;
+  processes: Record<Pid, Process>;
+  onKill: (pid: number, signal: "TERM" | "KILL") => void;
+}) {
+  const proc = () => props.processes[props.pid];
+  const cpu = () => proc()?.cpuPct ?? 0;
+  const mem = () => proc()?.memPct ?? 0;
+  return (
+    <tr class="border-b border-gray-100 hover:bg-gray-50 dark:border-gray-800/50 dark:hover:bg-gray-800/40">
+      <td class="px-3 py-0.5 text-right tabular-nums">{props.pid}</td>
+      <td class="px-3 py-0.5 text-left">{proc()?.user ?? ""}</td>
+      <td
+        class={`px-3 py-0.5 text-right tabular-nums ${pctClass(cpu())}`}
+      >
+        {cpu().toFixed(1)}
+      </td>
+      <td
+        class={`px-3 py-0.5 text-right tabular-nums ${pctClass(mem())}`}
+      >
+        {mem().toFixed(1)}
+      </td>
+      <td class="max-w-md truncate px-3 py-0.5 text-left text-gray-700 dark:text-gray-300">
+        {proc()?.command ?? ""}
+      </td>
+      <td class="px-3 py-0.5 text-right">
+        <button
+          type="button"
+          class="rounded border border-gray-300 px-1.5 text-xs text-red-600 hover:bg-red-50 dark:border-gray-700 dark:text-red-400 dark:hover:bg-red-950/40"
+          onClick={() => props.onKill(props.pid, "TERM")}
+          title="Send SIGTERM"
+        >
+          kill
+        </button>
+      </td>
+    </tr>
   );
 }
 

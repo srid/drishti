@@ -58,6 +58,7 @@ every memo run, so every snapshot tick tears down and rebuilds the entire
 | # | Change | p99 frame | max frame | ltMax | ltTotal/6s | TBT-like/6s | Notes |
 |---|--------|-----------|-----------|-------|------------|-------------|-------|
 | baseline | _none_ | 27 | 147 | 139 | 269 | 119 | 469 rows |
+| 1 | `<For>` keyed by PID + per-cell reactive reads | 27 | 112 | 97 | 244 | 94 | DOM rebuilds → moves only; mutation count when sort=PID went 43 k → 0 per 6 s with 74 text updates. |
 
 ## Findings
 
