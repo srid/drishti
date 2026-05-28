@@ -121,12 +121,7 @@ export async function buildHostRegistry(
         throw new Error("host already exists");
       }
       adding.add(host);
-      let handle: HostHandle;
-      try {
-        handle = await buildEntry(host);
-      } finally {
-        adding.delete(host);
-      }
+      const handle = await buildEntry(host).finally(() => adding.delete(host));
       entries.set(host, handle);
       await saveHosts(opts.hostsFile, [...entries.keys()]);
       opts.log(`added host: ${host} (total ${entries.size})`);
