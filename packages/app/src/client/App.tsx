@@ -60,9 +60,11 @@ export default function App() {
     onError: (err) => console.error("admin.hosts subscription failed", err),
   });
 
-  const hostList = createMemo<string[]>(() =>
-    [...hosts.keys()].sort((a, b) => a.localeCompare(b)),
-  );
+  // Preserve insertion order: hostsStore guarantees first-occurrence
+  // order, the server's registry seeds the admin collection in that
+  // order, and the admin collection's keys stream is order-preserving.
+  // Sorting here would silently override the upstream invariant.
+  const hostList = createMemo<string[]>(() => [...hosts.keys()]);
 
   const [activeHost, setActiveHost] = createSignal<string | null>(null);
   // Keep the active host in sync with the host set: pick the first if
