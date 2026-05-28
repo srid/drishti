@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>drishti — cross-arch agent deploy</title>
+<style>
+  :root {
+    --bg: #fafaf7;
+    --fg: #1a1a1a;
+    --muted: #6a6a6a;
+    --rule: #d8d4cc;
+    --accent: #b04a2f;
+    --code-bg: #f0ede5;
+    --warn-bg: #fdf3e7;
+    --warn-border: #d99a4e;
+    --ok-bg: #eef3ea;
+    --ok-border: #6c8c5a;
+  }
+  html { background: var(--bg); }
+  body {
+    color: var(--fg);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    max-width: 860px;
+    margin: 32px auto;
+    padding: 0 24px;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 16px; margin: 28px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--rule); letter-spacing: -0.005em; }
+  h3 { font-size: 13.5px; margin: 16px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  p, li { margin: 6px 0; }
+  code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--code-bg); padding: 10px 12px; border-radius: 4px; overflow-x: auto; line-height: 1.45; }
+  pre code { background: transparent; padding: 0; }
+  .cite { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  .err { background: var(--warn-bg); border-left: 3px solid var(--warn-border); padding: 10px 14px; margin: 12px 0; border-radius: 0 3px 3px 0; }
+  .err pre { background: transparent; padding: 0; margin: 0; }
+  .ok { background: var(--ok-bg); border-left: 3px solid var(--ok-border); padding: 10px 14px; margin: 12px 0; border-radius: 0 3px 3px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0 12px; font-size: 13px; }
+  th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .flow { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--code-bg); padding: 14px; border-radius: 4px; white-space: pre; overflow-x: auto; line-height: 1.5; }
+  .small { color: var(--muted); font-size: 12.5px; }
+  .accent { color: var(--accent); font-weight: 600; }
+  ol { padding-left: 22px; }
+  ul { padding-left: 22px; }
+  .files { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; margin: 6px 0; }
+  .files div { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>drishti — macOS → Linux: <code>Exec format error</code></h1>
+<p class="small">Why the darwin bun lands on the linux remote, and the shape of the fix after lowy + hickey review.</p>
+
+<div class="err">
+<pre>[host:pureintent remote] /nix/store/zwyyrxwlc05hq6j8qydv41p2qcc6svrq-drishti-agent/bin/drishti-agent: line 2:
+/nix/store/421j82pv4gjmh9n2gchb4cs40hqfj20d-bun-1.3.10/bin/bun: cannot execute binary file: Exec format error</pre>
+</div>
+
+<h2>Root cause</h2>
+
+<p>The monitor wrapper bakes the <em>local</em> system's agent <code>.drv</code> path into one env var. Running on macOS, that's the <code>aarch64-darwin</code> derivation. When you add a Linux host, kolu ships that .drv across with <code>nix copy --derivation</code>, the Linux daemon substitutes the prebuilt darwin closure from cache.nixos.org, and the resulting wrapper script tries to exec a Mach-O <code>bun</code> on Linux.</p>
+
+<h3>The two-line trail</h3>
+
+<table>
+  <tr><th>where</th><th>what</th></tr>
+  <tr>
+    <td class="mono">default.nix:46</td>
+    <td><code>makeWrapper ${resolvedPkgs.bun}/bin/bun $out/bin/drishti-agent</code> — bun is captured from the <em>evaluating</em> nixpkgs.</td>
+  </tr>
+  <tr>
+    <td class="mono">default.nix:70</td>
+    <td><code>--set-default DRISHTI_AGENT_DRV "${drishti-agent.drvPath}"</code> — scalar; encodes "one arch for all hosts" in the type.</td>
+  </tr>
+</table>
+
+<p>The kolu library is explicit about this being the caller's job:</p>
+
+<pre><code>// nixCopy.ts:7-13
+// No pre-built linux closure smuggled onto a darwin host.
+// `nix eval --raw .#packages.&lt;system&gt;.&lt;agent&gt;.drvPath` is the typical recipe
+// (probe the remote arch via `ssh $host uname -ms` first so the
+// derivation is for the *remote's* architecture).</code></pre>
+
+<p class="cite">/nix/store/13al1sgi1bh7ygh970r6x8p9f98kq7ly-kolu-surface-nix-host/src/nixCopy.ts:7-13</p>
+
+<p>Kolu deliberately takes a single <code>drvPath</code> in <code>HostSessionOptions</code> <span class="cite">(hostSession.ts:52-64)</span>; arch selection is upstream of the library.</p>
+
+<h2>Deploy flow today</h2>
+
+<div class="flow">macOS monitor                                       linux remote
+─────────────                                       ────────────
+
+DRISHTI_AGENT_DRV = /nix/store/…-drishti-agent.drv  (system = aarch64-darwin)
+                                │
+                                ▼
+                getHostSession({ host, drvPath, binary })
+                                │
+                                ▼
+                provisionAgent  ─── nix copy --derivation ──▶  daemon
+                                                                  │
+                                                                  ▼
+                                                ssh host nix-store --realise
+                                                                  │
+                                                                  ▼
+                                       substitute darwin closure from cache
+                                                                  │
+                                                                  ▼
+                                              wrapper points at darwin bun
+                                                                  │
+                                                                  ▼
+                                                  ssh host …/bin/drishti-agent
+                                                                  │
+                                                                  ▼
+                                                      Exec format error</div>
+
+<h2>Fix shape (post-review)</h2>
+
+<p>Headline change vs. the original sketch: the registry takes a <code>resolveDrvPath: (host) =&gt; Promise&lt;string&gt;</code> <strong>callback</strong>, not a <code>Record&lt;system, drvPath&gt;</code> map. The map lives inside the callback's closure in <code>main.ts</code>; the registry stays ignorant of arches and systems.</p>
+
+<h3>1. <span class="mono">flake.nix</span> — one source for "supported systems"</h3>
+
+<p>Derive the per-system map from the existing <code>systems</code> list <span class="cite">(flake.nix:19)</span>, don't hand-build it:</p>
+
+<pre><code>agentDrvBySystem = pkgs.lib.genAttrs systems
+  (sys: self.packages.${sys}.drishti-agent.drvPath);</code></pre>
+
+<p class="small">Rename the agent attr later → one place to update, Nix's evaluator enforces it.</p>
+
+<h3>2. <span class="mono">default.nix:70</span> — JSON, not scalar</h3>
+
+<pre><code>--set-default DRISHTI_AGENT_DRVS_JSON "${builtins.toJSON agentDrvBySystem}"</code></pre>
+
+<p class="small">Without this, any TS change is invisible to <code>nix run</code>.</p>
+
+<h3>3. <span class="mono">packages/app/src/server/archMap.ts</span> — one mapping table</h3>
+
+<pre><code>// `uname -ms` output → nix-system. Lives in drishti for now;
+// migrate to @kolu/surface-nix-host when a second consumer appears.
+export const UNAME_TO_NIX_SYSTEM = {
+  "Linux x86_64":   "x86_64-linux",
+  "Linux aarch64":  "aarch64-linux",
+  "Darwin arm64":   "aarch64-darwin",
+  "Darwin x86_64":  "x86_64-darwin",
+} as const;
+
+export async function resolveSystem(host: string): Promise&lt;string&gt; {
+  if (isLocalHost(host)) {
+    // map process.arch+process.platform → nix-system
+    …
+  }
+  const out = await sshCapture(host, ["uname", "-ms"]);
+  return UNAME_TO_NIX_SYSTEM[out.trim()] ?? throwUnsupported(out);
+}</code></pre>
+
+<p class="small">Reuses kolu's <code>isLocalHost</code> <span class="cite">(host.ts:6-8)</span> so we don't accumulate a fourth localhost-check.</p>
+
+<h3>4. <span class="mono">main.ts:53-60</span> — parse map, build callback</h3>
+
+<pre><code>const drvs = JSON.parse(process.env.DRISHTI_AGENT_DRVS_JSON ?? "");
+
+const resolveDrvPath = async (host: string) =&gt; {
+  const sys = await resolveSystem(host);
+  const drv = drvs[sys];
+  if (!drv) throw new Error(`no agent .drv baked for system=${sys}`);
+  return drv;
+};
+
+const registry = await buildHostRegistry({ initialHosts, resolveDrvPath, … });</code></pre>
+
+<h3>5. <span class="mono">hostRegistry.ts</span> — registry forgets that arches exist</h3>
+
+<pre><code>// before
+interface HostRegistryOptions { drvPath: string; … }
+const buildEntry = (host: string): HostHandle =&gt; {
+  const session = getHostSession({ host, drvPath: opts.drvPath, binary: "drishti-agent" });
+  …
+};
+
+// after
+interface HostRegistryOptions { resolveDrvPath: (host: string) =&gt; Promise&lt;string&gt;; … }
+const buildEntry = async (host: string): Promise&lt;HostHandle&gt; =&gt; {
+  const drvPath = await opts.resolveDrvPath(host);
+  const session = getHostSession({ host, drvPath, binary: "drishti-agent" });
+  …
+};</code></pre>
+
+<p><code>buildHostRegistry</code> itself flips to <code>Promise&lt;HostRegistry&gt;</code> — the initial seeding loop now awaits per-host probes. Parallelize:</p>
+
+<pre><code>const entries = await Promise.all(
+  opts.initialHosts.map(async (host) =&gt; [host, await buildEntry(host)] as const)
+);</code></pre>
+
+<p>Ripple stops at one <code>await</code> in <code>main.ts</code> <span class="cite">(main.ts:80)</span>.</p>
+
+<h3>6. <span class="mono">justfile</span> — dev recipe has the same bug</h3>
+
+<p>The <code>dev</code> recipe today probes <code>uname -ms</code> on only the <em>first</em> positional host and bakes that single arch. With the new TS path doing per-host resolution, the recipe's probe goes away entirely — it just exports <code>DRISHTI_AGENT_DRVS_JSON</code> from the flake and lets the server resolve.</p>
+
+<h2>Why this shape (what reviewers changed)</h2>
+
+<table>
+  <tr><th>concern</th><th>fix</th></tr>
+  <tr>
+    <td>Registry shouldn't know "system" exists (Lowy)</td>
+    <td><code>resolveDrvPath: (host) =&gt; Promise&lt;string&gt;</code> callback, not a system→drv map in the API.</td>
+  </tr>
+  <tr>
+    <td><code>buildEntry</code> complecting three concerns (Hickey)</td>
+    <td>Probe + map + lookup all live in the callback constructed in <code>main.ts</code>; <code>buildEntry</code> becomes a two-liner.</td>
+  </tr>
+  <tr>
+    <td>Two localhost code paths drifting (Hickey)</td>
+    <td>Reuse kolu's <code>isLocalHost</code>; one gate inside <code>resolveSystem</code>, not two parallel branches.</td>
+  </tr>
+  <tr>
+    <td><code>systems</code> declared twice (Hickey)</td>
+    <td><code>genAttrs systems</code> over <code>self.packages.${sys}</code> — one source of truth for supported targets.</td>
+  </tr>
+  <tr>
+    <td>Justfile's first-host-only probe (Lowy)</td>
+    <td>Same change, same PR — the recipe's bash probe goes away.</td>
+  </tr>
+</table>
+
+<h3>What didn't land</h3>
+
+<ul>
+  <li>Moving the arch decision into kolu — kolu has neither the flake-ref nor the attribute-path, and its docstring explicitly delegates this <span class="cite">(nixCopy.ts:7-13)</span>. A <code>kolu-arch</code> helper for the mapping table is a reasonable follow-up when a second consumer arrives.</li>
+  <li>Per-host arch caching — premature; one <code>ssh uname -ms</code> per <code>add()</code> is cheap, and the arch can't change without a host re-add.</li>
+  <li>A <code>SystemDrvMap</code> wrapper class — data is data.</li>
+</ul>
+
+<h2>When you're ready</h2>
+
+<p><code>/do</code> to implement. The change spans flake.nix, default.nix, two new/edited TS files in <code>packages/app/src/server/</code>, and the justfile — six files, mechanical once the shape is fixed.</p>
+
+</body>
+</html>
