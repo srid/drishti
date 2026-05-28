@@ -95,18 +95,3 @@ export function adminClient() {
   return adminEntry.client;
 }
 
-/** Symmetric counterpart to `disposeHostSurface`. Closes the admin WS
- *  and clears the cached client; next `adminClient()` call re-opens.
- *  Currently unused by drishti itself (the admin connection is
- *  process-lifetime) but exported so the module's lifecycle interface
- *  is symmetric for tests and future shutdown paths. */
-export function disposeAdminSurface(): void {
-  if (adminEntry === undefined) return;
-  const entry = adminEntry;
-  adminEntry = undefined;
-  try {
-    entry.ws.close();
-  } catch {
-    /* best-effort */
-  }
-}
