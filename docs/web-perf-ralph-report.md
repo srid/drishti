@@ -60,6 +60,7 @@ every memo run, so every snapshot tick tears down and rebuilds the entire
 | baseline | _none_ | 27 | 147 | 139 | 269 | 119 | 469 rows |
 | 1 | `<For>` keyed by PID + per-cell reactive reads | 27 | 112 | 97 | 244 | 94 | DOM rebuilds → moves only; mutation count when sort=PID went 43 k → 0 per 6 s with 74 text updates. |
 | 2 | Wrap delta loop in `batch()` | **18** | **18** | **0** | **0** | **0** | Without batch each `setProcesses(pid, value)` in the for-loop fired its own reactive cycle, re-running `visiblePids` ~460 times per tick and dragging the `<For>` through intermediate orderings. Per-6 s tr moves: 27 495 → 67. All long tasks gone. |
+| 3 | `minify: true` in `Bun.build` | 18 | 23 | 0 | 0 | 0 | Client bundle 674 KB → 377 KB (-44 %). LCP unchanged on localhost (185 → 194 ms = noise) but ¼ wire payload helps on real networks and trims JS parse cost on slower devices. Sourcemap stays linked so DevTools still resolves originals. |
 
 ## Findings
 
