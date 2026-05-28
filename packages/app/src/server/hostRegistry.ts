@@ -58,19 +58,33 @@ export interface HostRegistry {
 
 export interface HostRegistryOptions {
   initialHosts: readonly string[];
-  drvPath: string;
+  /** Resolve a host string to its agent `.drv` path. The registry has
+   *  no business knowing how the answer was reached (arch probe, map
+   *  lookup, a static value for localhost-only dev) — it just awaits
+   *  the resolved path per host. */
+  resolveDrvPath: (host: string) => Promise<string>;
   hostsFile: string;
   log: (line: string) => void;
 }
 
-export function buildHostRegistry(opts: HostRegistryOptions): HostRegistry {
+export async function buildHostRegistry(
+  opts: HostRegistryOptions,
+): Promise<HostRegistry> {
   const entries = new Map<string, HostHandle>();
+  // In-flight `add()` calls. With async arch-probing, two concurrent
+  // adds for the same host both pass the `entries.has` guard and the
+  // second `entries.set` orphans the first session. Tracking the
+  // in-flight set separately (instead of a null sentinel inside the
+  // entries map) keeps `remove`/`getHandler`/`snapshot` from having to
+  // know that a "host exists" can mean "session being spawned".
+  const adding = new Set<string>();
   const wsConnectionsByHost = new Map<string, Set<WsConn>>();
 
-  const buildEntry = (host: string): HostHandle => {
+  const buildEntry = async (host: string): Promise<HostHandle> => {
+    const drvPath = await opts.resolveDrvPath(host);
     const session = getHostSession<typeof surface.contract>({
       host,
-      drvPath: opts.drvPath,
+      drvPath,
       binary: "drishti-agent",
     });
     const { router } = buildRouter({ session });
@@ -79,10 +93,22 @@ export function buildHostRegistry(opts: HostRegistryOptions): HostRegistry {
     return { session, handler };
   };
 
-  for (const host of opts.initialHosts) entries.set(host, buildEntry(host));
+  // Parallel initial seeding — per-host arch probes are independent, so
+  // a single user dialing into five hosts shouldn't pay the round-trip
+  // serially. `Promise.all` propagates the first failure (Bun's default);
+  // a failing probe at boot is a misconfiguration we want loud and early.
+  const seeded = await Promise.all(
+    opts.initialHosts.map(
+      async (host): Promise<readonly [string, HostHandle]> => [
+        host,
+        await buildEntry(host),
+      ],
+    ),
+  );
+  for (const [host, handle] of seeded) entries.set(host, handle);
 
   return {
-    has: (host) => entries.has(host),
+    has: (host) => entries.has(host) || adding.has(host),
     snapshot: () => {
       const out = new Map<string, HostEntry>();
       for (const host of entries.keys()) out.set(host, { host });
@@ -91,13 +117,22 @@ export function buildHostRegistry(opts: HostRegistryOptions): HostRegistry {
     getHandler: (host) => entries.get(host)?.handler,
 
     async add(host) {
-      if (entries.has(host)) throw new Error("host already exists");
-      entries.set(host, buildEntry(host));
+      if (entries.has(host) || adding.has(host)) {
+        throw new Error("host already exists");
+      }
+      adding.add(host);
+      const handle = await buildEntry(host).finally(() => adding.delete(host));
+      entries.set(host, handle);
       await saveHosts(opts.hostsFile, [...entries.keys()]);
       opts.log(`added host: ${host} (total ${entries.size})`);
     },
 
     async remove(host) {
+      // If add() is in-flight for this host, remove() would be a no-op
+      // (entry not yet in `entries`) — but add() would complete after,
+      // leaving a live session that the user already removed. Throw
+      // instead so the caller can surface a "try again" error.
+      if (adding.has(host)) throw new Error("host add in progress, try again");
       const entry = entries.get(host);
       if (entry === undefined) return;
       const sockets = wsConnectionsByHost.get(host);

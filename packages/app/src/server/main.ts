@@ -26,9 +26,11 @@ import { RPCHandler } from "@orpc/server/ws";
 import { cli } from "cleye";
 import { Hono } from "hono";
 import { WebSocketServer } from "ws";
+import { z } from "zod";
 import { destroyAllSessions } from "@kolu/surface-nix-host";
 import { ADMIN_HOST_SENTINEL } from "../common/admin-surface";
 import { buildAdminRouter } from "./admin-router";
+import { resolveDrvForHost } from "./archMap";
 import { buildClient } from "./build";
 import { buildHostRegistry } from "./hostRegistry";
 import { loadHosts, resolveHostsFile, saveHosts } from "./hostsStore";
@@ -50,14 +52,27 @@ const argv = cli({
 });
 
 async function main(): Promise<void> {
-  const drvPath = process.env.DRISHTI_AGENT_DRV;
-  if (drvPath === undefined || drvPath.length === 0) {
+  const drvsJson = process.env.DRISHTI_AGENT_DRVS_JSON;
+  if (drvsJson === undefined || drvsJson.length === 0) {
     log(
-      "DRISHTI_AGENT_DRV is required (no fallback). Set it to the agent's .drv path — e.g. `DRISHTI_AGENT_DRV=$(nix eval --raw .#packages.<system>.drishti-agent.drvPath)`.",
+      "DRISHTI_AGENT_DRVS_JSON is required (no fallback). Set it to a JSON object mapping nix-system → agent .drv path — e.g. `DRISHTI_AGENT_DRVS_JSON=$(nix eval --raw .#agentDrvsJson)`. The monitor wrapper bakes this map from flake.nix.",
     );
     process.exit(1);
   }
-  log(`agent drv=${drvPath}`);
+  const drvMapSchema = z.record(z.string(), z.string().min(1));
+  let agentDrvBySystem: Record<string, string>;
+  try {
+    agentDrvBySystem = drvMapSchema.parse(JSON.parse(drvsJson));
+  } catch (err) {
+    log(`DRISHTI_AGENT_DRVS_JSON: invalid — ${(err as Error).message}`);
+    process.exit(1);
+  }
+  log(
+    `agent drvs (${Object.keys(agentDrvBySystem).length}): ${Object.keys(agentDrvBySystem).join(", ")}`,
+  );
+
+  const resolveDrvPath = (host: string): Promise<string> =>
+    resolveDrvForHost(host, agentDrvBySystem);
 
   const hostsFile = resolveHostsFile();
   const cliHosts = argv._.host;
@@ -77,9 +92,9 @@ async function main(): Promise<void> {
     );
   }
 
-  const registry = buildHostRegistry({
+  const registry = await buildHostRegistry({
     initialHosts,
-    drvPath,
+    resolveDrvPath,
     hostsFile,
     log,
   });

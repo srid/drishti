@@ -28,6 +28,14 @@ while [ $# -gt 0 ]; do
     exit 1
   fi
   mkdir -p "node_modules/$(dirname "$dest")"
+  # cp -rL preserves /nix/store's 0555 perms on the copied tree; the
+  # chmod below makes the *new* tree writable, but if a prior hydration
+  # was killed before its chmod ran (CI hard-stop, Ctrl-C, …), the
+  # stale destination is still read-only and rm -rf fails. Force-write
+  # before delete to make the script idempotent under partial state.
+  if [ -d "node_modules/$dest" ]; then
+    chmod -R u+w "node_modules/$dest" 2>/dev/null || true
+  fi
   rm -rf "node_modules/$dest"
   cp -rL "$src" "node_modules/$dest"
   chmod -R u+w "node_modules/$dest"
