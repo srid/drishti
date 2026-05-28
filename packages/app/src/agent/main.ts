@@ -179,7 +179,8 @@ async function main(): Promise<void> {
           prev === undefined ||
           prev.cpuPct !== value.cpuPct ||
           prev.memPct !== value.memPct ||
-          prev.command !== value.command
+          prev.command !== value.command ||
+          prev.cwd !== value.cwd
         ) {
           fragment.ctx.collections.processes.upsert(pid, value);
           upserts.push([pid, value]);
