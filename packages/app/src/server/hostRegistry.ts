@@ -38,7 +38,6 @@ interface HostHandle {
 
 export interface HostRegistry {
   has(host: string): boolean;
-  list(): string[];
   /** Project the live host set into the admin surface's wire shape.
    *  Called by the admin router's `readAll` on every new subscriber. */
   snapshot(): Map<string, HostEntry>;
@@ -84,7 +83,6 @@ export function buildHostRegistry(opts: HostRegistryOptions): HostRegistry {
 
   return {
     has: (host) => entries.has(host),
-    list: () => [...entries.keys()],
     snapshot: () => {
       const out = new Map<string, HostEntry>();
       for (const host of entries.keys()) out.set(host, { host });
