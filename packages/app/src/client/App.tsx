@@ -16,6 +16,7 @@
 
 import { streamCall } from "@kolu/surface/client";
 import {
+  batch,
   createEffect,
   createMemo,
   createSignal,
@@ -163,8 +164,16 @@ function HostView(props: { host: string }) {
           for (const [pid, value] of msg.entries) next[pid] = value;
           setProcesses(reconcile(next));
         } else {
-          for (const [pid, value] of msg.upserts) setProcesses(pid, value);
-          for (const pid of msg.removes) setProcesses(pid, undefined!);
+          // Wrap the per-PID setProcesses calls in a single batch so the
+          // downstream visiblePids memo, the <For> reconciler, and every
+          // per-cell reactive read fire ONCE per delta, not once per PID.
+          // Without batch(), a 470-PID tick re-runs each dependent up to
+          // 470 times, leaving Solid's <For> shuffling tr nodes through
+          // a long sequence of intermediate orderings before settling.
+          batch(() => {
+            for (const [pid, value] of msg.upserts) setProcesses(pid, value);
+            for (const pid of msg.removes) setProcesses(pid, undefined!);
+          });
         }
       }
     } catch (err) {
