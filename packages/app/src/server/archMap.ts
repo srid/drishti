@@ -69,6 +69,12 @@ export async function resolveDrvForHost(
   return drv;
 }
 
+// Local copy of `@kolu/surface-nix-host`'s private `runCapture`
+// (nixCopy.ts). Upstream is not exported, so this stays a duplicate
+// until kolu surfaces a shared subprocess-capture helper. Differs only
+// in stderr handling — kolu forwards lines to `onProgress`; we
+// accumulate into the error message because there's no progress channel
+// at probe time.
 function capture(cmd: string, args: readonly string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, [...args], { stdio: ["ignore", "pipe", "pipe"] });
