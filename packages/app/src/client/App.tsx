@@ -34,24 +34,14 @@ import {
   type Pid,
   type Process,
 } from "../common/surface";
-import {
-  adminClient,
-  disposeHostSurface,
-  surfaceForHost,
-} from "./wire";
+import { TabStrip } from "./TabStrip";
+import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
 
 const STATE_COLOR: Record<ConnectionState, string> = {
   connected: "text-emerald-500",
   disconnected: "text-red-500",
   copying: "text-amber-500",
   connecting: "text-amber-500",
-};
-
-const DOT_BG: Record<ConnectionState, string> = {
-  connected: "bg-emerald-500",
-  disconnected: "bg-red-500",
-  copying: "bg-amber-500",
-  connecting: "bg-amber-500",
 };
 
 type SortKey = "cpu" | "mem" | "pid" | "user";
@@ -141,165 +131,6 @@ export default function App() {
           {(host) => <HostView host={host} />}
         </Show>
       </div>
-    </div>
-  );
-}
-
-// ── Tab strip ──────────────────────────────────────────────────────────
-
-function TabStrip(props: {
-  hosts: readonly string[];
-  active: string | null;
-  onSelect: (h: string) => void;
-  onAdd: (h: string) => Promise<string | null>;
-  onRemove: (h: string) => Promise<void>;
-}) {
-  return (
-    <div class="flex flex-wrap items-stretch border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/60">
-      <For each={props.hosts}>
-        {(host) => (
-          <TabChip
-            host={host}
-            active={props.active === host}
-            onSelect={() => props.onSelect(host)}
-            onClose={() => props.onRemove(host)}
-          />
-        )}
-      </For>
-      <AddHostForm onAdd={props.onAdd} />
-    </div>
-  );
-}
-
-function TabChip(props: {
-  host: string;
-  active: boolean;
-  onSelect: () => void;
-  onClose: () => void;
-}) {
-  const app = surfaceForHost(props.host);
-  const connection = app.cells.connection.use({});
-  const state = createMemo<ConnectionState>(
-    () => (connection.value() ?? DEFAULT_CONNECTION).state,
-  );
-
-  // Pure display. Per-host socket disposal is driven by `MultiHostApp`'s
-  // host-removal effect — see the `prevHosts` diff there. Keeping that
-  // out of the chip prevents two writers (server `registry.remove` and
-  // client `TabChip.onCleanup`) on the same logical lifecycle event.
-
-  const baseClasses =
-    "flex items-center gap-2 border-r border-gray-200 px-3 py-1.5 text-xs dark:border-gray-800";
-  const inactiveClasses = "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60";
-  const activeClasses =
-    "bg-white text-gray-900 shadow-[inset_0_-2px_0_0_theme(colors.indigo.500)] dark:bg-gray-900 dark:text-gray-100";
-  return (
-    <div class={`${baseClasses} ${props.active ? activeClasses : inactiveClasses}`}>
-      <button
-        type="button"
-        class="flex items-center gap-2"
-        onClick={props.onSelect}
-        title={`${props.host} — ${state()}`}
-      >
-        <span
-          class={`inline-block h-2 w-2 rounded-full ${DOT_BG[state()]} ${state() === "copying" || state() === "connecting" ? "animate-pulse" : ""}`}
-        />
-        <span class="font-semibold">{props.host}</span>
-      </button>
-      <button
-        type="button"
-        class="ml-1 text-gray-400 hover:text-red-500"
-        title={`Remove ${props.host}`}
-        onClick={(e) => {
-          e.stopPropagation();
-          void props.onClose();
-        }}
-      >
-        ×
-      </button>
-    </div>
-  );
-}
-
-function AddHostForm(props: {
-  onAdd: (h: string) => Promise<string | null>;
-}) {
-  const [open, setOpen] = createSignal(false);
-  const [value, setValue] = createSignal("");
-  const [error, setError] = createSignal<string | null>(null);
-  const [pending, setPending] = createSignal(false);
-
-  const close = () => {
-    setOpen(false);
-    setValue("");
-    setError(null);
-    setPending(false);
-  };
-
-  const submit = async () => {
-    const host = value().trim();
-    if (host.length === 0) return;
-    setPending(true);
-    setError(null);
-    const err = await props.onAdd(host);
-    setPending(false);
-    if (err === null) close();
-    else setError(err);
-  };
-
-  return (
-    <div class="flex items-center px-2 py-1.5 text-xs">
-      <Show
-        when={open()}
-        fallback={
-          <button
-            type="button"
-            class="rounded border border-gray-300 px-2 py-0.5 font-semibold text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-            title="Add host"
-            onClick={() => setOpen(true)}
-          >
-            + add host
-          </button>
-        }
-      >
-        <form
-          class="flex items-center gap-1"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void submit();
-          }}
-        >
-          <input
-            type="text"
-            class="w-48 rounded border border-gray-300 bg-gray-50 px-2 py-0.5 focus:border-emerald-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800"
-            placeholder="user@host or hostname"
-            autofocus
-            disabled={pending()}
-            value={value()}
-            onInput={(e) => setValue(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") close();
-            }}
-          />
-          <button
-            type="submit"
-            class="rounded border border-emerald-500 bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-950/40 dark:text-emerald-300"
-            disabled={pending() || value().trim().length === 0}
-          >
-            add
-          </button>
-          <button
-            type="button"
-            class="px-1 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200"
-            onClick={close}
-          >
-            cancel
-          </button>
-          <Show when={error()}>
-            {(msg) => <span class="ml-2 text-red-500">{msg()}</span>}
-          </Show>
-        </form>
-      </Show>
     </div>
   );
 }
