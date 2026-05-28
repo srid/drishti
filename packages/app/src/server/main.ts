@@ -11,15 +11,11 @@
  * when `host=__admin__`. The per-host `surface` schema is unchanged —
  * host identity lives only at the transport layer.
  *
- * Hosts come from:
- *   1. CLI positional args (`drishti host1 host2 ...`) — explicit
- *      override; writes through to the persisted file.
- *   2. The persisted file (`$XDG_STATE_HOME/drishti/hosts.json` or the
- *      override in `DRISHTI_HOSTS_FILE`) when no CLI args were passed.
- *   3. `["localhost"]` when neither is present.
- *
- * Admin-surface mutations (`addHost` / `removeHost`) persist back to the
- * same file so UI changes survive a restart.
+ * The `HostRegistry` is the single source of truth for "which hosts
+ * exist". Boot seeds it from CLI args (if any), the persisted file (if
+ * none and the file exists), or `["localhost"]` (default); admin-surface
+ * `addHost` / `removeHost` mutations flow through the same registry,
+ * which persists back to the same file so UI changes survive restart.
  */
 
 import { dirname, resolve } from "node:path";
@@ -29,27 +25,16 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { RPCHandler } from "@orpc/server/ws";
 import { cli } from "cleye";
 import { Hono } from "hono";
-import { WebSocketServer, type WebSocket as WsConn } from "ws";
-import {
-  destroyAllSessions,
-  getHostSession,
-  type HostSession,
-} from "@kolu/surface-nix-host";
+import { WebSocketServer } from "ws";
+import { destroyAllSessions } from "@kolu/surface-nix-host";
 import { ADMIN_HOST_SENTINEL } from "../common/admin-surface";
-import type { surface } from "../common/surface";
 import { buildAdminRouter } from "./admin-router";
 import { buildClient } from "./build";
+import { buildHostRegistry } from "./hostRegistry";
 import { loadHosts, resolveHostsFile, saveHosts } from "./hostsStore";
-import { buildRouter } from "./router";
 
 function log(line: string): void {
   process.stderr.write(`[server] ${line}\n`);
-}
-
-interface HostEntry {
-  session: HostSession<typeof surface.contract>;
-  // biome-ignore lint/suspicious/noExplicitAny: matches the existing router-handler cast (see implementSurface fragment shape).
-  handler: RPCHandler<any>;
 }
 
 const argv = cli({
@@ -76,73 +61,31 @@ async function main(): Promise<void> {
 
   const hostsFile = resolveHostsFile();
   const cliHosts = argv._.host;
-  let hosts: string[];
+  let initialHosts: string[];
   if (cliHosts.length > 0) {
-    hosts = [...cliHosts];
-    await saveHosts(hostsFile, hosts);
-    log(`hosts from CLI (${hosts.length}): ${hosts.join(", ")}`);
+    initialHosts = [...cliHosts];
+    await saveHosts(hostsFile, initialHosts);
+    log(
+      `hosts from CLI (${initialHosts.length}): ${initialHosts.join(", ")}`,
+    );
   } else {
     const persisted = await loadHosts(hostsFile);
-    hosts = persisted.length > 0 ? persisted : ["localhost"];
-    if (persisted.length === 0) await saveHosts(hostsFile, hosts);
+    initialHosts = persisted.length > 0 ? persisted : ["localhost"];
+    if (persisted.length === 0) await saveHosts(hostsFile, initialHosts);
     log(
-      `hosts from ${persisted.length > 0 ? `state file ${hostsFile}` : "default"} (${hosts.length}): ${hosts.join(", ")}`,
+      `hosts from ${persisted.length > 0 ? `state file ${hostsFile}` : "default"} (${initialHosts.length}): ${initialHosts.join(", ")}`,
     );
   }
 
-  const entries = new Map<string, HostEntry>();
-  const wsConnectionsByHost = new Map<string, Set<WsConn>>();
-
-  const buildEntry = (host: string): HostEntry => {
-    const session = getHostSession<typeof surface.contract>({
-      host,
-      drvPath,
-      binary: "drishti-agent",
-    });
-    const { router } = buildRouter({ session });
-    // biome-ignore lint/suspicious/noExplicitAny: implementSurface's Lazy<Router> spread isn't accepted by oRPC's Router<any, T> input type; runtime shape is valid.
-    const handler = new RPCHandler(router as any);
-    return { session, handler };
-  };
-
-  for (const host of hosts) entries.set(host, buildEntry(host));
-
-  // Admin handler — single source of truth for "which hosts exist". The
-  // procedures call into closures over the host/socket maps so the same
-  // boot-time setup (create session, register handler) runs whether a
-  // host arrived via CLI args, the persisted file, or a UI add.
-  const admin = buildAdminRouter({
-    initialHosts: hosts,
-    onAdd: async (host) => {
-      if (entries.has(host)) throw new Error("host already exists");
-      entries.set(host, buildEntry(host));
-      await saveHosts(hostsFile, [...entries.keys()]);
-      log(`added host: ${host} (total ${entries.size})`);
-    },
-    onRemove: async (host) => {
-      const entry = entries.get(host);
-      if (entry === undefined) return;
-      // Boot the browsers off the removed host's WS. Their PartySocket
-      // will retry, but the upgrade handler now rejects unknown hosts
-      // — the destroyed socket stays destroyed.
-      const sockets = wsConnectionsByHost.get(host);
-      if (sockets !== undefined) {
-        for (const ws of sockets) {
-          try {
-            ws.close(1000, "host removed");
-          } catch {
-            /* best-effort */
-          }
-        }
-        wsConnectionsByHost.delete(host);
-      }
-      entry.session.destroy();
-      entries.delete(host);
-      await saveHosts(hostsFile, [...entries.keys()]);
-      log(`removed host: ${host} (total ${entries.size})`);
-    },
+  const registry = buildHostRegistry({
+    initialHosts,
+    drvPath,
+    hostsFile,
+    log,
   });
-  // biome-ignore lint/suspicious/noExplicitAny: see same cast above.
+
+  const admin = buildAdminRouter({ registry });
+  // biome-ignore lint/suspicious/noExplicitAny: matches existing router-handler cast (see implementSurface fragment shape).
   const adminHandler = new RPCHandler(admin.router as any);
 
   // ── HTTP server: serve the client bundle ──────────────────────────
@@ -207,27 +150,22 @@ async function main(): Promise<void> {
       );
       return;
     }
-    const entry = entries.get(host);
-    if (entry === undefined) {
+    const handler = registry.getHandler(host);
+    if (handler === undefined) {
       ws.close(1008, `unknown host: ${host}`);
       return;
     }
-    let sockets = wsConnectionsByHost.get(host);
-    if (sockets === undefined) {
-      sockets = new Set();
-      wsConnectionsByHost.set(host, sockets);
-    }
-    sockets.add(ws);
+    registry.registerConnection(host, ws);
     log(`browser ws connect (host=${host})`);
     ws.on("close", (code, reason) => {
-      sockets.delete(ws);
+      registry.unregisterConnection(host, ws);
       log(
         `browser ws disconnect (host=${host}) (code=${code} reason=${reason.toString() || "<none>"})`,
       );
     });
     ws.on("error", (err) => log(`browser ws error (host=${host}): ${err.message}`));
-    void entry.handler.upgrade(
-      ws as unknown as Parameters<typeof entry.handler.upgrade>[0],
+    void handler.upgrade(
+      ws as unknown as Parameters<typeof handler.upgrade>[0],
     );
   });
 
@@ -255,7 +193,7 @@ async function main(): Promise<void> {
       s.destroy();
       return;
     }
-    if (host !== ADMIN_HOST_SENTINEL && !entries.has(host)) {
+    if (host !== ADMIN_HOST_SENTINEL && !registry.has(host)) {
       s.destroy();
       return;
     }
