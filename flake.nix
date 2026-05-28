@@ -33,9 +33,17 @@
       # can produce the linux .drv path without IFD or remote builders.
       # The monitor wrapper bakes this entire map as JSON; the server
       # picks the right entry per host at runtime via `uname -ms`.
+      #
+      # `unsafeDiscardStringContext` strips the closure-edge each drvPath
+      # carries. Without it, baking the JSON into the monitor wrapper
+      # would pull every system's drishti-agent.drv into the wrapper's
+      # closure, and realising the wrapper on (say) x86_64-linux would
+      # need an aarch64-linux builder — defeating the whole point of
+      # deferring agent realisation to the remote host.
       agentDrvBySystem = builtins.mapAttrs
         (_: { pkgs, b2n }:
-          (import ./default.nix { inherit pkgs b2n; }).drishti-agent.drvPath)
+          builtins.unsafeDiscardStringContext
+            (import ./default.nix { inherit pkgs b2n; }).drishti-agent.drvPath)
         perSystemAttrs;
     in
     {
