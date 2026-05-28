@@ -120,55 +120,19 @@ async function main(): Promise<void> {
     },
   );
 
-  // ── WebSocket: dispatch by `?host=<id>` query ──────────────────────
-  // One `WebSocketServer` handles the protocol upgrade; the connection
-  // handler picks the right per-host `RPCHandler` (or the admin one)
-  // from the host parsed during upgrade. Mounting per-host handlers at
-  // path segments (`/rpc/ws/<host>`) would make the path table volatile
-  // as hosts come and go; query-param dispatch keeps it stable.
+  // ── WebSocket: one server, dispatch by `?host=<id>` query ────────────
+  // Mounting per-host handlers at path segments (`/rpc/ws/<host>`) would
+  // make the routing table volatile as hosts come and go; query-param
+  // dispatch keeps it stable. The parsed `host` is closed over in the
+  // handleUpgrade callback — no need to store it on the request object.
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: 8 * 1024 * 1024,
   });
 
-  wss.on("connection", (ws, req) => {
-    const host = (req as { __host?: string }).__host;
-    if (host === undefined) {
-      ws.close(1008, "missing host");
-      return;
-    }
-    if (host === ADMIN_HOST_SENTINEL) {
-      log("browser ws connect (admin)");
-      ws.on("close", (code, reason) =>
-        log(
-          `browser ws disconnect (admin) (code=${code} reason=${reason.toString() || "<none>"})`,
-        ),
-      );
-      ws.on("error", (err) => log(`browser ws error (admin): ${err.message}`));
-      void adminHandler.upgrade(
-        ws as unknown as Parameters<typeof adminHandler.upgrade>[0],
-      );
-      return;
-    }
-    const handler = registry.getHandler(host);
-    if (handler === undefined) {
-      ws.close(1008, `unknown host: ${host}`);
-      return;
-    }
-    registry.registerConnection(host, ws);
-    log(`browser ws connect (host=${host})`);
-    ws.on("close", (code, reason) => {
-      registry.unregisterConnection(host, ws);
-      log(
-        `browser ws disconnect (host=${host}) (code=${code} reason=${reason.toString() || "<none>"})`,
-      );
-    });
-    ws.on("error", (err) => log(`browser ws error (host=${host}): ${err.message}`));
-    void handler.upgrade(
-      ws as unknown as Parameters<typeof handler.upgrade>[0],
-    );
-  });
-
+  // ── WebSocket upgrade: parse ?host=<id>, then dispatch directly ──────
+  // The `host` variable is closed over in the handleUpgrade callback so
+  // there is no need to taint the IncomingMessage object with __host.
   (
     httpServer as unknown as {
       on: (
@@ -197,12 +161,46 @@ async function main(): Promise<void> {
       s.destroy();
       return;
     }
-    (r as { __host?: string }).__host = host;
     wss.handleUpgrade(
       req as Parameters<typeof wss.handleUpgrade>[0],
       socket as Parameters<typeof wss.handleUpgrade>[1],
       head as Parameters<typeof wss.handleUpgrade>[2],
-      (ws) => wss.emit("connection", ws, req),
+      (ws) => {
+        if (host === ADMIN_HOST_SENTINEL) {
+          log("browser ws connect (admin)");
+          ws.on("close", (code, reason) =>
+            log(
+              `browser ws disconnect (admin) (code=${code} reason=${reason.toString() || "<none>"})`,
+            ),
+          );
+          ws.on("error", (err) =>
+            log(`browser ws error (admin): ${err.message}`),
+          );
+          void adminHandler.upgrade(
+            ws as unknown as Parameters<typeof adminHandler.upgrade>[0],
+          );
+          return;
+        }
+        const handler = registry.getHandler(host);
+        if (handler === undefined) {
+          ws.close(1008, `unknown host: ${host}`);
+          return;
+        }
+        registry.registerConnection(host, ws);
+        log(`browser ws connect (host=${host})`);
+        ws.on("close", (code, reason) => {
+          registry.unregisterConnection(host, ws);
+          log(
+            `browser ws disconnect (host=${host}) (code=${code} reason=${reason.toString() || "<none>"})`,
+          );
+        });
+        ws.on("error", (err) =>
+          log(`browser ws error (host=${host}): ${err.message}`),
+        );
+        void handler.upgrade(
+          ws as unknown as Parameters<typeof handler.upgrade>[0],
+        );
+      },
     );
   });
 
