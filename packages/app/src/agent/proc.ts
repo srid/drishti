@@ -260,6 +260,10 @@ async function readRootDiskUsage(): Promise<{
   try {
     return diskBytesFromStatfs(await statfs("/"));
   } catch {
+    // `statfs` is unavailable on some platforms (e.g. Windows). Degrade to
+    // zeros so the system snapshot still resolves — `pctOf` renders it as
+    // "unavailable" (0/0 → 0%). Safe to swallow: the caller merges these
+    // zeros into the snapshot and the UI shows nothing rather than crashing.
     return { diskUsed: 0, diskTotal: 0 };
   }
 }
