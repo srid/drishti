@@ -37,6 +37,8 @@ import {
   type CoreId,
   type CpuCore,
   DEFAULT_CONNECTION,
+  type IfaceName,
+  type NetInterface,
   type Pid,
   type Process,
   type ProcessesSnapshotMsg,
@@ -85,6 +87,11 @@ async function main(): Promise<void> {
   const cpuCoreSnapshot = new Map<CoreId, CpuCore>();
   for (const [core, value] of reader.readCpuCores())
     cpuCoreSnapshot.set(core, value);
+  // Seed the network baseline so the first published delta has a previous
+  // tick to rate against — this first read returns 0 bytes/sec everywhere.
+  const netSnapshot = new Map<IfaceName, NetInterface>();
+  for (const [iface, value] of await reader.readNetwork())
+    netSnapshot.set(iface, value);
 
   // Build the surface implementation. The `processes` collection's
   // `readAll` yields the current snapshot; `upsert`/`remove` are the
@@ -125,6 +132,15 @@ async function main(): Promise<void> {
         },
         remove: (key) => {
           cpuCoreSnapshot.delete(key);
+        },
+      },
+      networkInterfaces: {
+        readAll: () => netSnapshot,
+        upsert: (key, value) => {
+          netSnapshot.set(key, value);
+        },
+        remove: (key) => {
+          netSnapshot.delete(key);
         },
       },
     },
@@ -209,6 +225,19 @@ async function main(): Promise<void> {
       for (const core of cpuCoreSnapshot.keys()) {
         if (!nextCores.has(core))
           fragment.ctx.collections.cpuCores.remove(core);
+      }
+
+      // Per-NIC network I/O — same Collection<K,T> publish shape as
+      // cpuCores. Throughput shifts almost every tick, so unconditional
+      // upserts are simplest; evict interfaces that vanished (NIC down /
+      // hot-unplug) so stale rows don't linger in the browser.
+      const nextNet = await reader.readNetwork();
+      for (const [iface, value] of nextNet) {
+        fragment.ctx.collections.networkInterfaces.upsert(iface, value);
+      }
+      for (const iface of netSnapshot.keys()) {
+        if (!nextNet.has(iface))
+          fragment.ctx.collections.networkInterfaces.remove(iface);
       }
     } catch (err) {
       log(`tick error: ${(err as Error).message}`);

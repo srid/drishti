@@ -38,6 +38,8 @@ import {
   type CpuCore,
   DEFAULT_CONNECTION,
   DEFAULT_SYSTEM,
+  type IfaceName,
+  type NetInterface,
   type Pid,
   type Process,
   type ProcessesSnapshotMsg,
@@ -64,6 +66,7 @@ export function buildRouter(opts: BuildRouterOptions) {
   });
   const processCache = new Map<Pid, Process>();
   const coreCache = new Map<CoreId, CpuCore>();
+  const netCache = new Map<IfaceName, NetInterface>();
   // Local snapshot bus — every msg the parent receives from the
   // agent's snapshot stream is also re-published here so the parent's
   // own `processesSnapshot` source (consumed by the browser) can
@@ -107,6 +110,15 @@ export function buildRouter(opts: BuildRouterOptions) {
           coreCache.delete(key);
         },
       },
+      networkInterfaces: {
+        readAll: () => netCache,
+        upsert: (key, value) => {
+          netCache.set(key, value);
+        },
+        remove: (key) => {
+          netCache.delete(key);
+        },
+      },
     },
     streams: {
       // Browser-facing snapshot stream — yields the parent's current
@@ -139,6 +151,14 @@ export function buildRouter(opts: BuildRouterOptions) {
     },
   });
 
+  // Compile-time guard for the least-privilege narrowing: the real
+  // fragment must satisfy the pumps' write-only view. Stated here (not only
+  // implied by the bridgeAgentToParent call) so a refactor of that call
+  // can't quietly drop the check — a surface collection rename surfaces as
+  // an error on this line.
+  const _pumpCtx: FragmentCtx = fragment;
+  void _pumpCtx;
+
   // ── Mirror session connection state → parent's `connection` cell ──
   session.onState((s) => {
     fragment.ctx.cells.connection.set({ state: s.connection });
@@ -165,11 +185,14 @@ export function buildRouter(opts: BuildRouterOptions) {
   return { router, session };
 }
 
-/** The subset of `implementSurface(...).ctx` the bridge pumps actually
- *  call. Keep this in sync with the surface's cells/collections —
- *  every cell/collection actually written from a pump must appear
- *  here, otherwise the pumps compile against a narrower-than-real
- *  type and a typo / missing-write goes undetected. */
+/** The write-side methods the bridge pumps are allowed to touch — a
+ *  deliberate least-privilege narrowing of `implementSurface(...).ctx`,
+ *  not the full ctx. Pumps only ever mirror remote data inward, so they
+ *  get `set` / `upsert` / `remove`; `readAll` and the underlying stores
+ *  stay out of reach. This is a boundary, not a maintenance chore: the
+ *  `_pumpCtx` guard below assigns the real fragment to this type, so a
+ *  collection renamed or retyped on the surface becomes a compile error
+ *  here rather than silent drift. */
 type FragmentCtx = {
   ctx: {
     cells: {
@@ -184,6 +207,10 @@ type FragmentCtx = {
       cpuCores: {
         upsert: (k: CoreId, v: CpuCore) => void;
         remove: (k: CoreId) => void;
+      };
+      networkInterfaces: {
+        upsert: (k: IfaceName, v: NetInterface) => void;
+        remove: (k: IfaceName) => void;
       };
     };
   };
@@ -226,6 +253,7 @@ async function bridgeAgentToParent(
       pumpSystemCell(client, session, fragment),
       pumpProcessesSnapshot(client, fragment, processCache, browserSnapshotBus),
       pumpCpuCores(client, fragment),
+      pumpNetworkInterfaces(client, fragment),
     ]);
     log("bridge: pumps ended (link likely died) — awaiting next client");
   }
@@ -251,6 +279,28 @@ function pumpCpuCores(
     onUpsert: (key, value) =>
       fragment.ctx.collections.cpuCores.upsert(key, value),
     onRemove: (key) => fragment.ctx.collections.cpuCores.remove(key),
+  });
+}
+
+/** Mirror the agent's `networkInterfaces` collection — same
+ *  `mirrorRemoteCollection` shape as cpuCores, keyed by NIC name. */
+function pumpNetworkInterfaces(
+  client: DrishtiAgent,
+  fragment: FragmentCtx,
+): Promise<void> {
+  return mirrorRemoteCollection<IfaceName, NetInterface>({
+    label: "networkInterfaces",
+    log,
+    keys: client.surface.networkInterfaces.keys({}) as Promise<
+      AsyncIterable<readonly IfaceName[]>
+    >,
+    get: (key, signal) =>
+      client.surface.networkInterfaces.get({ key }, { signal }) as Promise<
+        AsyncIterable<NetInterface>
+      >,
+    onUpsert: (key, value) =>
+      fragment.ctx.collections.networkInterfaces.upsert(key, value),
+    onRemove: (key) => fragment.ctx.collections.networkInterfaces.remove(key),
   });
 }
 

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import type { SystemInfo } from "../common/surface";
-import { averageCoreUsage, formatUptime, memGb, memPct } from "./metrics";
+import {
+  averageCoreUsage,
+  formatBytes,
+  formatThroughput,
+  formatUptime,
+  memGb,
+  memPct,
+} from "./metrics";
 
 function sys(over: Partial<SystemInfo> = {}): SystemInfo {
   return {
@@ -45,6 +52,31 @@ describe("formatUptime", () => {
 
   it("shows minutes under an hour", () => {
     expect(formatUptime(42 * 60 + 30)).toBe("42m");
+  });
+});
+
+describe("formatBytes", () => {
+  it("shows whole bytes below a kilobyte", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(812)).toBe("812 B");
+  });
+
+  it("scales through decimal units with one decimal", () => {
+    expect(formatBytes(1500)).toBe("1.5 KB");
+    expect(formatBytes(1_200_000)).toBe("1.2 MB");
+    expect(formatBytes(3_400_000_000)).toBe("3.4 GB");
+  });
+
+  it("promotes to the next unit when rounding hits the boundary", () => {
+    // 999_999 → 999.999 KB; .toFixed(1) would render "1000.0 KB".
+    expect(formatBytes(999_999)).toBe("1.0 MB");
+  });
+});
+
+describe("formatThroughput", () => {
+  it("appends a per-second suffix to the byte size", () => {
+    expect(formatThroughput(0)).toBe("0 B/s");
+    expect(formatThroughput(1_200_000)).toBe("1.2 MB/s");
   });
 });
 
