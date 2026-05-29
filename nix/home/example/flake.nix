@@ -88,9 +88,13 @@
           machine.wait_for_unit("multi-user.target")
           # Poll for alice's user session. wait_for_unit fails fast if the
           # unit is still inactive with no pending job — a race with
-          # auto-login queueing user@1000. wait_until_succeeds retries.
+          # auto-login queueing the per-user manager. wait_until_succeeds
+          # retries. Resolve alice's UID at runtime rather than assuming 1000:
+          # NixOS does not guarantee a normal user lands on UID 1000, so a
+          # hardcoded user@1000.service could poll a nonexistent unit until
+          # the timeout.
           machine.wait_until_succeeds(
-              "systemctl is-active user@1000.service",
+              "systemctl is-active user@$(id -u alice).service",
               timeout=60,
           )
 
