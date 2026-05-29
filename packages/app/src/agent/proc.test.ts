@@ -5,6 +5,7 @@ import {
   parseMeminfo,
   parseNetstatIb,
   parseProcNetDev,
+  parseProcStat,
   parsePsLine,
   parseVmStat,
 } from "./proc";
@@ -63,10 +64,11 @@ describe("parseNetstatIb", () => {
 });
 
 describe("parsePsLine", () => {
-  // `ps -axo pid=,user=,pcpu=,rss=,comm=` — rss is in KB on macOS,
-  // comm is last/greedy (may contain spaces).
-  it("parses rss (KB) into absolute resident bytes", () => {
-    const parsed = parsePsLine("  501 alice 12.5 348160 /usr/bin/foo");
+  // `ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=` — rss is in KB
+  // on macOS, comm is last/greedy (may contain spaces), and ppid/nice/state
+  // sit between rss and comm.
+  it("parses rss (KB) into absolute resident bytes and the new ppid/nice/state fields", () => {
+    const parsed = parsePsLine("  501 alice 12.5 348160 1 0 S /usr/bin/foo");
     expect(parsed).not.toBeNull();
     const [pid, proc] = parsed!;
     expect(pid).toBe(501);
@@ -76,18 +78,69 @@ describe("parsePsLine", () => {
     expect(proc.rssBytes).toBe(348160 * 1024);
     expect(proc.command).toBe("/usr/bin/foo");
     expect(proc.cwd).toBe("");
+    expect(proc.ppid).toBe(1);
+    expect(proc.nice).toBe(0);
+    expect(proc.state).toBe("S");
+    // darwin's ps carries neither cheaply — both report unknown (0).
+    expect(proc.threads).toBe(0);
+    expect(proc.startedAtMs).toBe(0);
   });
 
   it("keeps a command with embedded spaces intact (comm is the trailing field)", () => {
-    const [, proc] = parsePsLine("99 root 0.0 2048 com.apple.Some Helper")!;
+    const [, proc] = parsePsLine("99 root 0.0 2048 1 -5 Ss com.apple.Some Helper")!;
     expect(proc.command).toBe("com.apple.Some Helper");
     expect(proc.rssBytes).toBe(2048 * 1024);
+    // negative nice survives; the multi-char state token collapses to its
+    // leading code (`Ss` → `S`) for parity with linux's single-char state.
+    expect(proc.nice).toBe(-5);
+    expect(proc.state).toBe("S");
   });
 
   it("returns null for blank or malformed lines", () => {
     expect(parsePsLine("")).toBeNull();
     expect(parsePsLine("   ")).toBeNull();
     expect(parsePsLine("not a ps line")).toBeNull();
+    // The pre-extension 5-column shape no longer matches (missing
+    // ppid/nice/state before comm).
+    expect(parsePsLine("501 alice 12.5 348160 /usr/bin/foo")).toBeNull();
+  });
+});
+
+describe("parseProcStat", () => {
+  // proc(5) /proc/<pid>/stat: `pid (comm) state ppid … utime stime … nice
+  // num_threads … starttime …`. After comm the fields index from state=0.
+  const sample =
+    "4242 (bash) S 1000 4242 4242 0 -1 4194560 100 0 5 0 56 12 0 0 20 5 7 0 987654 0 0";
+
+  it("reads state, ppid, utime+stime ticks, nice, threads, and starttime", () => {
+    const stat = parseProcStat(sample);
+    expect(stat).not.toBeNull();
+    expect(stat).toEqual({
+      comm: "bash",
+      state: "S",
+      ppid: 1000,
+      ticks: 56 + 12,
+      nice: 5,
+      threads: 7,
+      startTime: 987654,
+    });
+  });
+
+  it("splits on the LAST paren so a comm containing parens survives", () => {
+    // Kernel comms like `(sd-pam)` or a renamed thread can embed parens; the
+    // state/ppid that follow must still align.
+    const stat = parseProcStat(
+      "77 (foo (bar)) R 2 0 0 0 -1 0 0 0 0 0 1 2 0 0 20 0 3 0 555",
+    );
+    expect(stat?.comm).toBe("foo (bar)");
+    expect(stat?.state).toBe("R");
+    expect(stat?.ppid).toBe(2);
+    expect(stat?.threads).toBe(3);
+  });
+
+  it("returns null when there is no comm paren to split on", () => {
+    expect(parseProcStat("not a stat line")).toBeNull();
+    expect(parseProcStat("")).toBeNull();
   });
 });
 

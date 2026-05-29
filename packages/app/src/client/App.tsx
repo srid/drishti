@@ -18,6 +18,7 @@ import { streamCall } from "@kolu/surface/client";
 import {
   type Accessor,
   batch,
+  createContext,
   createEffect,
   createMemo,
   createSignal,
@@ -27,6 +28,7 @@ import {
   onCleanup,
   Show,
   type Signal,
+  useContext,
 } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import {
@@ -80,6 +82,34 @@ import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
 
 const SORT_KEYS = ["cpu", "mem", "pid", "user"] as const;
 type SortKey = (typeof SORT_KEYS)[number];
+
+// Human labels for the kernel single-char process state codes (linux
+// `/proc/<pid>/stat` field 3; the leading char of darwin `ps -o state=`).
+// Codes outside this map (rare/transitional) render verbatim.
+const PROCESS_STATE_LABELS: Record<string, string> = {
+  R: "running",
+  S: "sleeping",
+  D: "uninterruptible",
+  Z: "zombie",
+  T: "stopped",
+  t: "tracing stop",
+  I: "idle",
+  X: "dead",
+  W: "paging",
+};
+
+// Which process row (if any) is expanded into the detail panel. Selection is
+// a navigation concern owned by `HostView`, the same tier that owns the
+// `processes` store and the filter/sort prefs — so `ProcessTable` stays a
+// pure renderer (it never learns about selection) and `ProcessRow` reaches
+// the signal through context for its click + highlight, mirroring how the
+// app-level `view` signal threads down without widening every component's
+// props. `toggle` re-selecting the open pid closes the panel.
+type ProcessSelection = {
+  selectedPid: Accessor<Pid | null>;
+  toggle: (pid: Pid) => void;
+};
+const SelectionContext = createContext<ProcessSelection>();
 
 // Bind a per-host preference to a signal: seed from localStorage and mirror
 // every change back, keyed by host (`defer` skips the redundant write of the
@@ -507,6 +537,17 @@ function HostView(props: { host: string }) {
   const connection = app.cells.connection.use({});
 
   const [processes, setProcesses] = createStore<Record<Pid, Process>>({});
+
+  // Which PID is expanded into the detail panel (null = none). Ephemeral —
+  // not a per-host persisted pref: it's a transient focus, not a setting to
+  // restore across reloads. Cleared at the source when its process exits (the
+  // delta `removes` loop below) so the panel never has to special-case a
+  // vanished pid — the same "resolve focus against the live set" shape the
+  // app-level `resolvedView` uses when a host disappears.
+  const [selectedPid, setSelectedPid] = createSignal<Pid | null>(null);
+  const toggleSelected = (pid: Pid) =>
+    setSelectedPid((cur) => (cur === pid ? null : pid));
+
   const ctl = new AbortController();
   onCleanup(() => ctl.abort());
   void (async () => {
@@ -530,7 +571,10 @@ function HostView(props: { host: string }) {
           // a long sequence of intermediate orderings before settling.
           batch(() => {
             for (const [pid, value] of msg.upserts) setProcesses(pid, value);
-            for (const pid of msg.removes) setProcesses(pid, undefined!);
+            for (const pid of msg.removes) {
+              setProcesses(pid, undefined!);
+              if (selectedPid() === pid) setSelectedPid(null);
+            }
           });
         }
       }
@@ -539,6 +583,14 @@ function HostView(props: { host: string }) {
         console.error("processesSnapshot stream failed", err);
     }
   })();
+
+  // Escape closes the panel — the conventional dismiss key, wired once for the
+  // host body and torn down with it.
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") setSelectedPid(null);
+  };
+  window.addEventListener("keydown", onKeyDown);
+  onCleanup(() => window.removeEventListener("keydown", onKeyDown));
 
   // Per-host UI preferences, persisted to localStorage and keyed by host.
   // These signals live in this keyed component, so each host restores its
@@ -639,6 +691,17 @@ function HostView(props: { host: string }) {
     windowMs,
   );
 
+  // The currently-selected process resolved against the live store: null when
+  // nothing is selected OR the selected pid has left the set. The clear-at-
+  // source above normally beats this to it, but resolving here too keeps the
+  // panel honest even mid-tick — it renders only a process that still exists.
+  const selected = createMemo<{ pid: Pid; proc: Process } | null>(() => {
+    const pid = selectedPid();
+    if (pid === null) return null;
+    const proc = processes[pid];
+    return proc === undefined ? null : { pid, proc };
+  });
+
   return (
     <>
       <Header
@@ -669,12 +732,26 @@ function HostView(props: { host: string }) {
           visible={visiblePids().length}
           total={allPids().length}
         />
-        <ProcessTable
-          pids={visiblePids()}
-          processes={processes}
-          sortKey={sortKey()}
-          onSort={setSortKey}
-        />
+        <Show when={selected()}>
+          {(s) => (
+            <ProcessDetail
+              pid={s().pid}
+              process={s().proc}
+              memTotal={currentSystem().memTotal}
+              onClose={() => setSelectedPid(null)}
+            />
+          )}
+        </Show>
+        <SelectionContext.Provider
+          value={{ selectedPid, toggle: toggleSelected }}
+        >
+          <ProcessTable
+            pids={visiblePids()}
+            processes={processes}
+            sortKey={sortKey()}
+            onSort={setSortKey}
+          />
+        </SelectionContext.Provider>
       </Show>
     </>
   );
@@ -872,11 +949,20 @@ function ProcessRow(props: {
   pid: Pid;
   processes: Record<Pid, Process>;
 }) {
+  const selection = useContext(SelectionContext);
   const proc = () => props.processes[props.pid];
   const cpu = () => proc()?.cpuPct ?? 0;
   const rssBytes = () => proc()?.rssBytes ?? 0;
+  const isSelected = () => selection?.selectedPid() === props.pid;
   return (
-    <tr class="border-b border-gray-100 hover:bg-gray-50 dark:border-gray-800/50 dark:hover:bg-gray-800/40">
+    <tr
+      onClick={() => selection?.toggle(props.pid)}
+      class={`cursor-pointer border-b border-gray-100 dark:border-gray-800/50 ${
+        isSelected()
+          ? "bg-emerald-50 dark:bg-emerald-900/30"
+          : "hover:bg-gray-50 dark:hover:bg-gray-800/40"
+      }`}
+    >
       <td class="px-3 py-0.5 text-right tabular-nums">{props.pid}</td>
       <td class="px-3 py-0.5 text-left">{proc()?.user ?? ""}</td>
       <td
@@ -898,6 +984,109 @@ function ProcessRow(props: {
         </Show>
       </td>
     </tr>
+  );
+}
+
+// The short, glanceable name for a process: the basename of its first argv
+// token. `/usr/bin/node --foo` → `node`. The panel's full `command` row still
+// shows the whole string; this is just the header label.
+function commandName(command: string): string {
+  const first = command.split(" ")[0] ?? command;
+  const base = first.split("/").pop() ?? first;
+  return base || command;
+}
+
+// One label/value pair in the detail panel's grid. Returns the <dt>/<dd> as a
+// fragment so they land as direct children of the surrounding two-column <dl>.
+function DetailRow(props: { label: string; children: JSX.Element }) {
+  return (
+    <>
+      <dt class="uppercase tracking-wide text-gray-500">{props.label}</dt>
+      <dd class="text-gray-700 dark:text-gray-300">{props.children}</dd>
+    </>
+  );
+}
+
+// Expanded view of one selected process — a sibling of the table (not an
+// overlay), rendered by `HostView` only while a row is selected. Pure
+// renderer fed the resolved `Process`, so the phase-2 surface fields
+// (ppid / state / nice / threads / startedAtMs) flow in through `props.process`
+// with no signature change. The table truncates `command` with CSS and tucks
+// `cwd` inline after an `@`; here both get a full untruncated line, alongside
+// the exact cpu/memory numbers and a memory share of the host total.
+function ProcessDetail(props: {
+  pid: Pid;
+  process: Process;
+  memTotal: number;
+  onClose: () => void;
+}) {
+  const p = () => props.process;
+  // Same divide-by-zero guard as `memPct` — a freshly-connected host whose
+  // first `system` tick hasn't landed reports memTotal 0.
+  const memShare = () =>
+    props.memTotal > 0 ? (100 * p().rssBytes) / props.memTotal : 0;
+  const stateLabel = () => {
+    const s = p().state;
+    if (s === "") return "—";
+    const label = PROCESS_STATE_LABELS[s];
+    return label ? `${label} (${s})` : s;
+  };
+  return (
+    <div class="border-b border-gray-200 bg-emerald-50/50 px-4 py-3 dark:border-gray-800 dark:bg-emerald-900/10">
+      <div class="mb-2 flex items-baseline justify-between gap-2">
+        <div class="flex items-baseline gap-2">
+          <span class="font-semibold tabular-nums text-emerald-700 dark:text-emerald-400">
+            {props.pid}
+          </span>
+          <span class="text-gray-400">·</span>
+          <span class="font-semibold">{commandName(p().command)}</span>
+        </div>
+        <button
+          type="button"
+          onClick={props.onClose}
+          class="cursor-pointer rounded px-1 leading-none text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+          title="Close (Esc)"
+          aria-label="Close process details"
+        >
+          ✕
+        </button>
+      </div>
+      <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-xs">
+        <DetailRow label="command">
+          <span class="break-all">{p().command}</span>
+        </DetailRow>
+        <Show when={p().cwd}>
+          <DetailRow label="cwd">
+            <span class="break-all">{p().cwd}</span>
+          </DetailRow>
+        </Show>
+        <DetailRow label="cpu">
+          <span class="tabular-nums">{p().cpuPct.toFixed(1)}%</span>
+        </DetailRow>
+        <DetailRow label="memory">
+          <span class="tabular-nums">
+            {formatBytes(p().rssBytes)} · {memShare().toFixed(1)}%
+          </span>
+        </DetailRow>
+        <DetailRow label="state">{stateLabel()}</DetailRow>
+        <DetailRow label="parent">
+          <span class="tabular-nums">{p().ppid}</span>
+        </DetailRow>
+        <DetailRow label="nice">
+          <span class="tabular-nums">{p().nice}</span>
+        </DetailRow>
+        <Show when={p().threads > 0}>
+          <DetailRow label="threads">
+            <span class="tabular-nums">{p().threads}</span>
+          </DetailRow>
+        </Show>
+        <Show when={p().startedAtMs > 0}>
+          <DetailRow label="started">
+            {new Date(p().startedAtMs).toLocaleString()}
+          </DetailRow>
+        </Show>
+      </dl>
+    </div>
   );
 }
 

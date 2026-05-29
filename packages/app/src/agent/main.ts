@@ -68,6 +68,26 @@ function usage(): never {
   process.exit(1);
 }
 
+// Whether a process's wire-visible state changed since the last poll —
+// the gate for re-publishing a row. Compares every `Process` field the UI
+// renders EXCEPT `startedAtMs`, which is immutable per pid (a process can't
+// change when it started) and would otherwise spam upserts off the darwin
+// path's sub-second recomputation. Centralised here so adding a field can't
+// silently leave a column frozen (the prior inline OR-chain was one edit away
+// from that).
+function processChanged(a: Process, b: Process): boolean {
+  return (
+    a.cpuPct !== b.cpuPct ||
+    a.rssBytes !== b.rssBytes ||
+    a.command !== b.command ||
+    a.cwd !== b.cwd ||
+    a.ppid !== b.ppid ||
+    a.state !== b.state ||
+    a.nice !== b.nice ||
+    a.threads !== b.threads
+  );
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (!args.includes("--stdio")) usage();
@@ -193,13 +213,7 @@ async function main(): Promise<void> {
       const removes: Pid[] = [];
       for (const [pid, value] of nextProcesses) {
         const prev = processSnapshot.get(pid);
-        if (
-          prev === undefined ||
-          prev.cpuPct !== value.cpuPct ||
-          prev.rssBytes !== value.rssBytes ||
-          prev.command !== value.command ||
-          prev.cwd !== value.cwd
-        ) {
+        if (prev === undefined || processChanged(prev, value)) {
           fragment.ctx.collections.processes.upsert(pid, value);
           upserts.push([pid, value]);
         }
