@@ -117,8 +117,10 @@
       };
 
       # Darwin: standalone home-manager activation package. Building this
-      # exercises the launchd.agents.drishti path end-to-end (plist
-      # generation, wait4path wrapping, etc.) without a live launchd session.
+      # exercises the launchd.agents.drishti path end-to-end (plist generation
+      # plus the RunAtLoad / KeepAlive / StandardOutPath / StandardErrorPath /
+      # EnvironmentVariables config the module sets) without a live launchd
+      # session.
       checks.${darwinSystem} = {
         home-activation = darwinHome.activationPackage;
 
