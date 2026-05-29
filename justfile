@@ -50,6 +50,11 @@ fmt-check:
 regenerate-bun-nix:
     {{ nix_shell }} sh -c 'nix run .#bun2nix -- -l bun.lock -o bun.nix && nixpkgs-fmt bun.nix'
 
+# Regenerate the committed PWA icons (manifest icons, favicon, apple-touch)
+# from scripts/gen-pwa-icons.ts. Run this after editing the icon geometry.
+gen-pwa-icons:
+    {{ nix_shell }} bun scripts/gen-pwa-icons.ts
+
 # Build the wrapped monitor binary and print its store path.
 nix-build:
     nix build .#default --print-out-paths --no-link

@@ -4,6 +4,35 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>drishti — remote process monitor</title>
+    <meta
+      name="description"
+      content="htop for your whole fleet — live processes, CPU, memory, and network over SSH, with nothing installed on the remote."
+    />
+
+    <!-- PWA: installable, offline-capable shell. The address/status bar
+         tint follows the page theme (dark bg vs light bg). -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta
+      name="theme-color"
+      content="#0b0d12"
+      media="(prefers-color-scheme: dark)"
+    />
+    <meta
+      name="theme-color"
+      content="#f7f8fb"
+      media="(prefers-color-scheme: light)"
+    />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/icons/icon-192.png" sizes="192x192" type="image/png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="drishti" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+
     <link rel="stylesheet" href="./styles.css" />
     <!-- Apply the saved (or OS-default) theme before first paint to avoid a
          flash of the wrong colours. Runs before any module loads, so it

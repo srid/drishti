@@ -120,6 +120,9 @@ async function main(): Promise<void> {
     log(`serving prebuilt client bundle from ${distDir}`);
   }
   const app = new Hono();
+  // serveStatic serves the whole dist tree, including the PWA assets. It
+  // already maps `.webmanifest` to `application/manifest+json` (via
+  // hono/utils/mime), so the manifest needs no special-casing here.
   app.use("*", serveStatic({ root: distDir }));
 
   const httpServer = serve(
