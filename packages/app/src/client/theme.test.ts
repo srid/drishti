@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { otherTheme, parseTheme } from "./theme";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { otherTheme, parseTheme, THEME_KEY } from "./theme";
 
 describe("parseTheme", () => {
   it("accepts the two known themes", () => {
@@ -19,5 +21,16 @@ describe("otherTheme", () => {
   it("flips between the two themes", () => {
     expect(otherTheme("dark")).toBe("light");
     expect(otherTheme("light")).toBe("dark");
+  });
+});
+
+describe("THEME_KEY", () => {
+  it("matches the literal hardcoded in index.html's pre-paint bootstrap", () => {
+    // The inline script runs before any module loads, so it can't import
+    // THEME_KEY — this canary fails if the constant is renamed without
+    // updating index.html in lockstep (the one duplication that can't be
+    // collapsed away).
+    const html = readFileSync(join(import.meta.dir, "index.html"), "utf8");
+    expect(html).toContain(`"${THEME_KEY}"`);
   });
 });
