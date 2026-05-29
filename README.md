@@ -10,7 +10,7 @@ nix run github:srid/drishti -- user@host               # one remote
 nix run github:srid/drishti -- localhost a.lan b.lan   # multiple hosts (tabbed UI)
 ```
 
-Open <http://localhost:7720>. The UI shows one tab per host with a live connection-state dot; click a tab to view its htop. Use the `+ add host` button in the tab strip to add hosts at runtime; the `×` on each tab removes one. Added/removed hosts persist to `$XDG_STATE_HOME/drishti/hosts.json` (override with `DRISHTI_HOSTS_FILE`), so `nix run github:srid/drishti` with no args restores the last session.
+Open <http://localhost:7720>. The UI opens on the **fleet** tab — a single overview pane with one live summary card per host (connection state, CPU, memory, load average, uptime); click a card (or a host's tab) to drill into that host's full htop. Each host also has its own tab with a live connection-state dot. Use the `+ add host` button in the tab strip to add hosts at runtime; the `×` on each tab removes one. Added/removed hosts persist to `$XDG_STATE_HOME/drishti/hosts.json` (override with `DRISHTI_HOSTS_FILE`), so `nix run github:srid/drishti` with no args restores the last session.
 
 Requirements:
 

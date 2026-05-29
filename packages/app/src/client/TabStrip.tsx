@@ -15,24 +15,25 @@
 
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { type ConnectionState, DEFAULT_CONNECTION } from "../common/surface";
+import { DOT_BG, isPendingState } from "./connectionColors";
 import { surfaceForHost } from "./wire";
-
-const DOT_BG: Record<ConnectionState, string> = {
-  connected: "bg-emerald-500",
-  disconnected: "bg-red-500",
-  copying: "bg-amber-500",
-  connecting: "bg-amber-500",
-};
 
 export function TabStrip(props: {
   hosts: readonly string[];
   active: string | null;
+  fleetActive: boolean;
+  onSelectFleet: () => void;
   onSelect: (h: string) => void;
   onAdd: (h: string) => Promise<string | null>;
   onRemove: (h: string) => Promise<void>;
 }) {
   return (
     <div class="flex flex-wrap items-stretch border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/60">
+      <FleetTab
+        active={props.fleetActive}
+        count={props.hosts.length}
+        onSelect={props.onSelectFleet}
+      />
       <For each={props.hosts}>
         {(host) => (
           <TabChip
@@ -45,6 +46,34 @@ export function TabStrip(props: {
       </For>
       <AddHostForm onAdd={props.onAdd} />
     </div>
+  );
+}
+
+// The leftmost chip: a fixed "fleet" tab that shows the aggregate
+// overview of every host at once. It carries no connection dot of its
+// own (it has no single host) — just a host count — and can't be closed.
+function FleetTab(props: {
+  active: boolean;
+  count: number;
+  onSelect: () => void;
+}) {
+  const baseClasses =
+    "flex items-center gap-2 border-r border-gray-200 px-3 py-1.5 text-xs dark:border-gray-800";
+  const inactiveClasses =
+    "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60";
+  const activeClasses =
+    "bg-white text-gray-900 shadow-[inset_0_-2px_0_0_theme(colors.indigo.500)] dark:bg-gray-900 dark:text-gray-100";
+  return (
+    <button
+      type="button"
+      class={`${baseClasses} ${props.active ? activeClasses : inactiveClasses}`}
+      onClick={props.onSelect}
+      title="Fleet overview — all hosts at a glance"
+    >
+      <span aria-hidden="true">▦</span>
+      <span class="font-semibold">fleet</span>
+      <span class="text-gray-400">({props.count})</span>
+    </button>
   );
 }
 
@@ -77,7 +106,7 @@ function TabChip(props: {
         title={`${props.host} — ${state()}`}
       >
         <span
-          class={`inline-block h-2 w-2 rounded-full ${DOT_BG[state()]} ${state() === "copying" || state() === "connecting" ? "animate-pulse" : ""}`}
+          class={`inline-block h-2 w-2 rounded-full ${DOT_BG[state()]} ${isPendingState(state()) ? "animate-pulse" : ""}`}
         />
         <span class="font-semibold">{props.host}</span>
       </button>
