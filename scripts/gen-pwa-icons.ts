@@ -169,23 +169,12 @@ function encodePNG(size: number, rgba: Uint8Array): Uint8Array {
   ihdr[8] = 8; // bit depth
   ihdr[9] = 6; // colour type: truecolour + alpha
   const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
-  return concat([
+  return Buffer.concat([
     sig,
     chunk("IHDR", ihdr),
     chunk("IDAT", new Uint8Array(deflateSync(raw))),
     chunk("IEND", new Uint8Array(0)),
   ]);
-}
-
-function concat(parts: Uint8Array[]): Uint8Array {
-  const total = parts.reduce((n, p) => n + p.length, 0);
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const p of parts) {
-    out.set(p, off);
-    off += p.length;
-  }
-  return out;
 }
 
 // ── Vector path (same geometry, expressed in a 512 viewBox) ──────────────
