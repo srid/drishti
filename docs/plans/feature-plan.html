@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drishti — Next 5 Features Plan</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1d212b;
+    --text: #e6e9ef;
+    --muted: #9aa3b2;
+    --accent: #6ea8fe;
+    --accent-2: #59d18d;
+    --warn: #f0a35e;
+    --border: #2a2f3a;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 48px 24px 96px; }
+  header { border-bottom: 1px solid var(--border); padding-bottom: 24px; margin-bottom: 32px; }
+  h1 { font-size: 2rem; margin: 0 0 6px; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); font-size: 0.95rem; }
+  .meta-bar {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;
+  }
+  .chip {
+    font-family: var(--mono); font-size: 0.72rem; color: var(--muted);
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 999px; padding: 3px 10px;
+  }
+  h2 {
+    font-size: 1.3rem; margin: 40px 0 12px; letter-spacing: -0.01em;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .lead { color: var(--muted); margin-bottom: 32px; }
+  .feature {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 22px 24px; margin: 20px 0;
+  }
+  .feature h3 { margin: 0 0 4px; font-size: 1.12rem; display: flex; align-items: center; gap: 10px; }
+  .rank {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: 8px; flex: none;
+    background: var(--accent); color: #0b0d12; font-weight: 700; font-size: 0.95rem;
+  }
+  .feature.top { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(110,168,254,0.25); }
+  .tagline { color: var(--muted); margin: 0 0 16px; }
+  .row { margin: 10px 0; }
+  .label {
+    font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--accent); display: block; margin-bottom: 2px;
+  }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 4px; }
+  .badge {
+    font-family: var(--mono); font-size: 0.72rem; padding: 3px 9px; border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+  .b-diff-low { color: var(--accent-2); border-color: rgba(89,209,141,0.4); }
+  .b-diff-med { color: var(--warn); border-color: rgba(240,163,94,0.4); }
+  .b-conf { color: var(--muted); }
+  .b-vote { color: var(--accent-2); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .sources { font-size: 0.82rem; margin-top: 12px; }
+  .sources a { font-family: var(--mono); font-size: 0.75rem; word-break: break-all; }
+  .sources li { margin: 2px 0; color: var(--muted); }
+  .callout {
+    background: var(--panel-2); border-left: 3px solid var(--accent-2);
+    border-radius: 8px; padding: 18px 22px; margin: 28px 0;
+  }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout h3 { margin: 0 0 8px; font-size: 1.05rem; }
+  .seq {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 0.85rem; margin-top: 8px;
+  }
+  .seq .step { background: var(--panel); border: 1px solid var(--border); padding: 6px 12px; border-radius: 8px; }
+  .seq .arrow { color: var(--muted); }
+  ul { padding-left: 20px; }
+  li { margin: 4px 0; }
+  code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 0.88em; }
+  footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.82rem; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>drishti — Next 5 Features Plan</h1>
+  <div class="sub">A roadmap to make the SSH-based multi-host process monitor popular and widely adopted.</div>
+  <div class="meta-bar">
+    <span class="chip">deep-research synthesis</span>
+    <span class="chip">103 agents</span>
+    <span class="chip">21 sources fetched</span>
+    <span class="chip">92 claims extracted</span>
+    <span class="chip">25 verified · 20 confirmed · 5 killed</span>
+    <span class="chip">2026-05-28</span>
+  </div>
+</header>
+
+<p class="lead">
+  Ranked by impact-per-effort and how well each leverages drishti's unique strengths — the
+  zero-install SSH agent, the multi-host web UI, and the real-time reactive transport. Each feature
+  is grounded in what users of htop, btop, Glances, Netdata, and rtop actually ask for and value,
+  and adversarially fact-checked.
+</p>
+
+<!-- FEATURE 1 -->
+<div class="feature top">
+  <h3><span class="rank">1</span> Unified multi-host fleet dashboard</h3>
+  <p class="tagline">A single "pane of glass" aggregating every connected host into one live overview — the strategic bet.</p>
+
+  <div class="row">
+    <span class="label">Why it wins</span>
+    drishti's single most-validated differentiator. The multi-host plumbing (per-host agents, admin
+    surface, reactive collections) already exists — this adds an <em>aggregation / overview view</em>,
+    not new transport. It's what makes people choose drishti over a terminal htop.
+  </div>
+  <div class="row">
+    <span class="label">Evidence of demand</span>
+    Netdata deliberately engineers parent-child centralization to "receive, store, process observability
+    data from multiple systems" and present "unified dashboards across all your systems," scaling to
+    thousands of nodes. Glances ships a "Central Browser" for exactly this. Single-pane-of-glass
+    aggregation is corroborated as <em>the</em> recognized core benefit of multi-host monitoring across
+    Datadog, logz.io, and eG Innovations.
+  </div>
+  <div class="row">
+    <span class="label">Caveat</span>
+    Do not promise lossless cross-host resolution at arbitrary scale (that specific claim was refuted
+    1-2). Decide target scale first: 5–10 dev hosts (lightweight live aggregation suffices) vs. hundreds
+    (needs streaming/persistence architecture).
+  </div>
+
+  <div class="badges">
+    <span class="badge b-diff-med">Difficulty: Medium</span>
+    <span class="badge b-conf">Confidence: High</span>
+    <span class="badge b-vote">5 supporting claims · all 3-0</span>
+  </div>
+  <div class="sources">
+    <ul>
+      <li><a href="https://learn.netdata.cloud/docs/netdata-parents">learn.netdata.cloud/docs/netdata-parents</a></li>
+      <li><a href="https://www.netdata.cloud/blog/netdata-parents-streaming-replication/">netdata.cloud/blog/netdata-parents-streaming-replication</a></li>
+      <li><a href="https://github.com/netdata/netdata">github.com/netdata/netdata</a></li>
+    </ul>
+  </div>
+</div>
+
+<!-- FEATURE 2 -->
+<div class="feature">
+  <h3><span class="rank">2</span> Per-interface network I/O metrics</h3>
+  <p class="tagline">rx/tx per NIC and throughput — best effort-to-value ratio of the five.</p>
+
+  <div class="row">
+    <span class="label">The gap</span>
+    A concrete, well-scoped hole. drishti shows CPU, mem, command, cwd, load, and uptime — but
+    <strong>zero network</strong>.
+  </div>
+  <div class="row">
+    <span class="label">Evidence of demand</span>
+    rtop — drishti's closest conceptual peer (agentless, SSH-based, top-like, zero remote install) —
+    defines its value around "vital system metrics (CPU, disk, memory, <strong>network</strong>)"
+    including per-interface rx/tx. Glances treats network as baseline.
+  </div>
+  <div class="row">
+    <span class="label">Implementation</span>
+    Read <code>/proc/net/dev</code> on Linux, <code>netstat</code>/sysctl on macOS through the existing
+    agent, feed the existing reactive transport.
+  </div>
+
+  <div class="badges">
+    <span class="badge b-diff-low">Difficulty: Low–Medium</span>
+    <span class="badge b-conf">Confidence: High</span>
+    <span class="badge b-vote">2 supporting claims · both 3-0</span>
+  </div>
+  <div class="sources">
+    <ul>
+      <li><a href="http://www.rtop-monitor.org/">rtop-monitor.org</a></li>
+      <li><a href="https://github.com/rapidloop/rtop">github.com/rapidloop/rtop</a></li>
+      <li><a href="https://github.com/nicolargo/glances/">github.com/nicolargo/glances</a></li>
+    </ul>
+  </div>
+</div>
+
+<!-- FEATURE 3 -->
+<div class="feature">
+  <h3><span class="rank">3</span> Historical retention + per-second time-series charts</h3>
+  <p class="tagline">A rolling time-series store per metric with sparkline/trend visualization.</p>
+
+  <div class="row">
+    <span class="label">The gap</span>
+    drishti shows only live state with no persistence. History unlocks "what happened 30 seconds ago"
+    troubleshooting.
+  </div>
+  <div class="row">
+    <span class="label">Evidence of demand</span>
+    Per-second collection + historical retention are Netdata's <em>headline</em> differentiators
+    (dbengine retains ~14 days per-second by default). Source inspection confirmed drishti has no
+    historical storage at all. The per-second cadence aligns naturally with drishti's reactive transport.
+  </div>
+  <div class="row">
+    <span class="label">Decision needed</span>
+    Ephemeral in-memory ring buffer (preserves zero-config, low effort) vs. persistent with
+    Prometheus/InfluxDB export (Glances exports to 18+ backends — but that's a larger second step).
+  </div>
+
+  <div class="badges">
+    <span class="badge b-diff-med">Difficulty: Medium</span>
+    <span class="badge b-conf">Confidence: High</span>
+    <span class="badge b-vote">3 supporting claims · all 3-0</span>
+  </div>
+  <div class="sources">
+    <ul>
+      <li><a href="https://github.com/netdata/netdata">github.com/netdata/netdata</a></li>
+      <li><a href="https://github.com/nicolargo/glances/">github.com/nicolargo/glances</a></li>
+    </ul>
+  </div>
+</div>
+
+<!-- FEATURE 4 -->
+<div class="feature">
+  <h3><span class="rank">4</span> Container monitoring (Docker / Podman / LXC)</h3>
+  <p class="tagline">Per-container CPU/mem/IO surfaced alongside host processes.</p>
+
+  <div class="row">
+    <span class="label">The gap</span>
+    A competitive baseline drishti doesn't touch — and modern dev/ops machines are overwhelmingly
+    containerized.
+  </div>
+  <div class="row">
+    <span class="label">Evidence of demand</span>
+    Glances ships this as a core, documented capability (docker-py, podman-py, pylxd) with per-container
+    CPU/mem/diskio/networkio.
+  </div>
+  <div class="row">
+    <span class="label">Implementation</span>
+    Agent queries the runtime socket/API or reads cgroup files over the existing SSH agent; the UI
+    extends the existing process-table model. Lower demand-urgency than 1–3, but high
+    competitive-parity value.
+  </div>
+
+  <div class="badges">
+    <span class="badge b-diff-med">Difficulty: Medium</span>
+    <span class="badge b-conf">Confidence: High</span>
+    <span class="badge b-vote">4 supporting claims · all 3-0</span>
+  </div>
+  <div class="sources">
+    <ul>
+      <li><a href="https://github.com/nicolargo/glances">github.com/nicolargo/glances</a></li>
+    </ul>
+  </div>
+</div>
+
+<!-- FEATURE 5 -->
+<div class="feature">
+  <h3><span class="rank">5</span> Richer in-UI process mutation — start with <code>renice</code></h3>
+  <p class="tagline">Process-priority adjustment, beyond today's signal/kill.</p>
+
+  <div class="row">
+    <span class="label">Why</span>
+    Today the only mutation is signal/kill. renice is the smallest possible extension of a path that
+    already proves drishti can run privileged actions safely over the SSH agent.
+  </div>
+  <div class="row">
+    <span class="label">Evidence of demand</span>
+    btop users explicitly request in-UI renice, describing the friction of "copy PID → open terminal →
+    run <code>renice</code>." Corroborated by action: btop PR #1268 (merged Oct 2025) added a renice menu,
+    maintainer-approved.
+  </div>
+  <div class="row">
+    <span class="label">Caveat</span>
+    Narrowest demand signal of the five (rests on one tool's issue tracker). Before piling on more
+    mutations (cpulimit, ionice, STOP/CONT), weigh the added privilege surface.
+  </div>
+
+  <div class="badges">
+    <span class="badge b-diff-low">Difficulty: Low</span>
+    <span class="badge b-conf">Confidence: High</span>
+    <span class="badge b-vote">1 supporting claim · 3-0</span>
+  </div>
+  <div class="sources">
+    <ul>
+      <li><a href="https://github.com/aristocratos/btop/issues/1245">github.com/aristocratos/btop/issues/1245</a></li>
+      <li><a href="https://github.com/aristocratos/btop/pull/1268">github.com/aristocratos/btop/pull/1268</a></li>
+    </ul>
+  </div>
+</div>
+
+<!-- CROSS-CUTTING -->
+<div class="callout">
+  <h3>Cross-cutting: protect the zero-install onboarding</h3>
+  <p>
+    drishti's <strong>zero-install-over-SSH agent + open-source posture are proven adoption
+    accelerants</strong> (validated against rtop's "no special software needed on the remote" model and
+    Netdata's zero-config auto-discovery). The implication for <em>all five features</em>: preserve
+    zero-config onboarding — auto-discover hosts, containers, and NICs with no manual remote setup. These
+    features should compound the low-friction story, not add setup burden.
+  </p>
+</div>
+
+<!-- SEQUENCING -->
+<h2>Recommended build order</h2>
+<p class="lead" style="margin-bottom:8px">
+  Quick wins first to build credibility, then the strategic differentiator, then the heavier features.
+</p>
+<div class="seq">
+  <span class="step">2 · network</span>
+  <span class="arrow">→</span>
+  <span class="step">5 · renice</span>
+  <span class="arrow">→</span>
+  <span class="step">1 · fleet dashboard</span>
+  <span class="arrow">→</span>
+  <span class="step">3 · history</span>
+  <span class="arrow">→</span>
+  <span class="step">4 · containers</span>
+</div>
+
+<!-- CAVEATS -->
+<div class="callout warn">
+  <h3>Honest caveats from the research</h3>
+  <ul>
+    <li>
+      All demand evidence is from <strong>competitor tools</strong>, not drishti's own users — a strong
+      category-demand signal, but an indirect proxy. The biggest open question: <em>what does drishti's
+      own issue tracker actually request?</em>
+    </li>
+    <li>
+      <strong>5 claims were killed by adversarial verification</strong> — notably specific PLG funnel
+      stats ("68% abandon trials," "10-min time-to-value → 3–4x conversion," "peer recommendation
+      dominates discovery"). Do not anchor prioritization on those numbers.
+    </li>
+    <li>
+      The multi-host aggregation feature should not promise lossless cross-host resolution at arbitrary
+      scale (refuted 1-2).
+    </li>
+  </ul>
+</div>
+
+<!-- OPEN QUESTIONS -->
+<h2>Open questions</h2>
+<ul>
+  <li>What does drishti's own issue tracker / user community actually request most?</li>
+  <li>For multi-host aggregation, what scale must drishti realistically support — a handful of dev hosts, or hundreds of fleet nodes? This determines lightweight live aggregation vs. parent-child streaming.</li>
+  <li>Should historical retention be in-memory/ephemeral (preserves zero-config) or persistent with external export (InfluxDB/Prometheus)?</li>
+  <li>Beyond renice, which additional process mutations (cpulimit, ionice, OOM-score, freeze/STOP-CONT) carry enough demand to justify the added privilege surface?</li>
+</ul>
+
+<footer>
+  Generated from a deep-research workflow (fan-out web search → source fetch → 3-vote adversarial
+  verification → cited synthesis). Sources include official docs for Netdata, Glances, btop, and rtop.
+  Competitor feature sets are stable as of 2025–2026; the btop renice feature is recent (merged Oct 2025).
+</footer>
+
+</div>
+</body>
+</html>
