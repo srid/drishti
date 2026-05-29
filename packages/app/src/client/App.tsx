@@ -1004,7 +1004,7 @@ function DurationPicker(props: {
                 : "text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700"
             }`}
           >
-            {w.label}
+            {w.key}
           </button>
         )}
       </For>

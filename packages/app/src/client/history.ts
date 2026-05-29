@@ -31,10 +31,10 @@ export type MetricKey = "cpu" | "mem";
  *  monitors (Netdata, btop, Datadog) put above their graphs. Ascending by
  *  span; the widest doubles as the ring's retention bound. */
 export const HISTORY_WINDOWS = [
-  { key: "1m", label: "1m", ms: 60_000 },
-  { key: "5m", label: "5m", ms: 5 * 60_000 },
-  { key: "15m", label: "15m", ms: 15 * 60_000 },
-  { key: "30m", label: "30m", ms: 30 * 60_000 },
+  { key: "1m", ms: 60_000 },
+  { key: "5m", ms: 5 * 60_000 },
+  { key: "15m", ms: 15 * 60_000 },
+  { key: "30m", ms: 30 * 60_000 },
 ] as const;
 
 export type HistoryWindowKey = (typeof HISTORY_WINDOWS)[number]["key"];
