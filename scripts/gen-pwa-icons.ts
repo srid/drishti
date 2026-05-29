@@ -15,28 +15,38 @@
  *
  * Re-run after editing the geometry: `just gen-pwa-icons` (or
  * `bun scripts/gen-pwa-icons.ts`). The emitted files are committed as
- * source assets so the Nix build — which has no image tooling and no
- * network — only has to copy them. PNGs are encoded by hand (zlib + CRC32)
- * because no rasteriser is available in the dev shell.
+ * source assets so the Nix build only has to copy them — it pulls in no
+ * image toolchain. PNGs are encoded by hand (zlib + CRC32) to keep that
+ * dependency footprint at zero rather than add a rasteriser/image library.
  */
 
 import { deflateSync } from "node:zlib";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { BRAND_DARK } from "../packages/app/src/client/brand";
+
+type RGB = readonly [number, number, number];
+
+/** "#rrggbb" → [r, g, b]. */
+function hexToRgb(hex: string): RGB {
+  const n = Number.parseInt(hex.replace("#", ""), 16);
+  return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+}
 
 // ── Icon geometry, as fractions of the canvas (centre at 0.5, 0.5) ──────
+// The background is the shared brand dark; the emerald accents are
+// icon-only (no CSS/manifest counterpart), so they stay literal here.
 const COLORS = {
-  bg: [0x0b, 0x0d, 0x12], // drishti dark — matches the dark-theme page bg
+  bg: hexToRgb(BRAND_DARK),
   ring: [0x34, 0xd3, 0x99], // emerald-400
   pupil: [0x10, 0xb9, 0x81], // emerald-500 — the "connected" accent
-} as const;
+} satisfies Record<string, RGB>;
 const CORNER = 0.22; // rounded-tile corner radius
 const RING_OUTER = 0.34;
 const RING_INNER = 0.24;
 const PUPIL = 0.12;
 
-type RGB = readonly [number, number, number];
 /** Background treatment. "tile" rounds the corners and leaves them
  *  transparent; "fullbleed" paints the whole square opaque (what maskable
  *  and iOS want — the platform supplies its own mask/rounding). */
