@@ -91,11 +91,9 @@ function renderRGBA(size: number, mode: Mode): Uint8Array {
   const px = 1.5 / size; // ~1.5 device px of anti-aliasing, in unit space
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      // sample at pixel centre, in [0,1]
-      const ux = (x + 0.5) / size;
-      const uy = (y + 0.5) / size;
-      const dx = ux - 0.5;
-      const dy = uy - 0.5;
+      // sample at pixel centre, normalised to [-0.5, 0.5]
+      const dx = (x + 0.5) / size - 0.5;
+      const dy = (y + 0.5) / size - 0.5;
       const dist = Math.hypot(dx, dy);
 
       const pixel = [0, 0, 0, 0];
