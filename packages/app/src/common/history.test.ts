@@ -12,8 +12,8 @@ import {
   windowSlice,
 } from "./history";
 
-function sample(t: number, cpu = 0, mem = 0): MetricSample {
-  return { t, cpu, mem };
+function sample(t: number, cpu = 0, mem = 0, disk = 0): MetricSample {
+  return { t, cpu, mem, disk };
 }
 
 function sys(over: Partial<SystemInfo> = {}): SystemInfo {
@@ -21,6 +21,8 @@ function sys(over: Partial<SystemInfo> = {}): SystemInfo {
     loadAvg: [0, 0, 0],
     memUsed: 0,
     memTotal: 0,
+    diskUsed: 0,
+    diskTotal: 0,
     uptime: 0,
     os: "linux",
     hostname: "h",
@@ -67,17 +69,21 @@ describe("isHistoryWindowKey", () => {
 });
 
 describe("captureSample", () => {
-  it("averages the per-core usages and computes memory %", () => {
+  it("averages the per-core usages and computes memory + disk %", () => {
     const s = captureSample(
       5000,
-      sys({ memUsed: 4e9, memTotal: 16e9 }),
+      sys({ memUsed: 4e9, memTotal: 16e9, diskUsed: 75e9, diskTotal: 100e9 }),
       [10, 20, 30, 40],
     );
-    expect(s).toEqual({ t: 5000, cpu: 25, mem: 25 });
+    expect(s).toEqual({ t: 5000, cpu: 25, mem: 25, disk: 75 });
   });
 
   it("yields 0 cpu for a host reporting no cores (never NaN)", () => {
     expect(captureSample(0, sys(), []).cpu).toBe(0);
+  });
+
+  it("yields 0 disk for a host reporting no disk total (never NaN)", () => {
+    expect(captureSample(0, sys(), []).disk).toBe(0);
   });
 });
 

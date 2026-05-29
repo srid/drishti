@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   computeNetThroughput,
+  diskBytesFromStatfs,
   type NetCounters,
   parseMeminfo,
   parseNetstatIb,
@@ -219,6 +220,22 @@ describe("parseMeminfo", () => {
     expect(parseMeminfo(sample)).toEqual({
       total: 16384000 * 1024,
       available: 8192000 * 1024,
+    });
+  });
+});
+
+describe("diskBytesFromStatfs", () => {
+  it("derives used (blocks − bfree) and total (blocks) in bytes", () => {
+    // 100 blocks total, 25 free, 4096-byte blocks → 75% occupied.
+    expect(
+      diskBytesFromStatfs({ bsize: 4096, blocks: 100, bfree: 25 }),
+    ).toEqual({ diskUsed: 75 * 4096, diskTotal: 100 * 4096 });
+  });
+
+  it("yields zeros for an empty filesystem report (never NaN)", () => {
+    expect(diskBytesFromStatfs({ bsize: 0, blocks: 0, bfree: 0 })).toEqual({
+      diskUsed: 0,
+      diskTotal: 0,
     });
   });
 });

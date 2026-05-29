@@ -15,7 +15,7 @@
  */
 
 import { exec as execCb } from "node:child_process";
-import { readFile, readdir, readlink } from "node:fs/promises";
+import { readFile, readdir, readlink, statfs } from "node:fs/promises";
 import {
   cpus,
   freemem,
@@ -229,6 +229,45 @@ function filterLoopback(
   return out;
 }
 
+// ── Disk usage (root filesystem) ────────────────────────────────────────
+
+/** Used/total bytes derived from a `statfs` result — pure, so the block
+ *  arithmetic is unit-testable without a real mount. `total = blocks × bsize`;
+ *  `used = (blocks − bfree) × bsize` — the bytes-occupied figure, parity with
+ *  memory's `total − available`, so `diskPct` reads like `memPct`. Zeros when
+ *  `bsize`/`blocks` are 0. */
+export function diskBytesFromStatfs(stat: {
+  bsize: number;
+  blocks: number;
+  bfree: number;
+}): { diskUsed: number; diskTotal: number } {
+  return {
+    diskUsed: (stat.blocks - stat.bfree) * stat.bsize,
+    diskTotal: stat.blocks * stat.bsize,
+  };
+}
+
+/** Root-filesystem (`/`) usage via the `statfs` syscall — the one capacity
+ *  source universal across linux and darwin (no `/proc` file reports free
+ *  space). Reports `/` only by deliberate policy; see the mount-selection note
+ *  on `SystemSchema.diskUsed`. Degrades to zeros if `statfs` is unavailable
+ *  (unknown platform) so the system snapshot still resolves — `pctOf` then
+ *  reads it as "unavailable". */
+async function readRootDiskUsage(): Promise<{
+  diskUsed: number;
+  diskTotal: number;
+}> {
+  try {
+    return diskBytesFromStatfs(await statfs("/"));
+  } catch {
+    // `statfs` is unavailable on some platforms (e.g. Windows). Degrade to
+    // zeros so the system snapshot still resolves — `pctOf` renders it as
+    // "unavailable" (0/0 → 0%). Safe to swallow: the caller merges these
+    // zeros into the snapshot and the UI shows nothing rather than crashing.
+    return { diskUsed: 0, diskTotal: 0 };
+  }
+}
+
 export function createProcReader(): ProcReader {
   const plat = platform();
   if (plat === "linux") return linuxReader();
@@ -268,17 +307,19 @@ function linuxReader(): ProcReader {
     readCpuCores,
     readNetwork,
     readSystem: async () => {
-      const [loadAvgs, mem, up] = await Promise.all([
+      const [loadAvgs, mem, up, disk] = await Promise.all([
         readFile("/proc/loadavg", "utf-8").then((s) =>
           s.split(/\s+/).slice(0, 3).map(Number),
         ),
         readFile("/proc/meminfo", "utf-8").then(parseMeminfo),
         readFile("/proc/uptime", "utf-8").then((s) => Number(s.split(" ")[0])),
+        readRootDiskUsage(),
       ]);
       return {
         loadAvg: [loadAvgs[0] ?? 0, loadAvgs[1] ?? 0, loadAvgs[2] ?? 0],
         memUsed: mem.total - mem.available,
         memTotal: mem.total,
+        ...disk,
         uptime: up,
         os: "linux",
         hostname: hostname(),
@@ -581,7 +622,10 @@ function darwinReader(): ProcReader {
       // the authoritative physical total — vm_stat reports only page
       // counts, so total and available come from the two distinct sources
       // and are assembled here.
-      const { stdout } = await exec("vm_stat");
+      const [{ stdout }, disk] = await Promise.all([
+        exec("vm_stat"),
+        readRootDiskUsage(),
+      ]);
       const total = totalmem();
       const available = parseVmStat(stdout).available;
       return {
@@ -591,6 +635,7 @@ function darwinReader(): ProcReader {
         // negative usage.
         memUsed: Math.max(0, total - available),
         memTotal: total,
+        ...disk,
         uptime: uptime(),
         os: "darwin",
         hostname: hostname(),
@@ -628,10 +673,14 @@ function stubReader(): ProcReader {
       // because macOS always dispatches to darwinReader (createProcReader),
       // so this stub is never the Mac path; it's the last-resort fallback
       // for genuinely-unknown platforms with no vm_stat / /proc to query.
+      // `statfs` still works on many such platforms; `readRootDiskUsage`
+      // degrades to zeros where it doesn't.
+      const disk = await readRootDiskUsage();
       return {
         loadAvg: [la[0] ?? 0, la[1] ?? 0, la[2] ?? 0],
         memUsed: totalmem() - freemem(),
         memTotal: totalmem(),
+        ...disk,
         uptime: uptime(),
         os: "unknown",
         hostname: hostname(),

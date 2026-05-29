@@ -16,10 +16,10 @@
  */
 
 import type { MetricSample, SystemInfo } from "./surface";
-import { averageCoreUsage, memPct } from "./metrics";
+import { averageCoreUsage, diskPct, memPct } from "./metrics";
 
-/** The two series the chart draws. */
-export type MetricKey = "cpu" | "mem";
+/** The series the chart draws. */
+export type MetricKey = "cpu" | "mem" | "disk";
 
 /** Selectable chart windows, mirroring the time-range chips popular
  *  monitors (Netdata, btop, Datadog) put above their graphs. Ascending by
@@ -70,15 +70,24 @@ export function isHistoryWindowKey(raw: string): boolean {
 
 /** Assemble a `MetricSample` from a live system snapshot and the per-core
  *  usages captured at one instant — the single home for "what a captured
- *  sample is." Adding a series (say, load) becomes one edit here plus the
- *  chart. Pure: `t` is passed in, and the cpu/mem derivations reuse the
- *  canonical helpers from `metrics.ts` rather than re-deriving them. */
+ *  sample is." Each series maps to its own derivation (a CPU mean, a memory
+ *  share, a disk share), so adding one touches the data layer it comes from:
+ *  the `MetricKey` union, the `MetricSample` schema, and this assembler. The
+ *  *render* side (which polylines/legend chips to draw) is single-sourced
+ *  separately in the client's `SERIES` table, so it costs no edit here. Pure:
+ *  `t` is passed in, and every derivation reuses a canonical `metrics.ts`
+ *  helper rather than re-deriving inline. */
 export function captureSample(
   t: number,
   system: SystemInfo,
   coreUsages: readonly number[],
 ): MetricSample {
-  return { t, cpu: averageCoreUsage(coreUsages), mem: memPct(system) };
+  return {
+    t,
+    cpu: averageCoreUsage(coreUsages),
+    mem: memPct(system),
+    disk: diskPct(system),
+  };
 }
 
 /** Append a sample and evict any older than `retentionMs` behind the

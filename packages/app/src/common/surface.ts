@@ -88,6 +88,21 @@ const SystemSchema = z.object({
   /** Bytes used / total — UI converts to GB. */
   memUsed: z.number(),
   memTotal: z.number(),
+  /** Bytes used / total on the **root filesystem** (`/`), via `statfs("/")`
+   *  in the agent. `diskUsed = (blocks − bfree) × bsize`, the bytes-occupied
+   *  parity of `memUsed = memTotal − available` — so `diskPct` reuses the
+   *  same `pctOf` "share of total" formula memory does.
+   *
+   *  ⚠ **Mount-selection policy: root `/` only.** Unlike memory (one
+   *  authoritative host figure), a host has many filesystems and no single
+   *  capacity aggregate; this scalar deliberately reports just `/`. A host
+   *  that splits `/var`, `/nix`, or `/data` onto separate disks will not see
+   *  those here — a per-mount view is a future `diskDevices` collection
+   *  (mirroring `networkInterfaces`), not a reinterpretation of this field.
+   *  Both 0 when the agent can't `statfs` (unknown platform) — `pctOf`
+   *  guards the divide. */
+  diskUsed: z.number(),
+  diskTotal: z.number(),
   /** Seconds since boot. */
   uptime: z.number(),
   /** OS family — `linux` reads /proc/*, `darwin` reads sysctl. */
@@ -125,6 +140,8 @@ export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
   loadAvg: [0, 0, 0],
   memUsed: 0,
   memTotal: 0,
+  diskUsed: 0,
+  diskTotal: 0,
   uptime: 0,
   os: "unknown",
   hostname: "",
@@ -166,6 +183,8 @@ const MetricSampleSchema = z.object({
   cpu: z.number(),
   /** Memory used as a percentage of total at capture (0-100). */
   mem: z.number(),
+  /** Root-filesystem used as a percentage of total at capture (0-100). */
+  disk: z.number(),
 });
 
 /** Snapshot-then-delta `Stream<>` for the per-host metric-history ring —

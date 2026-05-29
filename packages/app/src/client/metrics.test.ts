@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import type { SystemInfo } from "../common/surface";
 import {
   averageCoreUsage,
+  diskGb,
+  diskPct,
   formatBytes,
   formatThroughput,
   formatUptime,
@@ -15,6 +17,8 @@ function sys(over: Partial<SystemInfo> = {}): SystemInfo {
     loadAvg: [0, 0, 0],
     memUsed: 0,
     memTotal: 0,
+    diskUsed: 0,
+    diskTotal: 0,
     uptime: 0,
     os: "linux",
     hostname: "h",
@@ -48,6 +52,25 @@ describe("memGb", () => {
     expect(memGb(sys({ memUsed: 4.2e9, memTotal: 16e9 }))).toEqual({
       used: "4.2",
       total: "16.0",
+    });
+  });
+});
+
+describe("diskPct", () => {
+  it("computes used/total as a percentage", () => {
+    expect(diskPct(sys({ diskUsed: 75e9, diskTotal: 100e9 }))).toBe(75);
+  });
+
+  it("returns 0 when total is unknown (no divide-by-zero)", () => {
+    expect(diskPct(sys({ diskUsed: 75e9, diskTotal: 0 }))).toBe(0);
+  });
+});
+
+describe("diskGb", () => {
+  it("formats bytes to one-decimal gigabytes", () => {
+    expect(diskGb(sys({ diskUsed: 188e9, diskTotal: 250e9 }))).toEqual({
+      used: "188.0",
+      total: "250.0",
     });
   });
 });
