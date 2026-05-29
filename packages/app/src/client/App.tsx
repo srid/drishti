@@ -205,6 +205,10 @@ function HostCard(props: { host: string; onSelect: () => void }) {
     ),
   );
   const mem = createMemo(() => memPct(sys()));
+  const memText = createMemo(() => {
+    const gb = memGb(sys());
+    return `${gb.used}/${gb.total} GB · ${mem().toFixed(0)}%`;
+  });
 
   return (
     <button
@@ -237,11 +241,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
           pct={cpuPct()}
           detail={`${cpuPct().toFixed(0)}% · ${[...cores.keys()].length} cores`}
         />
-        <CardMetric
-          label="mem"
-          pct={mem()}
-          detail={`${memGb(sys()).used}/${memGb(sys()).total} GB · ${mem().toFixed(0)}%`}
-        />
+        <CardMetric label="mem" pct={mem()} detail={memText()} />
         <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400">
           <span>
             load{" "}
