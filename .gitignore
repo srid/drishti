@@ -9,9 +9,6 @@ node_modules/
 dist/
 state/
 
-# Session artifacts (talk-mode HTML) — local design scratch, not for the PR
-/talk-*.html
-
 # Nix
 /result
 /result-*
