@@ -23,6 +23,7 @@ import {
   For,
   on,
   onCleanup,
+  onMount,
   Show,
 } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
@@ -38,6 +39,7 @@ import {
 } from "../common/surface";
 import { STATE } from "./connectionColors";
 import type { View } from "./view";
+import { searchForView, viewFromSearch } from "./urlState";
 import { averageCoreUsage, formatUptime, memGb, memPct } from "./metrics";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import { TabStrip } from "./TabStrip";
@@ -78,8 +80,32 @@ export default function App() {
 
   // The fleet overview is the default landing view — the "single pane of
   // glass" across every host. `view` holds the user's intent; the host
-  // set it resolves against is owned by the admin collection.
-  const [view, setView] = createSignal<View>({ kind: "fleet" });
+  // set it resolves against is owned by the admin collection. The initial
+  // intent is read from the URL so a shared/bookmarked `?host=…` link opens
+  // straight on that host (it resolves once the admin collection arrives).
+  const [view, setView] = createSignal<View>(
+    viewFromSearch(window.location.search),
+  );
+
+  // Mirror the selected view into the browser URL so every host — and the
+  // fleet overview — has a shareable address, and `pushState` makes the back
+  // button walk the selection history. Bound to `view` (intent), not
+  // `resolvedView`: while the admin collection is still loading a deep-linked
+  // host isn't in the set yet, and binding to the resolved value would rewrite
+  // the URL to fleet before the host arrives. The guard skips redundant
+  // entries — including the no-op first run, where the URL already matches.
+  createEffect(() => {
+    const search = searchForView(view());
+    if (search !== window.location.search) {
+      window.history.pushState(null, "", `${window.location.pathname}${search}`);
+    }
+  });
+  // Reflect back/forward navigation back into the view intent.
+  onMount(() => {
+    const onPopState = () => setView(viewFromSearch(window.location.search));
+    window.addEventListener("popstate", onPopState);
+    onCleanup(() => window.removeEventListener("popstate", onPopState));
+  });
   // Resolve intent against the live host set: a host view whose host has
   // been removed falls back to the fleet overview rather than a blank
   // pane, and the fleet view always resolves to itself.
@@ -107,8 +133,11 @@ export default function App() {
   const onRemove = async (host: string) => {
     try {
       await admin.rpc.surface.hosts.remove({ host });
-      // No manual view reset needed: resolvedView falls back to fleet
-      // once the host leaves the collection.
+      // Drop the intent if the removed host was the selected one, so the
+      // URL clears to the fleet path. (`resolvedView` already falls the
+      // pane back to fleet; resetting the intent keeps the address in sync.)
+      const v = view();
+      if (v.kind === "host" && v.host === host) setView({ kind: "fleet" });
     } catch (err) {
       console.error(`remove ${host} failed`, err);
     }
