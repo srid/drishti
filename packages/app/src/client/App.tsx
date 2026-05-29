@@ -435,14 +435,15 @@ function HostView(props: { host: string }) {
     createSignal<HistoryWindowKey>(DEFAULT_HISTORY_WINDOW);
   const windowMs = createMemo(() => windowMsFor(historyWindow()));
 
-  const histCtl = new AbortController();
-  onCleanup(() => histCtl.abort());
+  // Reuses `ctl` — the metricHistory and processesSnapshot streams share
+  // this HostView's mount/cleanup lifecycle exactly, so one controller
+  // tears both down on unmount.
   void (async () => {
     try {
       const stream = await streamCall(
         app.rpc.surface.metricHistory.get,
         {},
-        { signal: histCtl.signal },
+        { signal: ctl.signal },
       );
       for await (const msg of stream) {
         if (msg.kind === "snapshot") setHistory(msg.samples);
@@ -452,7 +453,7 @@ function HostView(props: { host: string }) {
           );
       }
     } catch (err) {
-      if (!histCtl.signal.aborted)
+      if (!ctl.signal.aborted)
         console.error("metricHistory stream failed", err);
     }
   })();
