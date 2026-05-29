@@ -34,6 +34,7 @@ import {
   DEFAULT_CONNECTION,
   DEFAULT_SYSTEM,
   type IfaceName,
+  type MetricSample,
   type NetInterface,
   type Pid,
   type Process,
@@ -52,17 +53,15 @@ import {
 } from "./metrics";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import {
-  captureSample,
   DEFAULT_HISTORY_WINDOW,
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
   type HistoryWindowKey,
   polylinePoints,
   pushSample,
-  type Sample,
   windowMsFor,
   windowSlice,
-} from "./history";
+} from "../common/history";
 import { TabStrip } from "./TabStrip";
 import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
 
@@ -424,44 +423,39 @@ function HostView(props: { host: string }) {
     return filtered;
   });
 
-  // ── Ephemeral metric history (per-host, in-memory) ──────────────────
-  // A time-bounded ring of CPU%/mem% samples feeding the time-series
-  // chart. Sampled on a timer at the host's own poll cadence so points
-  // are evenly spaced regardless of when individual cells/collections
-  // happen to fire; ticks while disconnected are skipped, leaving an
-  // honest gap. The ring lives and dies with this HostView mount — it is
-  // never persisted (the in-memory-ring decision from the feature plan).
-  const [history, setHistory] = createSignal<Sample[]>([]);
+  // ── Metric history (parent-owned ring, streamed in) ─────────────────
+  // The CPU%/mem% history isn't sampled here — the parent owns an in-memory
+  // ring per host and samples it on every poll tick (whether or not a tab is
+  // open), so it survives reloads and tab switches. This subscribes to that
+  // ring: the first frame is a full snapshot (the entire ring, replayed on
+  // every fresh mount), then one delta per tick. `pushSample` bounds the
+  // locally-accumulated deltas to the same retention as the server ring.
+  const [history, setHistory] = createSignal<MetricSample[]>([]);
   const [historyWindow, setHistoryWindow] =
     createSignal<HistoryWindowKey>(DEFAULT_HISTORY_WINDOW);
   const windowMs = createMemo(() => windowMsFor(historyWindow()));
 
-  // Re-arm the sampler whenever the poll cadence changes (it's 0 until the
-  // first `system` tick, then the agent's real interval). Reads inside the
-  // timer callback are untracked — it just snapshots the latest values.
-  createEffect(
-    on(
-      () => currentSystem().pollIntervalMs,
-      (pollMs) => {
-        const intervalMs = pollMs > 0 ? pollMs : 2000;
-        const id = setInterval(() => {
-          if (currentConnection().state !== "connected") return;
+  const histCtl = new AbortController();
+  onCleanup(() => histCtl.abort());
+  void (async () => {
+    try {
+      const stream = await streamCall(
+        app.rpc.surface.metricHistory.get,
+        {},
+        { signal: histCtl.signal },
+      );
+      for await (const msg of stream) {
+        if (msg.kind === "snapshot") setHistory(msg.samples);
+        else
           setHistory((prev) =>
-            pushSample(
-              prev,
-              captureSample(
-                Date.now(),
-                currentSystem(),
-                coreIds().map((cid) => cores.byKey(cid)?.()?.usagePct ?? 0),
-              ),
-              HISTORY_RETENTION_MS,
-            ),
+            pushSample(prev, msg.sample, HISTORY_RETENTION_MS),
           );
-        }, intervalMs);
-        onCleanup(() => clearInterval(id));
-      },
-    ),
-  );
+      }
+    } catch (err) {
+      if (!histCtl.signal.aborted)
+        console.error("metricHistory stream failed", err);
+    }
+  })();
 
   // Project the ring to the chart's two SVG polylines here — not inside
   // HistoryChart — so the component stays a pure renderer fed precomputed
@@ -469,7 +463,7 @@ function HostView(props: { host: string }) {
   // NetStrip. `chartNow` anchors to the newest sample so the trace's right
   // edge is always "latest data", not wall-clock drifting ahead of the
   // last point between ticks.
-  const latestSample = createMemo<Sample | null>(() => {
+  const latestSample = createMemo<MetricSample | null>(() => {
     const s = history();
     return s.length > 0 ? s[s.length - 1]! : null;
   });
@@ -926,7 +920,7 @@ function NetCell(props: {
 function HistoryChart(props: {
   cpuPoints: string;
   memPoints: string;
-  latest: Sample | null;
+  latest: MetricSample | null;
   windowKey: HistoryWindowKey;
   onWindow: (k: HistoryWindowKey) => void;
 }) {

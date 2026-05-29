@@ -1,17 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import type { SystemInfo } from "../common/surface";
+import type { MetricSample, SystemInfo } from "./surface";
 import {
   captureSample,
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
   polylinePoints,
   pushSample,
-  type Sample,
   windowMsFor,
   windowSlice,
 } from "./history";
 
-function sample(t: number, cpu = 0, mem = 0): Sample {
+function sample(t: number, cpu = 0, mem = 0): MetricSample {
   return { t, cpu, mem };
 }
 
@@ -27,21 +26,6 @@ function sys(over: Partial<SystemInfo> = {}): SystemInfo {
     ...over,
   };
 }
-
-describe("captureSample", () => {
-  it("averages the per-core usages and computes memory %", () => {
-    const s = captureSample(
-      5000,
-      sys({ memUsed: 4e9, memTotal: 16e9 }),
-      [10, 20, 30, 40],
-    );
-    expect(s).toEqual({ t: 5000, cpu: 25, mem: 25 });
-  });
-
-  it("yields 0 cpu for a host reporting no cores (never NaN)", () => {
-    expect(captureSample(0, sys(), []).cpu).toBe(0);
-  });
-});
 
 describe("HISTORY_WINDOWS", () => {
   it("is ascending by span", () => {
@@ -63,9 +47,24 @@ describe("windowMsFor", () => {
   });
 });
 
+describe("captureSample", () => {
+  it("averages the per-core usages and computes memory %", () => {
+    const s = captureSample(
+      5000,
+      sys({ memUsed: 4e9, memTotal: 16e9 }),
+      [10, 20, 30, 40],
+    );
+    expect(s).toEqual({ t: 5000, cpu: 25, mem: 25 });
+  });
+
+  it("yields 0 cpu for a host reporting no cores (never NaN)", () => {
+    expect(captureSample(0, sys(), []).cpu).toBe(0);
+  });
+});
+
 describe("pushSample", () => {
   it("appends a sample without mutating the input", () => {
-    const before: Sample[] = [sample(1000)];
+    const before: MetricSample[] = [sample(1000)];
     const after = pushSample(before, sample(2000), 60_000);
     expect(after).toHaveLength(2);
     expect(before).toHaveLength(1); // input untouched

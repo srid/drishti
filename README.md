@@ -12,7 +12,7 @@ nix run github:srid/drishti -- localhost a.lan b.lan   # multiple hosts (tabbed 
 
 Open <http://localhost:7720>. The UI opens on the **fleet** tab — a single overview pane with one live summary card per host (connection state, CPU, memory, load average, uptime); click a card (or a host's tab) to drill into that host's full htop. Each host also has its own tab with a live connection-state dot.
 
-A host's htop view carries a **time-series chart** above the CPU strip: CPU% and memory% plotted over a rolling, in-memory history sampled at the host's poll cadence. A segmented control switches the visible window (1m / 5m / 15m / 30m), like the time-range chips in btop and Netdata. The history is ephemeral — held in the browser for the life of the tab, never persisted — so it costs nothing to keep and starts fresh on reload.
+A host's htop view carries a **time-series chart** above the CPU strip: CPU% and memory% plotted over a rolling, in-memory history. A segmented control switches the visible window (1m / 5m / 15m / 30m), like the time-range chips in btop and Netdata. The **parent server owns the history ring** — it samples every host on each poll tick (whether or not a tab is open) and keeps it in memory for the life of the process, so the chart **survives page reloads and tab switches** and is already populated the first time you open a host. It's never persisted to disk (restarting the parent starts fresh), preserving the zero-config posture.
 
 Every view has its own URL, so you can bookmark or share a link straight to a host: selecting a host updates the address to <http://localhost:7720/?host=user@host> (the fleet overview is the bare <http://localhost:7720/>). Opening such a link, or reloading the page, lands directly on that host.
 

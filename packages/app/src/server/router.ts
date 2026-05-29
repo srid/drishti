@@ -39,6 +39,8 @@ import {
   DEFAULT_CONNECTION,
   DEFAULT_SYSTEM,
   type IfaceName,
+  type MetricHistoryMsg,
+  type MetricSample,
   type NetInterface,
   type Pid,
   type Process,
@@ -46,6 +48,11 @@ import {
   type SystemInfo,
   surface,
 } from "../common/surface";
+import {
+  captureSample,
+  HISTORY_RETENTION_MS,
+  pushSample,
+} from "../common/history";
 
 type DrishtiAgent = AgentClient<typeof surface.contract>;
 
@@ -73,6 +80,16 @@ export function buildRouter(opts: BuildRouterOptions) {
   // forward the same data without re-subscribing to the agent.
   const browserSnapshotBus: Channel<ProcessesSnapshotMsg> =
     inMemoryChannel<ProcessesSnapshotMsg>();
+  // Parent-owned metric-history ring. Sampled once per agent poll tick (see
+  // `recordSample`), bounded to the widest selectable window, and held for
+  // the life of this session — independent of any browser. A new browser
+  // subscriber is re-seeded from `historyRing` (full snapshot) then fed
+  // per-tick deltas via `historyBus`, so reloads and tab switches replay the
+  // whole history. Reassigned (not mutated) by `pushSample`; the stream
+  // source reads the current binding on subscribe.
+  let historyRing: MetricSample[] = [];
+  const historyBus: Channel<MetricHistoryMsg> =
+    inMemoryChannel<MetricHistoryMsg>();
 
   const fragment = implementSurface(surface, {
     // Name-keyed in-memory channel factory — publish/subscribe sites
@@ -136,6 +153,20 @@ export function buildRouter(opts: BuildRouterOptions) {
           }
         },
       },
+      // Browser-facing metric-history stream — yields the parent's current
+      // ring on subscribe (the full history, so a reload/tab-switch replays
+      // it), then forwards each per-tick delta the sampler publishes.
+      metricHistory: {
+        source: async function* (_input, signal) {
+          yield {
+            kind: "snapshot",
+            samples: [...historyRing],
+          } satisfies MetricHistoryMsg;
+          for await (const msg of historyBus.subscribe(signal)) {
+            yield msg;
+          }
+        },
+      },
     },
     procedures: {
       process: {
@@ -164,6 +195,21 @@ export function buildRouter(opts: BuildRouterOptions) {
     fragment.ctx.cells.connection.set({ state: s.connection });
   });
 
+  // Sample the metric ring once per agent system tick. CPU% is the mean of
+  // the cores currently mirrored into `coreCache` (pumped concurrently);
+  // memory% comes from the just-arrived system snapshot. `pushSample`
+  // evicts points past the retention bound, and the delta goes to every
+  // live browser subscriber.
+  const recordSample = (system: SystemInfo): void => {
+    const sample = captureSample(
+      Date.now(),
+      system,
+      [...coreCache.values()].map((c) => c.usagePct),
+    );
+    historyRing = pushSample(historyRing, sample, HISTORY_RETENTION_MS);
+    historyBus.publish({ kind: "delta", sample });
+  };
+
   // ── Bridge remote agent surface → parent's local surface ──────────
   // Start a background pump that pins the session, then loops over each
   // successive AgentClient the session produces — each time the agent
@@ -174,7 +220,13 @@ export function buildRouter(opts: BuildRouterOptions) {
   // the only reliable recovery is to re-issue the subscriptions on the
   // *new* client. The outer loop is what implements "reconnect → state
   // reconciles, no ghosts".
-  void bridgeAgentToParent(session, fragment, processCache, browserSnapshotBus);
+  void bridgeAgentToParent(
+    session,
+    fragment,
+    processCache,
+    browserSnapshotBus,
+    recordSample,
+  );
 
   // `implementSurface` returns a router *fragment* — `{ surface: ... }`
   // wrapping the per-key namespaces. Passing it directly to RPCHandler
@@ -229,6 +281,7 @@ async function bridgeAgentToParent(
   fragment: FragmentCtx,
   processCache: Map<Pid, Process>,
   browserSnapshotBus: Channel<ProcessesSnapshotMsg>,
+  recordSample: (system: SystemInfo) => void,
 ): Promise<void> {
   log("pinning HostSession (parent-lifetime ref)…");
   // Pin once. Swallow the initial promise — we'll fetch a fresh client
@@ -250,7 +303,7 @@ async function bridgeAgentToParent(
     lastClient = client;
     log("agent client ready; starting pumps");
     await Promise.allSettled([
-      pumpSystemCell(client, session, fragment),
+      pumpSystemCell(client, session, fragment, recordSample),
       pumpProcessesSnapshot(client, fragment, processCache, browserSnapshotBus),
       pumpCpuCores(client, fragment),
       pumpNetworkInterfaces(client, fragment),
@@ -309,6 +362,7 @@ async function pumpSystemCell(
   client: DrishtiAgent,
   session: HostSession<typeof surface.contract>,
   fragment: FragmentCtx,
+  recordSample: (system: SystemInfo) => void,
 ): Promise<void> {
   let n = 0;
   try {
@@ -317,6 +371,9 @@ async function pumpSystemCell(
       if (n === 1) log("system: first snapshot → marking connected");
       session.markConnected();
       fragment.ctx.cells.system.set(remoteSystem);
+      // One history sample per system tick — the parent's authoritative
+      // sampling point (it sees every tick, browser or not).
+      recordSample(remoteSystem);
     }
     log(`system: stream closed cleanly after ${n} yields`);
   } catch (err) {

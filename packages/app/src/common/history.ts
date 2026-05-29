@@ -1,28 +1,22 @@
 /**
- * Ephemeral per-host metric history — an in-memory, time-bounded ring of
- * CPU% / memory% samples backing the per-host time-series chart.
+ * The pure, framework-free metric-history domain — shared by the **parent**
+ * (which owns the in-memory ring and samples it on every poll tick) and the
+ * **browser** (which renders the ring it's streamed). Keeping the ring
+ * maths (eviction, windowing, SVG projection — the part that's wrong on
+ * screen, or wrong in memory, if an index or a scale slips) in one
+ * framework-free module lets it be unit-tested in isolation and reused on
+ * both sides of the wire.
  *
- * Pure and Solid-free so the windowing and SVG-projection maths (the part
- * that's wrong on screen if an index or a scale slips) is unit-testable in
- * isolation; the Solid wiring and the `<svg>` itself live in App.tsx.
- *
- * "Ephemeral" is literal: the ring lives inside the `HostView` component
- * for the life of that tab session and is never persisted. Switching away
- * and back starts a fresh history — matching drishti's zero-config,
- * no-storage posture (the in-memory-ring decision from the feature plan).
+ * The history is **server-side and in-memory**: it lives in the parent for
+ * the life of the process, accruing for every connected host whether or not
+ * a browser tab is open on it. A browser gets the whole ring on connect
+ * (snapshot) then per-tick deltas — so reloads and tab switches both replay
+ * the full history instantly. It is never persisted to disk (preserving the
+ * zero-config posture); restarting the parent starts fresh.
  */
 
-import type { SystemInfo } from "../common/surface";
+import type { MetricSample, SystemInfo } from "./surface";
 import { averageCoreUsage, memPct } from "./metrics";
-
-export interface Sample {
-  /** Wall-clock capture time, epoch ms. */
-  t: number;
-  /** Mean busy-percentage across all cores at capture (0-100). */
-  cpu: number;
-  /** Memory used as a percentage of total at capture (0-100). */
-  mem: number;
-}
 
 /** The two series the chart draws. */
 export type MetricKey = "cpu" | "mem";
@@ -45,7 +39,9 @@ export const DEFAULT_HISTORY_WINDOW: HistoryWindowKey = "5m";
 
 /** Retention bound for the ring: the widest selectable window. Samples
  *  older than this are evicted on push, so a host left open for hours
- *  still holds at most the widest window's worth of points. */
+ *  still holds at most the widest window's worth of points. Derived from
+ *  the window set so it can't drift below a selectable window — adding a
+ *  wider window automatically widens retention to match. */
 export const HISTORY_RETENTION_MS = Math.max(
   ...HISTORY_WINDOWS.map((w) => w.ms),
 );
@@ -56,30 +52,29 @@ export function windowMsFor(key: HistoryWindowKey): number {
   return HISTORY_WINDOWS.find((w) => w.key === key)?.ms ?? HISTORY_WINDOWS[0].ms;
 }
 
-/** Assemble a `Sample` from a live system snapshot and the per-core usages
- *  captured at one instant — the single home for "what a captured sample
- *  is." Adding a series (say, load) becomes one edit here plus the chart,
- *  not a change scattered across the capture site too. Pure: `t` is passed
- *  in, and the cpu/mem derivations reuse the canonical helpers from
- *  metrics.ts rather than re-deriving the averaging/ratio. */
+/** Assemble a `MetricSample` from a live system snapshot and the per-core
+ *  usages captured at one instant — the single home for "what a captured
+ *  sample is." Adding a series (say, load) becomes one edit here plus the
+ *  chart. Pure: `t` is passed in, and the cpu/mem derivations reuse the
+ *  canonical helpers from `metrics.ts` rather than re-deriving them. */
 export function captureSample(
   t: number,
   system: SystemInfo,
   coreUsages: readonly number[],
-): Sample {
+): MetricSample {
   return { t, cpu: averageCoreUsage(coreUsages), mem: memPct(system) };
 }
 
 /** Append a sample and evict any older than `retentionMs` behind the
- *  newest. Returns a new array (the caller holds it in a signal); the
- *  input is never mutated. The cutoff is measured from the newest
- *  timestamp across the whole ring — not blindly from the incoming
- *  sample — so a backwards clock blip can't wipe the buffer. */
+ *  newest. Returns a new array (the caller holds it in a signal or a
+ *  closure cell); the input is never mutated. The cutoff is measured from
+ *  the newest timestamp across the whole ring — not blindly from the
+ *  incoming sample — so a backwards clock blip can't wipe the buffer. */
 export function pushSample(
-  buffer: readonly Sample[],
-  sample: Sample,
+  buffer: readonly MetricSample[],
+  sample: MetricSample,
   retentionMs: number,
-): Sample[] {
+): MetricSample[] {
   const next = [...buffer, sample];
   const newest = next.reduce((max, s) => (s.t > max ? s.t : max), sample.t);
   const cutoff = newest - retentionMs;
@@ -90,10 +85,10 @@ export function pushSample(
  *  selected duration. `now` is passed in (not read from the clock) so the
  *  projection stays pure and testable. */
 export function windowSlice(
-  buffer: readonly Sample[],
+  buffer: readonly MetricSample[],
   windowMs: number,
   now: number,
-): Sample[] {
+): MetricSample[] {
   const cutoff = now - windowMs;
   return buffer.filter((s) => s.t >= cutoff);
 }
@@ -109,7 +104,7 @@ function clamp(n: number, lo: number, hi: number): number {
  *  the 0-100 metric (SVG's origin is top-left, so 100% sits at y=0). Both
  *  axes are clamped to the band. Empty input yields "". */
 export function polylinePoints(
-  samples: readonly Sample[],
+  samples: readonly MetricSample[],
   key: MetricKey,
   now: number,
   windowMs: number,

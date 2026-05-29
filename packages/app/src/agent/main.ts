@@ -38,6 +38,7 @@ import {
   type CpuCore,
   DEFAULT_CONNECTION,
   type IfaceName,
+  type MetricHistoryMsg,
   type NetInterface,
   type Pid,
   type Process,
@@ -101,6 +102,11 @@ async function main(): Promise<void> {
   // `processesSnapshot` stream subscribers read the current map on
   // first subscribe, then forward every delta the poll loop publishes.
   const snapshotDeltaBus = inMemoryChannel<ProcessesSnapshotMsg>();
+  // Inert bus for the metricHistory stub below — never published. The agent
+  // keeps no history ring; the parent owns it (it's the only tier that
+  // persists across browser reloads). Same rationale as the connection
+  // cell's inert stub above.
+  const inertHistoryBus = inMemoryChannel<MetricHistoryMsg>();
   const fragment = implementSurface(surface, {
     channel: inMemoryChannelByName(),
     cells: {
@@ -153,6 +159,18 @@ async function main(): Promise<void> {
           } satisfies ProcessesSnapshotMsg;
           for await (const delta of snapshotDeltaBus.subscribe(signal)) {
             yield delta;
+          }
+        },
+      },
+      // ⚠ **INERT STUB — the agent keeps no history.** Declared on the
+      // shared surface so the browser can subscribe; the parent is the
+      // authoritative source (see router.ts). A direct-to-agent client sees
+      // an empty, never-updating history — by design, like `connection`.
+      metricHistory: {
+        source: async function* (_input, signal) {
+          yield { kind: "snapshot", samples: [] } satisfies MetricHistoryMsg;
+          for await (const msg of inertHistoryBus.subscribe(signal)) {
+            yield msg;
           }
         },
       },
