@@ -345,7 +345,7 @@ export default function App() {
 
   return (
     <div class="min-h-screen bg-gray-50 p-4 font-mono text-sm dark:bg-gray-950">
-      <div class="mx-auto max-w-6xl overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
+      <div class="overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
         <TabStrip
           hosts={hostList()}
           activeTab={resolvedView()}
@@ -974,7 +974,7 @@ function ProcessRow(props: {
       <td class="px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
         {formatBytes(rssBytes())}
       </td>
-      <td class="max-w-md truncate px-3 py-0.5 text-left text-gray-700 dark:text-gray-300">
+      <td class="w-full max-w-0 truncate px-3 py-0.5 text-left text-gray-700 dark:text-gray-300">
         <span>{proc()?.command ?? ""}</span>
         <Show when={proc()?.cwd}>
           {(cwd) => (
