@@ -23,7 +23,6 @@ import {
   For,
   on,
   onCleanup,
-  onMount,
   Show,
 } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
@@ -88,23 +87,24 @@ export default function App() {
   );
 
   // Mirror the selected view into the browser URL so every host — and the
-  // fleet overview — has a shareable address, and `pushState` makes the back
-  // button walk the selection history. Bound to `view` (intent), not
-  // `resolvedView`: while the admin collection is still loading a deep-linked
-  // host isn't in the set yet, and binding to the resolved value would rewrite
-  // the URL to fleet before the host arrives. The guard skips redundant
-  // entries — including the no-op first run, where the URL already matches.
+  // fleet overview — has a shareable, bookmarkable address. `replaceState`
+  // (not `pushState`) keeps the URL reflecting the current view without
+  // growing the history stack: programmatic corrections — a removed host
+  // resetting to fleet, or a malformed `?host=` normalising away — would
+  // otherwise litter the back button with entries that all resolve to fleet.
+  // Bound to `view` (intent), not `resolvedView`: while the admin collection
+  // is still loading a deep-linked host isn't in the set yet, and binding to
+  // the resolved value would rewrite the URL to fleet before the host arrives.
+  // The guard skips redundant writes, including the no-op first run.
   createEffect(() => {
     const search = searchForView(view());
     if (search !== window.location.search) {
-      window.history.pushState(null, "", `${window.location.pathname}${search}`);
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${search}`,
+      );
     }
-  });
-  // Reflect back/forward navigation back into the view intent.
-  onMount(() => {
-    const onPopState = () => setView(viewFromSearch(window.location.search));
-    window.addEventListener("popstate", onPopState);
-    onCleanup(() => window.removeEventListener("popstate", onPopState));
   });
   // Resolve intent against the live host set: a host view whose host has
   // been removed falls back to the fleet overview rather than a blank
