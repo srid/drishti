@@ -151,10 +151,9 @@ The client bundler is a hand-rolled `Bun.build` pipeline (`packages/app/src/serv
 
 CI runs via [`juspay/justci`](https://github.com/juspay/justci). The canonical pipeline lives in `ci/mod.just`; runners are configured in `~/.config/justci/hosts.json`.
 
-Two upstream issues currently shape how CI runs:
+One upstream issue currently shapes how CI runs:
 
 - **crates.io blocks `curl/*` User-Agent.** Every `crate-*.tar.gz` fetched by `bun2nix`'s rust dep tree fails its `pkgs.fetchurl` with HTTP 403. `ci/mod.just`'s `_prefetch-crates` recipe (`scripts/ci-prefetch-crates.sh`) sidesteps this by fetching missing crates with a Mozilla UA and injecting them via `nix-store --add-fixed`. Idempotent and content-addressed, so the workaround disappears the first time upstream fetchurl learns to set a non-curl UA — or once bun2nix's Rust deps fetch from `static.crates.io` directly. Tracking issue: TBD.
-- **`srid-justci` (the x86_64-linux runner alias) is unreachable.** The Tailscale proxy returns `ERR not owner of srid-justci`, so the linux lane can't dial it. The `## CI command` in `.agency/do.md` overrides with `--host x86_64-linux=localhost` so `/do` runs on this machine instead. Restore the runner (or repoint `~/.config/justci/hosts.json`) to drop the override.
 
 ### License
 
