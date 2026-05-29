@@ -24,6 +24,11 @@ describe("viewFromSearch", () => {
       host: "user@a.lan",
     });
   });
+
+  it("falls back to fleet for a blank or whitespace-only host", () => {
+    expect(viewFromSearch("?host=")).toEqual({ kind: "fleet" });
+    expect(viewFromSearch("?host=%20")).toEqual({ kind: "fleet" });
+  });
 });
 
 describe("searchForView", () => {

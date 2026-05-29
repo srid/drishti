@@ -19,7 +19,10 @@ const HOST_PARAM = "host";
 
 /** Parse a `location.search` string into the view it encodes. */
 export function viewFromSearch(search: string): View {
-  const host = new URLSearchParams(search).get(HOST_PARAM);
+  // Trim and treat blank as absent: a malformed `?host=` or `?host=%20`
+  // (no real ssh target is whitespace) normalises to the fleet overview
+  // rather than a host view that can never resolve and sticks in the URL.
+  const host = new URLSearchParams(search).get(HOST_PARAM)?.trim();
   return host ? { kind: "host", host } : { kind: "fleet" };
 }
 
