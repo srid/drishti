@@ -4,7 +4,7 @@
  *   - `linux`: parse `/proc/<pid>/{stat,status,cmdline}` + `/proc/meminfo`
  *     + `/proc/loadavg`. Pure file reads, universally readable by the
  *     running user.
- *   - `darwin`: shell out to `ps -axo pid=,user=,pcpu=,pmem=,comm=` and
+ *   - `darwin`: shell out to `ps -axo pid=,user=,pcpu=,pmem=,rss=,comm=` and
  *     `sysctl -n vm.loadavg hw.memsize`. The `ps` command is in every
  *     base install; sysctl reads are unprivileged.
  *
@@ -315,6 +315,7 @@ function linuxReader(): ProcReader {
           user: raw.user,
           cpuPct: round2(cpuPct),
           memPct: raw.memPct,
+          rssBytes: raw.rssBytes,
           command: raw.command,
           cwd: raw.cwd,
         });
@@ -350,6 +351,8 @@ interface LinuxProcRaw {
    *  tombstone we use to detect PID recycling between polls. */
   startTime: number;
   memPct: number;
+  /** Resident set size in bytes (VmRSS × 1024). */
+  rssBytes: number;
   command: string;
   cwd: string;
 }
@@ -393,6 +396,7 @@ async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
       ticks: utime + stime,
       startTime,
       memPct: round2(memPct),
+      rssBytes: rssKb * 1024,
       command: truncate(command, PROC_STRING_MAX),
       cwd: truncate(cwdResult, PROC_STRING_MAX),
     };
@@ -407,8 +411,34 @@ async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
 
 // ── darwin: ps + sysctl reader ──────────────────────────────────────────
 
-// Compiled once — matches `ps -axo pid=,user=,pcpu=,pmem=,comm=` output lines.
-const PS_LINE_RE = /^(\d+)\s+(\S+)\s+([\d.]+)\s+([\d.]+)\s+(.*)$/;
+// Compiled once — matches `ps -axo pid=,user=,pcpu=,pmem=,rss=,comm=` lines.
+// `comm` is greedy/last (it can contain spaces), so it stays the trailing
+// `(.*)`; the integer `rss` (KB) sits just before it.
+const PS_LINE_RE = /^(\d+)\s+(\S+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)\s+(.*)$/;
+
+/** Parse one `ps -axo pid=,user=,pcpu=,pmem=,rss=,comm=` line into a
+ *  `Process`. `rss` is in KB on macOS, so ×1024 for `rssBytes`. Returns
+ *  null for lines that don't match (blank/garbage) so the caller skips
+ *  them. Pure — no clock or platform state — to stay unit-testable. */
+export function parsePsLine(line: string): [Pid, Process] | null {
+  const m = line.trim().match(PS_LINE_RE);
+  if (!m) return null;
+  const [, pidStr, user, cpu, mem, rssKb, command] = m;
+  if (!pidStr || !user || !cpu || !mem || !rssKb || !command) return null;
+  return [
+    Number(pidStr),
+    {
+      user,
+      cpuPct: Number(cpu),
+      memPct: Number(mem),
+      rssBytes: Number(rssKb) * 1024,
+      command: truncate(command, PROC_STRING_MAX),
+      // darwin has no cheap per-pid cwd source (`lsof -p` per pid is a
+      // fork per row); leave blank — the UI hides it when empty.
+      cwd: "",
+    },
+  ];
+}
 
 function darwinReader(): ProcReader {
   const readCpuCores = createCpuCoresReader();
@@ -436,24 +466,13 @@ function darwinReader(): ProcReader {
       };
     },
     readProcesses: async () => {
-      const { stdout } = await exec("ps -axo pid=,user=,pcpu=,pmem=,comm=");
+      const { stdout } = await exec(
+        "ps -axo pid=,user=,pcpu=,pmem=,rss=,comm=",
+      );
       const out = new Map<Pid, Process>();
       for (const line of stdout.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed.length === 0) continue;
-        const m = trimmed.match(PS_LINE_RE);
-        if (!m) continue;
-        const [, pidStr, user, cpu, mem, command] = m;
-        if (!pidStr || !user || !cpu || !mem || !command) continue;
-        out.set(Number(pidStr), {
-          user,
-          cpuPct: Number(cpu),
-          memPct: Number(mem),
-          command: truncate(command, PROC_STRING_MAX),
-          // darwin has no cheap per-pid cwd source (`lsof -p` per pid is
-          // a fork per row); leave blank — the UI hides it when empty.
-          cwd: "",
-        });
+        const parsed = parsePsLine(line);
+        if (parsed) out.set(parsed[0], parsed[1]);
       }
       return out;
     },
@@ -489,6 +508,7 @@ function stubReader(): ProcReader {
         user: process.env.USER ?? "unknown",
         cpuPct: 0,
         memPct: 0,
+        rssBytes: 0,
         command: `${process.execPath} ${process.argv.slice(1).join(" ")}`,
         cwd: process.cwd(),
       });
