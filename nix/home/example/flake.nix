@@ -54,6 +54,12 @@
         ];
       };
 
+      # Single source of truth for the port the test polls: read it back from
+      # the evaluated home-manager config rather than re-hardcoding the module
+      # default. If the module's `services.drishti.port` default changes (or the
+      # example overrides it), the curl below follows automatically.
+      testPort = darwinHome.config.services.drishti.port;
+
       # NixOS module: minimal system + home-manager with drishti enabled.
       nixosModule = {
         boot.loader.grub.devices = [ "nodev" ];
@@ -110,7 +116,7 @@
           # without KVM acceleration (qemu TCG fallback inflates the
           # bun/node startup substantially).
           machine.wait_until_succeeds(
-              "curl --fail --silent http://127.0.0.1:7720/ > /dev/null",
+              "curl --fail --silent http://127.0.0.1:${toString testPort}/ > /dev/null",
               timeout=120,
           )
         '';
