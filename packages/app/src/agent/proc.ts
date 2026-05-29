@@ -456,12 +456,9 @@ export function parseVmStat(
   stdout: string,
   pageSize?: number,
 ): { available: number } {
+  const headerMatch = stdout.match(/page size of (\d+) bytes/);
   const size =
-    pageSize ??
-    (() => {
-      const m = stdout.match(/page size of (\d+) bytes/);
-      return m && m[1] !== undefined ? Number(m[1]) : 4096;
-    })();
+    pageSize ?? (headerMatch?.[1] !== undefined ? Number(headerMatch[1]) : 4096);
   // Each count line is `Label:   <count>.` — read the integer after the
   // label's colon, defaulting absent classes to 0.
   const pages = (label: string): number => {
