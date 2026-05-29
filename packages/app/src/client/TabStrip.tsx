@@ -14,14 +14,14 @@
  */
 
 import { createMemo, createSignal, For, Show } from "solid-js";
+import type { View } from "./App";
 import { type ConnectionState, DEFAULT_CONNECTION } from "../common/surface";
 import { DOT_BG, isPendingState } from "./connectionColors";
 import { surfaceForHost } from "./wire";
 
 export function TabStrip(props: {
   hosts: readonly string[];
-  active: string | null;
-  fleetActive: boolean;
+  activeTab: View;
   onSelectFleet: () => void;
   onSelect: (h: string) => void;
   onAdd: (h: string) => Promise<string | null>;
@@ -30,7 +30,7 @@ export function TabStrip(props: {
   return (
     <div class="flex flex-wrap items-stretch border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/60">
       <FleetTab
-        active={props.fleetActive}
+        active={props.activeTab.kind === "fleet"}
         count={props.hosts.length}
         onSelect={props.onSelectFleet}
       />
@@ -38,7 +38,9 @@ export function TabStrip(props: {
         {(host) => (
           <TabChip
             host={host}
-            active={props.active === host}
+            active={
+              props.activeTab.kind === "host" && props.activeTab.host === host
+            }
             onSelect={() => props.onSelect(host)}
             onClose={() => props.onRemove(host)}
           />

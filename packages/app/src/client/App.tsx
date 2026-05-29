@@ -46,8 +46,10 @@ type SortKey = "cpu" | "mem" | "pid" | "user";
 // What the main pane shows: the aggregate fleet overview, or one host's
 // full htop body. Modelled as a sum so "which host" only exists in the
 // branch where a host is selected — there's no nullable host floating
-// alongside a separate "is fleet" flag to keep consistent.
-type View = { kind: "fleet" } | { kind: "host"; host: string };
+// alongside a separate "is fleet" flag to keep consistent. Exported so
+// the tab strip highlights the active tab from this one value rather
+// than a flattened (fleetActive, activeHost) pair that can disagree.
+export type View = { kind: "fleet" } | { kind: "host"; host: string };
 
 export default function App() {
   const admin = adminClient();
@@ -123,8 +125,7 @@ export default function App() {
       <div class="mx-auto max-w-6xl overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
         <TabStrip
           hosts={hostList()}
-          active={selectedHost()}
-          fleetActive={resolvedView().kind === "fleet"}
+          activeTab={resolvedView()}
           onSelectFleet={() => setView({ kind: "fleet" })}
           onSelect={(h) => setView({ kind: "host", host: h })}
           onAdd={onAdd}
