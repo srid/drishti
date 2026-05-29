@@ -111,12 +111,20 @@ function createPersistedSignal<T extends string>(
 // Accumulate a host's streamed metric ring into a signal: the full snapshot on
 // connect, then one delta per tick, bounded to the server's retention. The
 // stream lives off the passed `signal`, so the caller's controller (shared or
-// its own) tears it down on unmount.
+// its own) tears it down on unmount. `streamError` carries a dead feed into
+// the reactive graph — every other per-host subscription (system / connection
+// / cores / nics) already surfaces its `onError`; without this the metric
+// stream would be the lone one swallowing failure to the console, leaving an
+// empty ring to read identically as "no samples yet" and "stream died".
 function subscribeMetricHistory(
   app: ReturnType<typeof surfaceForHost>,
   signal: AbortSignal,
-): Accessor<MetricSample[]> {
+): {
+  history: Accessor<MetricSample[]>;
+  streamError: Accessor<Error | null>;
+} {
   const [history, setHistory] = createSignal<MetricSample[]>([]);
+  const [streamError, setStreamError] = createSignal<Error | null>(null);
   void (async () => {
     try {
       const stream = await streamCall(
@@ -132,10 +140,26 @@ function subscribeMetricHistory(
           );
       }
     } catch (err) {
-      if (!signal.aborted) console.error("metricHistory stream failed", err);
+      if (!signal.aborted) {
+        console.error("metricHistory stream failed", err);
+        setStreamError(err instanceof Error ? err : new Error(String(err)));
+      }
     }
   })();
-  return history;
+  return { history, streamError };
+}
+
+// Overlay text for a sparkline with no drawable point yet — the one place that
+// distinguishes the two states an empty ring conflates: a feed that simply
+// hasn't produced its first sample ("collecting…") from one whose stream has
+// died ("unavailable"). Returns null once any sample exists, so the trace
+// itself is what's shown.
+function sparklinePlaceholder(
+  latest: MetricSample | null,
+  error: Error | null,
+): string | null {
+  if (latest !== null) return null;
+  return error ? "unavailable" : "collecting…";
 }
 
 // Project a metric ring to the chart's two SVG polylines plus the latest
@@ -363,7 +387,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
   // duration picker — and tears the stream down with the card via `ctl`.
   const ctl = new AbortController();
   onCleanup(() => ctl.abort());
-  const history = subscribeMetricHistory(app, ctl.signal);
+  const { history, streamError } = subscribeMetricHistory(app, ctl.signal);
   const { latest, cpuPoints, memPoints } = projectHistory(history, () =>
     windowMsFor("30m"),
   );
@@ -445,7 +469,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
           <Sparkline
             cpuPoints={cpuPoints()}
             memPoints={memPoints()}
-            empty={latest() === null}
+            placeholder={sparklinePlaceholder(latest(), streamError())}
             class="h-10"
           />
         </div>
@@ -608,7 +632,7 @@ function HostView(props: { host: string }) {
   // mount/cleanup lifecycle with processesSnapshot — one controller tears
   // both down on unmount. The fleet card runs the same two steps off its own
   // controller (see `subscribeMetricHistory` / `projectHistory`).
-  const history = subscribeMetricHistory(app, ctl.signal);
+  const { history, streamError } = subscribeMetricHistory(app, ctl.signal);
   const { latest: latestSample, cpuPoints, memPoints } = projectHistory(
     history,
     windowMs,
@@ -637,6 +661,7 @@ function HostView(props: { host: string }) {
           cpuPoints={cpuPoints()}
           memPoints={memPoints()}
           latest={latestSample()}
+          streamError={streamError()}
           windowKey={historyWindow()}
           onWindow={setHistoryWindow}
         />
@@ -1090,6 +1115,7 @@ function HistoryChart(props: {
   cpuPoints: string;
   memPoints: string;
   latest: MetricSample | null;
+  streamError: Error | null;
   windowKey: HistoryWindowKey;
   onWindow: (k: HistoryWindowKey) => void;
 }) {
@@ -1112,7 +1138,7 @@ function HistoryChart(props: {
       <Sparkline
         cpuPoints={props.cpuPoints}
         memPoints={props.memPoints}
-        empty={props.latest === null}
+        placeholder={sparklinePlaceholder(props.latest, props.streamError)}
         class="h-24"
       />
     </MetricSection>
@@ -1124,12 +1150,13 @@ function HistoryChart(props: {
 // 0-100 grid (percentages on both axes), so `preserveAspectRatio="none"` lets
 // the trace stretch to whatever the caller sizes it (`class` sets the height);
 // the strokes use `vector-effect="non-scaling-stroke"` to stay 1px crisp under
-// that stretch. `empty` swaps in a "collecting…" placeholder until the first
-// sample lands.
+// that stretch. `placeholder` (when non-null) overlays a status word —
+// "collecting…" before the first sample, "unavailable" on a dead feed — in
+// place of the trace.
 function Sparkline(props: {
   cpuPoints: string;
   memPoints: string;
-  empty: boolean;
+  placeholder: string | null;
   class?: string;
 }) {
   return (
@@ -1161,9 +1188,9 @@ function Sparkline(props: {
           vector-effect="non-scaling-stroke"
         />
       </svg>
-      <Show when={props.empty}>
+      <Show when={props.placeholder !== null}>
         <div class="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-500">
-          collecting…
+          {props.placeholder}
         </div>
       </Show>
     </div>
