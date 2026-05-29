@@ -507,7 +507,6 @@ function HostView(props: { host: string }) {
           cpuPoints={cpuPoints()}
           memPoints={memPoints()}
           latest={latestSample()}
-          hasSamples={history().length > 0}
           windowKey={historyWindow()}
           onWindow={setHistoryWindow}
         />
@@ -928,7 +927,6 @@ function HistoryChart(props: {
   cpuPoints: string;
   memPoints: string;
   latest: Sample | null;
-  hasSamples: boolean;
   windowKey: HistoryWindowKey;
   onWindow: (k: HistoryWindowKey) => void;
 }) {
@@ -974,7 +972,7 @@ function HistoryChart(props: {
             vector-effect="non-scaling-stroke"
           />
         </svg>
-        <Show when={!props.hasSamples}>
+        <Show when={props.latest === null}>
           <div class="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-500">
             collecting…
           </div>
