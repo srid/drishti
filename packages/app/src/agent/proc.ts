@@ -440,14 +440,28 @@ export function parsePsLine(line: string): [Pid, Process] | null {
  *
  *  macOS `os.freemem()` counts only truly-free Mach pages, so
  *  `total - free` reports a host as 80-95% used even when most of that is
- *  reclaimable file cache. The reclaimable classes — free, inactive,
- *  purgeable, speculative, and file-backed (external) pages — are all
- *  evictable under pressure, so they count as *available*, matching
- *  Linux's MemAvailable heuristic.
+ *  reclaimable file cache. We sum the reclaimable classes — free, inactive,
+ *  speculative, and purgeable pages — which are all evictable under
+ *  pressure, so they count as *available*, matching Linux's MemAvailable
+ *  heuristic.
+ *
+ *  These are mutually exclusive *LRU-list* counters: every physical page
+ *  sits on exactly one of the free / active / inactive / speculative lists,
+ *  so free + inactive + speculative never double-counts a page. ("Pages
+ *  purgeable" overlaps active/inactive, but purgeable pages are reclaimed
+ *  first under pressure and are almost always on the inactive list already
+ *  — adding them is a small, bounded over-count, not a systematic one.) We
+ *  deliberately do NOT add "File-backed pages": that counter tallies *all*
+ *  file-backed pages regardless of LRU list, so it re-counts the
+ *  file-backed pages already in "Pages inactive" and the read-ahead pages
+ *  in "Pages speculative" — adding it would let `available` exceed physical
+ *  total and drive `memUsed` (total - available) negative. The caller still
+ *  clamps the subtraction at 0 as a final guard against the bounded
+ *  purgeable overlap.
  *
  *  This returns only what vm_stat knows — available bytes. The physical
  *  total is a different, non-volatile source (`totalmem()`/`hw.memsize`)
- *  the reader owns; it assembles the MemInfo where total and available are
+ *  the reader owns; it pairs total with this available where the two are
  *  genuinely co-present. `pageSize` defaults to the size in the header
  *  (`(page size of N bytes)`); the param lets tests pin it. Pure — no
  *  clock or platform state — to stay unit-testable, mirroring parsePsLine
@@ -470,9 +484,8 @@ export function parseVmStat(
   const reclaimable =
     pages("Pages free") +
     pages("Pages inactive") +
-    pages("Pages purgeable") +
     pages("Pages speculative") +
-    pages("File-backed pages");
+    pages("Pages purgeable");
   return { available: size * reclaimable };
 }
 
@@ -502,7 +515,10 @@ function darwinReader(): ProcReader {
       const available = parseVmStat(stdout).available;
       return {
         loadAvg: [la[0] ?? 0, la[1] ?? 0, la[2] ?? 0],
-        memUsed: total - available,
+        // Clamp at 0: vm_stat's "Pages purgeable" can overlap the inactive
+        // list, so `available` may marginally exceed `total`; never report
+        // negative usage.
+        memUsed: Math.max(0, total - available),
         memTotal: total,
         uptime: uptime(),
         os: "darwin",

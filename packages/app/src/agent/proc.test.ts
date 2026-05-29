@@ -115,13 +115,26 @@ describe("parseVmStat", () => {
     "",
   ].join("\n");
 
-  // available = pageSize × (free + inactive + purgeable + speculative + file-backed)
+  // available = pageSize × (free + inactive + speculative + purgeable).
+  // "File-backed pages" is deliberately excluded: it tallies all
+  // file-backed pages regardless of LRU list, double-counting the
+  // file-backed pages already inside "Pages inactive" / "Pages
+  // speculative", which would let available exceed physical total.
   const PAGE = 16384;
-  const reclaimablePages = 100000 + 200000 + 40000 + 30000 + 150000;
+  const reclaimablePages = 100000 + 200000 + 30000 + 40000;
 
   it("derives cache-aware available from reclaimable page classes, parsing page size from the header", () => {
     const mem = parseVmStat(sample);
     expect(mem.available).toBe(PAGE * reclaimablePages);
+  });
+
+  it("excludes File-backed pages so available cannot double-count inactive/speculative file pages", () => {
+    // File-backed pages (150000) overlap the inactive + speculative counts;
+    // adding it would inflate available past the genuine reclaimable set
+    // and could push memUsed (total - available) negative.
+    const withFileBacked = reclaimablePages + 150000;
+    expect(parseVmStat(sample).available).toBe(PAGE * reclaimablePages);
+    expect(parseVmStat(sample).available).toBeLessThan(PAGE * withFileBacked);
   });
 
   it("lets an explicit pageSize argument override the header", () => {
