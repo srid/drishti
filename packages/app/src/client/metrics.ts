@@ -42,7 +42,5 @@ export function formatUptime(uptimeSec: number): string {
  *  connected), never NaN. */
 export function averageCoreUsage(usages: readonly number[]): number {
   if (usages.length === 0) return 0;
-  let sum = 0;
-  for (const u of usages) sum += u;
-  return sum / usages.length;
+  return usages.reduce((s, u) => s + u, 0) / usages.length;
 }
