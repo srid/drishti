@@ -110,7 +110,7 @@ export async function buildClient(distDir: string): Promise<void> {
   const PUBLIC_DIR = resolve(CLIENT_DIR, "public");
   if (!existsSync(PUBLIC_DIR))
     throw new Error(
-      `public assets dir missing at ${PUBLIC_DIR} — run \`bun scripts/gen-pwa-icons.ts\` to generate the icons.`,
+      `public assets dir missing at ${PUBLIC_DIR} — run \`just gen-pwa-icons\` to generate the icons.`,
     );
   await Bun.$`cp -R ${PUBLIC_DIR}/. ${distDir}/`;
 }
