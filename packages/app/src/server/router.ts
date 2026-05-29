@@ -151,6 +151,14 @@ export function buildRouter(opts: BuildRouterOptions) {
     },
   });
 
+  // Compile-time guard for the least-privilege narrowing: the real
+  // fragment must satisfy the pumps' write-only view. Stated here (not only
+  // implied by the bridgeAgentToParent call) so a refactor of that call
+  // can't quietly drop the check — a surface collection rename surfaces as
+  // an error on this line.
+  const _pumpCtx: FragmentCtx = fragment;
+  void _pumpCtx;
+
   // ── Mirror session connection state → parent's `connection` cell ──
   session.onState((s) => {
     fragment.ctx.cells.connection.set({ state: s.connection });
@@ -177,11 +185,14 @@ export function buildRouter(opts: BuildRouterOptions) {
   return { router, session };
 }
 
-/** The subset of `implementSurface(...).ctx` the bridge pumps actually
- *  call. Keep this in sync with the surface's cells/collections —
- *  every cell/collection actually written from a pump must appear
- *  here, otherwise the pumps compile against a narrower-than-real
- *  type and a typo / missing-write goes undetected. */
+/** The write-side methods the bridge pumps are allowed to touch — a
+ *  deliberate least-privilege narrowing of `implementSurface(...).ctx`,
+ *  not the full ctx. Pumps only ever mirror remote data inward, so they
+ *  get `set` / `upsert` / `remove`; `readAll` and the underlying stores
+ *  stay out of reach. This is a boundary, not a maintenance chore: the
+ *  `_pumpCtx` guard below assigns the real fragment to this type, so a
+ *  collection renamed or retyped on the surface becomes a compile error
+ *  here rather than silent drift. */
 type FragmentCtx = {
   ctx: {
     cells: {
