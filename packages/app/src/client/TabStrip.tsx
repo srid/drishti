@@ -16,7 +16,7 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
 import type { View } from "./App";
 import { type ConnectionState, DEFAULT_CONNECTION } from "../common/surface";
-import { DOT_BG, isPendingState } from "./connectionColors";
+import { STATE } from "./connectionColors";
 import { surfaceForHost } from "./wire";
 
 // Shared chip chrome — the fleet tab and the host chips are the same
@@ -104,7 +104,7 @@ function TabChip(props: {
         title={`${props.host} — ${state()}`}
       >
         <span
-          class={`inline-block h-2 w-2 rounded-full ${DOT_BG[state()]} ${isPendingState(state()) ? "animate-pulse" : ""}`}
+          class={`inline-block h-2 w-2 rounded-full ${STATE[state()].dotBg} ${STATE[state()].pending ? "animate-pulse" : ""}`}
         />
         <span class="font-semibold">{props.host}</span>
       </button>

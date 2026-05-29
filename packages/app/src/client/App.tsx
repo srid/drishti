@@ -36,13 +36,7 @@ import {
   type Process,
   type SystemInfo,
 } from "../common/surface";
-import {
-  DOT_BG,
-  isPendingState,
-  STATE_LABEL,
-  STATE_MESSAGE,
-  STATE_TEXT,
-} from "./connectionColors";
+import { STATE } from "./connectionColors";
 import { averageCoreUsage, formatUptime, memGb, memPct } from "./metrics";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import { TabStrip } from "./TabStrip";
@@ -218,12 +212,12 @@ function HostCard(props: { host: string; onSelect: () => void }) {
     >
       <div class="flex items-center gap-2">
         <span
-          class={`inline-block h-2 w-2 shrink-0 rounded-full ${DOT_BG[state()]} ${isPendingState(state()) ? "animate-pulse" : ""}`}
+          class={`inline-block h-2 w-2 shrink-0 rounded-full ${STATE[state()].dotBg} ${STATE[state()].pending ? "animate-pulse" : ""}`}
         />
         <span class="truncate font-semibold" title={props.host}>
           {props.host}
         </span>
-        <span class={`ml-auto shrink-0 text-xs ${STATE_TEXT[state()]}`}>
+        <span class={`ml-auto shrink-0 text-xs ${STATE[state()].text}`}>
           {state()}
         </span>
       </div>
@@ -232,7 +226,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
         when={state() === "connected"}
         fallback={
           <div class="py-3 text-center text-xs text-gray-400 dark:text-gray-500">
-            {STATE_LABEL[state()]}
+            {STATE[state()].label}
           </div>
         }
       >
@@ -447,7 +441,7 @@ function Header(props: {
             <span class="text-gray-500">host:</span>{" "}
             <span class="font-semibold">{props.system.hostname || "—"}</span>
           </span>
-          <span class={STATE_TEXT[props.connection.state]}>
+          <span class={STATE[props.connection.state].text}>
             ● {props.connection.state}
           </span>
           <span class="text-gray-500">·</span>
@@ -527,7 +521,7 @@ function FilterBar(props: {
 function ConnectingOverlay(props: { state: ConnectionState }) {
   return (
     <div class="px-4 py-12 text-center text-gray-600 dark:text-gray-400">
-      <div class="mb-2 text-lg">{STATE_MESSAGE[props.state]}</div>
+      <div class="mb-2 text-lg">{STATE[props.state].message}</div>
       <div class="text-xs">
         First connect provisions the agent closure via <code>nix copy</code>.
         Subsequent connects reuse it.

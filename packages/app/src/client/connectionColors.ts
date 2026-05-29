@@ -1,48 +1,55 @@
 /**
- * Connection-state → Tailwind colour maps, single-sourced so the header
- * text (`STATE_TEXT`), the tab-strip dots, and the fleet-card dots
- * (`DOT_BG`) can't drift apart. Both are total over `ConnectionState`,
- * so adding a state is a compile error until every surface is updated.
+ * Per-connection-state presentation, single-sourced. Each state maps to
+ * one `StatePresentation` row rather than living as five parallel
+ * `Record<ConnectionState, …>` maps — `Record` totality already forces
+ * every state to be present, but one map also forces every *aspect*
+ * (dot colour, text colour, terse label, verbose message, pending flag)
+ * to be filled in together, so they can't drift and adding a state is a
+ * single row, not five edits.
  */
 
 import type { ConnectionState } from "../common/surface";
 
-/** Text colour for an inline "● connected" style label. */
-export const STATE_TEXT: Record<ConnectionState, string> = {
-  connected: "text-emerald-500",
-  disconnected: "text-red-500",
-  copying: "text-amber-500",
-  connecting: "text-amber-500",
+type StatePresentation = {
+  /** Status-dot background colour. */
+  dotBg: string;
+  /** Inline "● connected" text colour. */
+  text: string;
+  /** Terse label — the fleet card's tight fallback. */
+  label: string;
+  /** Verbose status line — the full-pane connecting overlay. */
+  message: string;
+  /** Work-in-progress state whose dot should pulse. */
+  pending: boolean;
 };
 
-/** Background colour for a status dot. */
-export const DOT_BG: Record<ConnectionState, string> = {
-  connected: "bg-emerald-500",
-  disconnected: "bg-red-500",
-  copying: "bg-amber-500",
-  connecting: "bg-amber-500",
-};
-
-/** Whether a dot for this state should pulse (work-in-progress states). */
-export function isPendingState(state: ConnectionState): boolean {
-  return state === "copying" || state === "connecting";
-}
-
-/** Compact status label — the fleet card's tight fallback. Total over
- *  `ConnectionState`, so the card can't silently fall through to a stale
- *  default when a new state is added to the schema. */
-export const STATE_LABEL: Record<ConnectionState, string> = {
-  connected: "connected",
-  copying: "provisioning agent…",
-  connecting: "connecting…",
-  disconnected: "no data",
-};
-
-/** Verbose status line — the full-pane connecting overlay, where there's
- *  room for a more reassuring phrasing than the card's terse label. */
-export const STATE_MESSAGE: Record<ConnectionState, string> = {
-  connected: "Connected.",
-  copying: "Copying agent to remote…",
-  connecting: "Connecting…",
-  disconnected: "Disconnected. Retrying…",
+export const STATE: Record<ConnectionState, StatePresentation> = {
+  connected: {
+    dotBg: "bg-emerald-500",
+    text: "text-emerald-500",
+    label: "connected",
+    message: "Connected.",
+    pending: false,
+  },
+  connecting: {
+    dotBg: "bg-amber-500",
+    text: "text-amber-500",
+    label: "connecting…",
+    message: "Connecting…",
+    pending: true,
+  },
+  copying: {
+    dotBg: "bg-amber-500",
+    text: "text-amber-500",
+    label: "provisioning agent…",
+    message: "Copying agent to remote…",
+    pending: true,
+  },
+  disconnected: {
+    dotBg: "bg-red-500",
+    text: "text-red-500",
+    label: "no data",
+    message: "Disconnected. Retrying…",
+    pending: false,
+  },
 };
