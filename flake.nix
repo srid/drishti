@@ -68,6 +68,11 @@
       # system attr structure.
       agentDrvsJson = builtins.toJSON agentDrvBySystem;
 
+      # home-manager module — runs the monitor as a systemd user service on
+      # Linux and a launchd LaunchAgent on macOS. System-independent; the
+      # consumer supplies `services.drishti.package` per their system.
+      homeManagerModules.default = import ./nix/home/module.nix;
+
       # `nix fmt` — format *.nix files only.
       formatter = eachSystem ({ pkgs, ... }: pkgs.nixpkgs-fmt);
 

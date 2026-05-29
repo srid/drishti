@@ -15,7 +15,7 @@ nix_shell := if env('IN_NIX_SHELL', '') != '' { '' } else { 'nix develop --accep
 [macos]
 [parallel]
 [metadata("ci")]
-default: nix typecheck fmt-check bun-nix-fresh
+default: nix typecheck fmt-check bun-nix-fresh home-manager
 
 # Single per-platform `bun install`. Funnel every bun consumer through this
 # node so concurrent `bun install` runs against the same workspace don't race.
@@ -38,6 +38,13 @@ _prefetch-crates:
 # Build all flake outputs via devour-flake.
 nix: _prefetch-crates
     nix build github:srid/devour-flake -L --no-link --print-out-paths --override-input flake .
+
+# Build the home-manager example flake (nix/home/example) against THIS repo:
+# the Linux nixosTest boots a VM and curls the systemd user service, and the
+# Darwin check eval-builds the launchd plist. `flake/drishti` is overridden to
+# the repo root so the example consumes the local module, not the published one.
+home-manager: nix
+    nix build github:srid/devour-flake -L --no-link --print-out-paths --override-input flake ./nix/home/example --override-input flake/drishti .
 
 # TypeScript type checking
 typecheck: install
