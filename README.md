@@ -94,6 +94,28 @@ just regenerate-bun-nix           # after any bun.lock change
 
 The first connect to a fresh remote ships the agent closure over `ssh` (`nix copy --derivation` then `nix-store --realise`); subsequent connects reuse it. The progress is streamed to the browser via the `connection` cell.
 
+## Deployment (home-manager)
+
+A home-manager module runs the monitor as a systemd user service on Linux and as a launchd LaunchAgent on macOS:
+
+```nix
+{
+  imports = [ drishti.homeManagerModules.default ];
+  services.drishti = {
+    enable = true;
+    package = drishti.packages.${system}.default;
+    port = 7720;                  # default
+    hosts = [ "user@host-a" ];    # optional; empty = manage hosts at runtime
+  };
+}
+```
+
+The monitor binds `0.0.0.0` on `port`. `hosts` are passed as positional arguments; leave it empty to let drishti seed from its persisted hosts file (`$XDG_STATE_HOME/drishti/hosts.json`, overridable via `services.drishti.hostsFile`) and manage the set from the admin surface. The packaged wrapper already bakes `DRISHTI_DIST_DIR` / `DRISHTI_AGENT_DRVS_JSON` and puts `openssh` + `nix` on `PATH`, so the service self-contains its runtime needs.
+
+See [`nix/home/example/`](nix/home/example/) for a full configuration — a NixOS VM test exercises the systemd path on Linux, and a standalone home-manager activation build exercises the launchd path on Darwin.
+
+On macOS, the LaunchAgent writes stdout to `~/Library/Logs/drishti.out.log` and stderr to `~/Library/Logs/drishti.err.log`, so crashes and startup failures leave logs alongside other user logs.
+
 ## Project layout
 
 ```
@@ -110,9 +132,12 @@ drishti/
 │  ├─ nixpkgs.nix
 │  ├─ overlay.nix             # kolu-surface, kolu-surface-nix-host
 │  ├─ env.nix                 # DRISHTI_KOLU_SURFACE{,_NIX_HOST}
-│  └─ packages/
-│     ├─ kolu-package.nix     # mkKoluPackage factory
-│     └─ drishti/default.nix  # bun2nix build derivation
+│  ├─ packages/
+│  │  ├─ kolu-package.nix     # mkKoluPackage factory
+│  │  └─ drishti/default.nix  # bun2nix build derivation
+│  └─ home/
+│     ├─ module.nix           # home-manager module (systemd / launchd)
+│     └─ example/             # example config — CI-built (VM + launchd checks)
 ├─ scripts/
 │  └─ hydrate-kolu-packages.sh
 └─ packages/app/
