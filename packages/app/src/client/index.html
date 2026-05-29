@@ -5,6 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>drishti — remote process monitor</title>
     <link rel="stylesheet" href="./styles.css" />
+    <!-- Apply the saved (or OS-default) theme before first paint to avoid a
+         flash of the wrong colours. Runs before any module loads, so it
+         can't import theme.ts — the "drishti:theme" key must match THEME_KEY
+         there. -->
+    <script>
+      try {
+        var t = localStorage.getItem("drishti:theme");
+        if (t !== "light" && t !== "dark")
+          t = matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light";
+        document.documentElement.dataset.theme = t;
+      } catch (_) {
+        /* storage blocked — fall through to CSS/OS default */
+      }
+    </script>
   </head>
   <body class="m-0 antialiased">
     <div id="root"></div>

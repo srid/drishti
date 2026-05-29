@@ -57,15 +57,19 @@ import {
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
   type HistoryWindowKey,
+  isHistoryWindowKey,
   polylinePoints,
   pushSample,
   windowMsFor,
   windowSlice,
 } from "../common/history";
 import { TabStrip } from "./TabStrip";
+import { prefKey, readPref, writePref } from "./localStorageState";
+import { applyTheme, initialTheme, otherTheme, type Theme } from "./theme";
 import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
 
-type SortKey = "cpu" | "mem" | "pid" | "user";
+const SORT_KEYS = ["cpu", "mem", "pid", "user"] as const;
+type SortKey = (typeof SORT_KEYS)[number];
 
 export default function App() {
   const admin = adminClient();
@@ -140,6 +144,17 @@ export default function App() {
     return v.kind === "host" ? v.host : null;
   });
 
+  // Theme is global app chrome (like `view`), so it lives here, not per
+  // host. The signal seeds from the attribute the pre-paint bootstrap in
+  // index.html already applied; toggling flips the attribute and persists
+  // the choice. `applyTheme` is the single writer of both DOM and storage.
+  const [theme, setTheme] = createSignal<Theme>(initialTheme());
+  const toggleTheme = () => {
+    const next = otherTheme(theme());
+    applyTheme(next);
+    setTheme(next);
+  };
+
   const onAdd = async (host: string): Promise<string | null> => {
     try {
       const res = await admin.rpc.surface.hosts.add({ host });
@@ -174,6 +189,8 @@ export default function App() {
           onSelect={(h) => setView({ kind: "host", host: h })}
           onAdd={onAdd}
           onRemove={onRemove}
+          theme={theme()}
+          onToggleTheme={toggleTheme}
         />
         <Show
           when={hostList().length > 0}
@@ -360,8 +377,33 @@ function HostView(props: { host: string }) {
     }
   })();
 
-  const [filter, setFilter] = createSignal("");
-  const [sortKey, setSortKey] = createSignal<SortKey>("cpu");
+  // Per-host UI preferences, persisted to localStorage and keyed by host.
+  // These signals live in this keyed component, so each host restores its
+  // own filter/sort/window on reload or tab switch — per-host scope falls
+  // out of where the state already lives. Each effect mirrors changes back
+  // to storage (`defer` skips the redundant write of the just-read seed),
+  // the same signal-is-truth / store-is-projection shape as App's URL
+  // mirror — just a private store (localStorage) instead of the shareable
+  // one (the URL).
+  const [filter, setFilter] = createSignal(
+    readPref(prefKey("filter", props.host), ""),
+  );
+  createEffect(
+    on(filter, (v) => writePref(prefKey("filter", props.host), v), {
+      defer: true,
+    }),
+  );
+
+  const [sortKey, setSortKey] = createSignal<SortKey>(
+    readPref<SortKey>(prefKey("sort", props.host), "cpu", (raw) =>
+      (SORT_KEYS as readonly string[]).includes(raw),
+    ),
+  );
+  createEffect(
+    on(sortKey, (v) => writePref(prefKey("sort", props.host), v), {
+      defer: true,
+    }),
+  );
 
   const currentSystem = createMemo(() => system.value() ?? DEFAULT_SYSTEM);
   const currentConnection = createMemo(
@@ -431,8 +473,18 @@ function HostView(props: { host: string }) {
   // every fresh mount), then one delta per tick. `pushSample` bounds the
   // locally-accumulated deltas to the same retention as the server ring.
   const [history, setHistory] = createSignal<MetricSample[]>([]);
-  const [historyWindow, setHistoryWindow] =
-    createSignal<HistoryWindowKey>(DEFAULT_HISTORY_WINDOW);
+  const [historyWindow, setHistoryWindow] = createSignal<HistoryWindowKey>(
+    readPref(
+      prefKey("window", props.host),
+      DEFAULT_HISTORY_WINDOW,
+      isHistoryWindowKey,
+    ),
+  );
+  createEffect(
+    on(historyWindow, (v) => writePref(prefKey("window", props.host), v), {
+      defer: true,
+    }),
+  );
   const windowMs = createMemo(() => windowMsFor(historyWindow()));
 
   // Reuses `ctl` — the metricHistory and processesSnapshot streams share
