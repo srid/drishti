@@ -27,3 +27,22 @@ export const DOT_BG: Record<ConnectionState, string> = {
 export function isPendingState(state: ConnectionState): boolean {
   return state === "copying" || state === "connecting";
 }
+
+/** Compact status label — the fleet card's tight fallback. Total over
+ *  `ConnectionState`, so the card can't silently fall through to a stale
+ *  default when a new state is added to the schema. */
+export const STATE_LABEL: Record<ConnectionState, string> = {
+  connected: "connected",
+  copying: "provisioning agent…",
+  connecting: "connecting…",
+  disconnected: "no data",
+};
+
+/** Verbose status line — the full-pane connecting overlay, where there's
+ *  room for a more reassuring phrasing than the card's terse label. */
+export const STATE_MESSAGE: Record<ConnectionState, string> = {
+  connected: "Connected.",
+  copying: "Copying agent to remote…",
+  connecting: "Connecting…",
+  disconnected: "Disconnected. Retrying…",
+};

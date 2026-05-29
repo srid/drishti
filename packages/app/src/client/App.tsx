@@ -36,7 +36,13 @@ import {
   type Process,
   type SystemInfo,
 } from "../common/surface";
-import { DOT_BG, isPendingState, STATE_TEXT } from "./connectionColors";
+import {
+  DOT_BG,
+  isPendingState,
+  STATE_LABEL,
+  STATE_MESSAGE,
+  STATE_TEXT,
+} from "./connectionColors";
 import { averageCoreUsage, formatUptime, memGb, memPct } from "./metrics";
 import { TabStrip } from "./TabStrip";
 import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
@@ -221,11 +227,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
         when={state() === "connected"}
         fallback={
           <div class="py-3 text-center text-xs text-gray-400 dark:text-gray-500">
-            {state() === "copying"
-              ? "provisioning agent…"
-              : state() === "connecting"
-                ? "connecting…"
-                : "no data"}
+            {STATE_LABEL[state()]}
           </div>
         }
       >
@@ -526,16 +528,10 @@ function FilterBar(props: {
   );
 }
 
-function ConnectingOverlay(props: { state: string }) {
-  const msg = () =>
-    ({
-      copying: "Copying agent to remote…",
-      connecting: "Connecting…",
-      disconnected: "Disconnected. Retrying…",
-    })[props.state] ?? "Initializing…";
+function ConnectingOverlay(props: { state: ConnectionState }) {
   return (
     <div class="px-4 py-12 text-center text-gray-600 dark:text-gray-400">
-      <div class="mb-2 text-lg">{msg()}</div>
+      <div class="mb-2 text-lg">{STATE_MESSAGE[props.state]}</div>
       <div class="text-xs">
         First connect provisions the agent closure via <code>nix copy</code>.
         Subsequent connects reuse it.
