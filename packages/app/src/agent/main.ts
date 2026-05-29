@@ -174,21 +174,6 @@ async function main(): Promise<void> {
         },
       },
     },
-    procedures: {
-      process: {
-        kill: async ({ input }) => {
-          try {
-            process.kill(input.pid, input.signal);
-            return { ok: true };
-          } catch (err) {
-            log(
-              `kill ${input.pid} ${input.signal} failed: ${(err as Error).message}`,
-            );
-            return { ok: false };
-          }
-        },
-      },
-    },
   });
 
   // Poll loop: refresh system + processes, diff against current

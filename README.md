@@ -31,7 +31,7 @@ Open <http://localhost:7720>. The UI opens on the **fleet** tab — a single ove
 - **Runtime host management** — the `+ add host` button adds hosts, the `×` on each tab removes one. Added/removed hosts persist to `$XDG_STATE_HOME/drishti/hosts.json` (override with `DRISHTI_HOSTS_FILE`), so `nix run github:srid/drishti` with no args restores the last session.
 - **Per-host view memory** — the chart window, process sort column, and process filter stick across reloads via `localStorage`, remembered per host. A **light/dark toggle** (top-right of the tab strip) overrides the OS theme and is remembered globally; until you touch it, the theme follows your system preference.
 - **Idle NICs collapse** behind a `+N idle` toggle by default, so the few interfaces moving traffic aren't buried under the dozens of always-zero virtual ones (utunN, anpiN, …).
-- **Process kill** — sends `TERM` / `KILL` / `HUP` / `INT`; the only mutation.
+- **Strictly read-only** — drishti only ever *observes* a host. The per-host surface exposes no procedures, so there is no way to signal, kill, or otherwise mutate a monitored process through the UI or the wire.
 
 Requirements:
 
@@ -68,7 +68,8 @@ Per-host primitives:
 | **Stream** | `processesSnapshot` | Bulk-snapshot variant for ~600-PID htop refresh in one frame. |
 | **Collection** | `cpuCores` | Per-core CPU usage (`Collection<K,T>` showcase). |
 | **Collection** | `networkInterfaces` | Per-NIC network I/O, keyed by interface name — `{ rxBytes, txBytes, rxRate, txRate }` (cumulative bytes since boot + bytes/sec throughput). `/proc/net/dev` on linux, `netstat -ib` on darwin; loopback filtered out. The UI strip collapses idle interfaces (both rates 0) behind a `+N idle` toggle by default, so the few NICs moving traffic aren't buried under the dozens of always-zero virtual ones (utunN, anpiN, …). |
-| **Procedure** | `process.kill` | The only mutation — sends `TERM` / `KILL` / `HUP` / `INT`. |
+
+The per-host surface is **read-only** — cells, collections, and streams only, no procedures. The only procedures anywhere live on the separate admin surface below (host-set management), never on a monitored host.
 
 Admin surface primitives:
 

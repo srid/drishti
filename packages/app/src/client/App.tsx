@@ -554,14 +554,6 @@ function HostView(props: { host: string }) {
     polylinePoints(windowedSamples(), "mem", chartNow(), windowMs()),
   );
 
-  const killProcess = async (pid: number, signal: "TERM" | "KILL") => {
-    try {
-      await app.rpc.surface.process.kill({ pid, signal });
-    } catch (err) {
-      console.error(`kill ${pid} ${signal} failed`, err);
-    }
-  };
-
   return (
     <>
       <Header
@@ -596,7 +588,6 @@ function HostView(props: { host: string }) {
           processes={processes}
           sortKey={sortKey()}
           onSort={setSortKey}
-          onKill={killProcess}
         />
       </Show>
     </>
@@ -739,7 +730,6 @@ function ProcessTable(props: {
   processes: Record<Pid, Process>;
   sortKey: SortKey;
   onSort: (k: SortKey) => void;
-  onKill: (pid: number, signal: "TERM" | "KILL") => void;
 }) {
   return (
     <div class="max-h-[70vh] overflow-y-auto">
@@ -771,17 +761,12 @@ function ProcessTable(props: {
               onClick={() => props.onSort("mem")}
             />
             <th class="px-3 py-1.5 text-left">COMMAND</th>
-            <th class="px-3 py-1.5 text-right" />
           </tr>
         </thead>
         <tbody>
           <For each={props.pids}>
             {(pid) => (
-              <ProcessRow
-                pid={pid}
-                processes={props.processes}
-                onKill={props.onKill}
-              />
+              <ProcessRow pid={pid} processes={props.processes} />
             )}
           </For>
         </tbody>
@@ -800,7 +785,6 @@ function ProcessTable(props: {
 function ProcessRow(props: {
   pid: Pid;
   processes: Record<Pid, Process>;
-  onKill: (pid: number, signal: "TERM" | "KILL") => void;
 }) {
   const proc = () => props.processes[props.pid];
   const cpu = () => proc()?.cpuPct ?? 0;
@@ -826,16 +810,6 @@ function ProcessRow(props: {
             </span>
           )}
         </Show>
-      </td>
-      <td class="px-3 py-0.5 text-right">
-        <button
-          type="button"
-          class="rounded border border-gray-300 px-1.5 text-xs text-red-600 hover:bg-red-50 dark:border-gray-700 dark:text-red-400 dark:hover:bg-red-950/40"
-          onClick={() => props.onKill(props.pid, "TERM")}
-          title="Send SIGTERM"
-        >
-          kill
-        </button>
       </td>
     </tr>
   );
