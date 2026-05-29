@@ -495,16 +495,15 @@ function darwinReader(): ProcReader {
       // cache-aware "available" from vm_stat instead, then mirror linux's
       // `total - available` (kept inline, like linuxReader). totalmem() is
       // the authoritative physical total — vm_stat reports only page
-      // counts, so this line is where total and available are co-present.
+      // counts, so total and available come from the two distinct sources
+      // and are assembled here.
       const { stdout } = await exec("vm_stat");
-      const mem: MemInfo = {
-        total: totalmem(),
-        available: parseVmStat(stdout).available,
-      };
+      const total = totalmem();
+      const available = parseVmStat(stdout).available;
       return {
         loadAvg: [la[0] ?? 0, la[1] ?? 0, la[2] ?? 0],
-        memUsed: mem.total - mem.available,
-        memTotal: mem.total,
+        memUsed: total - available,
+        memTotal: total,
         uptime: uptime(),
         os: "darwin",
         hostname: hostname(),
