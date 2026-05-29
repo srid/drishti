@@ -201,15 +201,20 @@ export function computeNetThroughput(
 function createNetReader(
   readRaw: () => Promise<Map<string, NetCounters>>,
 ): () => Promise<Map<IfaceName, NetInterface>> {
-  let prev = new Map<string, NetCounters>();
-  let prevMs = 0;
+  // The previous counters and when they were sampled are one concept —
+  // they must advance together every tick. Holding them as a single record
+  // (rather than two `let`s) makes the swap atomic, so a future edit can't
+  // update the counters while forgetting the timestamp.
+  let prev: { counters: Map<string, NetCounters>; takenMs: number } = {
+    counters: new Map(),
+    takenMs: 0,
+  };
   return async () => {
-    const cur = await readRaw();
-    const nowMs = Date.now();
-    const winSec = prevMs > 0 ? (nowMs - prevMs) / 1000 : 0;
-    const out = computeNetThroughput(prev, cur, winSec);
-    prev = cur;
-    prevMs = nowMs;
+    const counters = await readRaw();
+    const takenMs = Date.now();
+    const winSec = prev.takenMs > 0 ? (takenMs - prev.takenMs) / 1000 : 0;
+    const out = computeNetThroughput(prev.counters, counters, winSec);
+    prev = { counters, takenMs };
     return out;
   };
 }
