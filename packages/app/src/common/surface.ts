@@ -2,11 +2,14 @@
  * drishti surface — the shape served by the agent over stdio and
  * re-served by the parent over WebSocket.
  *
- * Three primitives carry the entire feature:
+ * Two primitives carry the entire feature:
  *
  *   - `system`     — singleton cell with load averages, memory, uptime.
  *   - `processes`  — keyed collection (PID → per-process snapshot).
- *   - `kill`       — imperative procedure (the only mutation).
+ *
+ * The surface is **strictly read-only**: it exposes cells, collections,
+ * and streams, but no procedures — there is no way to mutate the
+ * monitored host through it.
  *
  * Plus a `connection` cell so the parent can stream "copying agent to
  * remote…" lifecycle to the browser while `nix copy` is in flight.
@@ -202,17 +205,6 @@ export const surface = defineSurface({
     metricHistory: {
       inputSchema: z.object({}),
       outputSchema: MetricHistoryMessage,
-    },
-  },
-  procedures: {
-    process: {
-      kill: {
-        input: z.object({
-          pid: PidSchema,
-          signal: z.enum(["TERM", "KILL", "HUP", "INT"]).default("TERM"),
-        }),
-        output: z.object({ ok: z.boolean() }),
-      },
     },
   },
 });

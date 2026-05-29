@@ -13,8 +13,9 @@
  *   3. Per-key process upserts/removes from the agent flow through to
  *      the framework's channels and on to the browser.
  *
- * `kill` forwards directly to the agent — the parent has no business
- * keeping its own state for an imperative mutation.
+ * The surface is strictly read-only — it carries no procedures, so the
+ * parent only ever mirrors agent data inward; it never forwards a
+ * mutation back to the host.
  */
 
 import { implement } from "@orpc/server";
@@ -164,18 +165,6 @@ export function buildRouter(opts: BuildRouterOptions) {
           } satisfies MetricHistoryMsg;
           for await (const msg of historyBus.subscribe(signal)) {
             yield msg;
-          }
-        },
-      },
-    },
-    procedures: {
-      process: {
-        kill: async ({ input }) => {
-          const client = await session.acquire();
-          try {
-            return await client.surface.process.kill(input);
-          } finally {
-            session.release();
           }
         },
       },
