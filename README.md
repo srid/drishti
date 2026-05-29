@@ -41,7 +41,7 @@ Parent server (Bun, drishti)    Admin surface (host set)
    │  ssh stdio (oRPC) ×N
    ▼
 Host 1: drishti-agent     Host 2: drishti-agent     …
-   │  /proc on linux, sysctl on darwin
+   │  /proc on linux; sysctl + vm_stat / netstat / ps on darwin
    ▼
 Kernel
 ```
@@ -54,7 +54,7 @@ Per-host primitives:
 
 | Primitive | Path | Purpose |
 |---|---|---|
-| **Cell** | `system` | Load averages, memory, uptime, OS, hostname. |
+| **Cell** | `system` | Load averages, memory, uptime, OS, hostname. Memory *used* means the same thing on every OS — total minus a cache-aware *available* (reclaimable file cache / inactive / purgeable pages don't count as used): `MemAvailable` from `/proc/meminfo` on linux, derived from `vm_stat` on darwin (since macOS `os.freemem()` counts only truly-free pages and would over-report a healthy Mac at 80-95%). |
 | **Collection** | `processes` | Keyed by PID — `{ user, cpuPct, rssBytes, command, cwd }`. The table shows absolute resident memory (`rssBytes`, auto-scaled to MB/GB). Snapshot-then-delta. `cwd` is from `/proc/<pid>/cwd` on linux (empty on darwin / kernel threads / other-user pids). |
 | **Stream** | `processesSnapshot` | Bulk-snapshot variant for ~600-PID htop refresh in one frame. |
 | **Collection** | `cpuCores` | Per-core CPU usage (`Collection<K,T>` showcase). |
