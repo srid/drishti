@@ -452,7 +452,10 @@ export function parsePsLine(line: string): [Pid, Process] | null {
  *  in the header (`(page size of N bytes)`); the param lets tests pin it.
  *  Pure — no clock or platform state — to stay unit-testable, mirroring
  *  parsePsLine / parseNetstatIb. */
-export function parseVmStat(stdout: string, pageSize?: number): MemInfo {
+export function parseVmStat(
+  stdout: string,
+  pageSize?: number,
+): { available: number } {
   const size =
     pageSize ??
     (() => {
@@ -473,7 +476,7 @@ export function parseVmStat(stdout: string, pageSize?: number): MemInfo {
     pages("Pages purgeable") +
     pages("Pages speculative") +
     pages("File-backed pages");
-  return { total: 0, available: size * reclaimable };
+  return { available: size * reclaimable };
 }
 
 function darwinReader(): ProcReader {
