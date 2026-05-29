@@ -12,6 +12,9 @@
  * no-storage posture (the in-memory-ring decision from the feature plan).
  */
 
+import type { SystemInfo } from "../common/surface";
+import { averageCoreUsage, memPct } from "./metrics";
+
 export interface Sample {
   /** Wall-clock capture time, epoch ms. */
   t: number;
@@ -51,6 +54,20 @@ export const HISTORY_RETENTION_MS = Math.max(
  *  window if the key is somehow unknown (never NaN). */
 export function windowMsFor(key: HistoryWindowKey): number {
   return HISTORY_WINDOWS.find((w) => w.key === key)?.ms ?? HISTORY_WINDOWS[0].ms;
+}
+
+/** Assemble a `Sample` from a live system snapshot and the per-core usages
+ *  captured at one instant — the single home for "what a captured sample
+ *  is." Adding a series (say, load) becomes one edit here plus the chart,
+ *  not a change scattered across the capture site too. Pure: `t` is passed
+ *  in, and the cpu/mem derivations reuse the canonical helpers from
+ *  metrics.ts rather than re-deriving the averaging/ratio. */
+export function captureSample(
+  t: number,
+  system: SystemInfo,
+  coreUsages: readonly number[],
+): Sample {
+  return { t, cpu: averageCoreUsage(coreUsages), mem: memPct(system) };
 }
 
 /** Append a sample and evict any older than `retentionMs` behind the

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import type { SystemInfo } from "../common/surface";
 import {
+  captureSample,
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
   polylinePoints,
@@ -12,6 +14,34 @@ import {
 function sample(t: number, cpu = 0, mem = 0): Sample {
   return { t, cpu, mem };
 }
+
+function sys(over: Partial<SystemInfo> = {}): SystemInfo {
+  return {
+    loadAvg: [0, 0, 0],
+    memUsed: 0,
+    memTotal: 0,
+    uptime: 0,
+    os: "linux",
+    hostname: "h",
+    pollIntervalMs: 1000,
+    ...over,
+  };
+}
+
+describe("captureSample", () => {
+  it("averages the per-core usages and computes memory %", () => {
+    const s = captureSample(
+      5000,
+      sys({ memUsed: 4e9, memTotal: 16e9 }),
+      [10, 20, 30, 40],
+    );
+    expect(s).toEqual({ t: 5000, cpu: 25, mem: 25 });
+  });
+
+  it("yields 0 cpu for a host reporting no cores (never NaN)", () => {
+    expect(captureSample(0, sys(), []).cpu).toBe(0);
+  });
+});
 
 describe("HISTORY_WINDOWS", () => {
   it("is ascending by span", () => {

@@ -52,6 +52,7 @@ import {
 } from "./metrics";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import {
+  captureSample,
   DEFAULT_HISTORY_WINDOW,
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
@@ -445,13 +446,14 @@ function HostView(props: { host: string }) {
         const intervalMs = pollMs > 0 ? pollMs : 2000;
         const id = setInterval(() => {
           if (currentConnection().state !== "connected") return;
-          const cpu = averageCoreUsage(
-            coreIds().map((cid) => cores.byKey(cid)?.()?.usagePct ?? 0),
-          );
           setHistory((prev) =>
             pushSample(
               prev,
-              { t: Date.now(), cpu, mem: memPct(currentSystem()) },
+              captureSample(
+                Date.now(),
+                currentSystem(),
+                coreIds().map((cid) => cores.byKey(cid)?.()?.usagePct ?? 0),
+              ),
               HISTORY_RETENTION_MS,
             ),
           );
