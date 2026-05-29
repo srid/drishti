@@ -4,6 +4,14 @@
 # service actually starts and binds its port. Darwin: standalone
 # home-manager eval-build that verifies the launchd path produces a valid
 # plist (no runtime test — CI builders don't have a launchd session).
+#
+# Standalone evaluation note: the committed flake.lock pins `drishti` to the
+# master tip, which only exports `homeManagerModules` once this PR lands
+# upstream. Until then, evaluate/build this example against a local checkout
+# that has the module, e.g.
+#   nix flake check ./nix/home/example --override-input drishti .
+# (CI does exactly this — see the inputs comment below.) After the PR merges,
+# `nix flake update` in this directory makes standalone evaluation work.
 {
   inputs = {
     # In CI, justci builds this with --override-input drishti pointing to the repo root.
