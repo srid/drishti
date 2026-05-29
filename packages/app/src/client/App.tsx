@@ -186,6 +186,9 @@ function HostCard(props: { host: string; onSelect: () => void }) {
   const state = createMemo<ConnectionState>(
     () => (connection.value() ?? DEFAULT_CONNECTION).state,
   );
+  // coreCount and cpuPct share a single cores.keys() iteration so the
+  // detail string in CardMetric doesn't need a second spread.
+  const coreCount = createMemo(() => [...cores.keys()].length);
   const cpuPct = createMemo(() =>
     averageCoreUsage(
       [...cores.keys()].map((id) => cores.byKey(id)?.()?.usagePct ?? 0),
@@ -226,7 +229,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
         <CardMetric
           label="cpu"
           pct={cpuPct()}
-          detail={`${cpuPct().toFixed(0)}% · ${[...cores.keys()].length} cores`}
+          detail={`${cpuPct().toFixed(0)}% · ${coreCount()} cores`}
         />
         <CardMetric label="mem" pct={mem()} detail={memText()} />
         <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400">
@@ -423,9 +426,14 @@ function Header(props: {
   connection: ReturnType<() => typeof DEFAULT_CONNECTION>;
   count: number;
 }) {
+  // Pure derivations cached once per render — props.system is a reactive
+  // read that re-runs this component body when it changes, so these are
+  // computed once per system tick, not once per JSX expression.
+  const pct = memPct(props.system);
+  const gb = memGb(props.system);
   return (
     <div class="border-b border-gray-200 dark:border-gray-800">
-      <UsageBar pct={memPct(props.system)} />
+      <UsageBar pct={pct} />
       <div class="flex items-center justify-between px-4 py-2">
         <div class="flex items-center gap-3">
           <span class="font-semibold">drishti</span>
@@ -460,10 +468,10 @@ function Header(props: {
           </span>
         </span>
         <span>
-          mem <span class="font-semibold">{memGb(props.system).used}</span>
-          <span class="text-gray-400">/{memGb(props.system).total} GB</span>
+          mem <span class="font-semibold">{gb.used}</span>
+          <span class="text-gray-400">/{gb.total} GB</span>
           <span class="ml-1 text-gray-400">
-            ({memPct(props.system).toFixed(0)}%)
+            ({pct.toFixed(0)}%)
           </span>
         </span>
         <span>
