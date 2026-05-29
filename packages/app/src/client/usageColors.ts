@@ -6,20 +6,22 @@
  * is one decision — `severityBg` owns it.
  */
 
-function severityBg(pct: number, amberAbove: number, redAbove: number): string {
-  if (pct > redAbove) return "bg-red-500";
-  if (pct > amberAbove) return "bg-amber-500";
+// Named thresholds so a caller can't silently invert severity by
+// swapping two positional numbers (`severityBg(pct, 85, 65)`).
+function severityBg(pct: number, at: { amber: number; red: number }): string {
+  if (pct > at.red) return "bg-red-500";
+  if (pct > at.amber) return "bg-amber-500";
   return "bg-emerald-500";
 }
 
 /** Memory / overall usage bar fill — amber past 65%, red past 85%. */
 export function usageBarColor(pct: number): string {
-  return severityBg(pct, 65, 85);
+  return severityBg(pct, { amber: 65, red: 85 });
 }
 
 /** Per-core CPU bar fill — runs hotter, so amber past 50%, red past 80%. */
 export function coreUsageColor(pct: number): string {
-  return severityBg(pct, 50, 80);
+  return severityBg(pct, { amber: 50, red: 80 });
 }
 
 /** Per-process CPU%/MEM% text colour. Distinct from the bars: it tints
