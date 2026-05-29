@@ -49,6 +49,8 @@ import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
 import {
   averageCoreUsage,
+  diskGb,
+  diskPct,
   formatBytes,
   formatThroughput,
   formatUptime,
@@ -64,6 +66,7 @@ import {
   HISTORY_WINDOWS,
   type HistoryWindowKey,
   isHistoryWindowKey,
+  type MetricKey,
   polylinePoints,
   pushSample,
   WIDEST_HISTORY_WINDOW,
@@ -194,7 +197,53 @@ function sparklinePlaceholder(
   return error ? "unavailable" : "collecting…";
 }
 
-// Project a metric ring to the chart's two SVG polylines plus the latest
+// The metric series the history chart and fleet-card sparkline draw, in
+// render (and legend) order. This is the single source for "which series
+// appear on screen": the projection (`projectHistory`), the sparkline
+// polylines, and the legend chips all iterate it, so adding a series is one
+// entry here rather than an edit fanned across each of those sites. The data
+// layer that *produces* a series — the `MetricKey` union, the `MetricSample`
+// schema, and `captureSample`'s per-series derivation — is necessarily
+// separate (each series has its own source); this table owns only the
+// rendering metadata.
+//
+// Tailwind's JIT scanner can't resolve interpolated class names, so each
+// color is a complete literal (`text-emerald-500`, never `text-${c}-500`) —
+// the strings must appear verbatim in source to survive the CSS build.
+const SERIES: ReadonlyArray<{
+  key: MetricKey;
+  label: string;
+  /** Polyline stroke, applied via `currentColor`. */
+  line: string;
+  /** Legend swatch fill. */
+  swatch: string;
+  /** Legend label text color (light / dark). */
+  chip: string;
+}> = [
+  {
+    key: "cpu",
+    label: "cpu",
+    line: "text-emerald-500",
+    swatch: "bg-emerald-500",
+    chip: "text-emerald-600 dark:text-emerald-400",
+  },
+  {
+    key: "mem",
+    label: "mem",
+    line: "text-indigo-500",
+    swatch: "bg-indigo-500",
+    chip: "text-indigo-600 dark:text-indigo-400",
+  },
+  {
+    key: "disk",
+    label: "disk",
+    line: "text-amber-500",
+    swatch: "bg-amber-500",
+    chip: "text-amber-600 dark:text-amber-400",
+  },
+];
+
+// Project a metric ring to one SVG polyline string per series plus the latest
 // sample, for the given window. `now` anchors to the newest sample (not
 // wall-clock) so the trace's right edge is always "latest data", never
 // drifting ahead between ticks. Keeping the projection here — not in the
@@ -205,8 +254,7 @@ function projectHistory(
   windowMs: Accessor<number>,
 ): {
   latest: Accessor<MetricSample | null>;
-  cpuPoints: Accessor<string>;
-  memPoints: Accessor<string>;
+  points: Accessor<Record<MetricKey, string>>;
 } {
   const latest = createMemo<MetricSample | null>(() => {
     const s = history();
@@ -214,13 +262,15 @@ function projectHistory(
   });
   const now = createMemo(() => latest()?.t ?? 0);
   const windowed = createMemo(() => windowSlice(history(), windowMs(), now()));
-  const cpuPoints = createMemo(() =>
-    polylinePoints(windowed(), "cpu", now(), windowMs()),
-  );
-  const memPoints = createMemo(() =>
-    polylinePoints(windowed(), "mem", now(), windowMs()),
-  );
-  return { latest, cpuPoints, memPoints };
+  const points = createMemo<Record<MetricKey, string>>(() => {
+    const w = windowed();
+    const n = now();
+    const ms = windowMs();
+    return Object.fromEntries(
+      SERIES.map((s) => [s.key, polylinePoints(w, s.key, n, ms)]),
+    ) as Record<MetricKey, string>;
+  });
+  return { latest, points };
 }
 
 export default function App() {
@@ -420,7 +470,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
   const ctl = new AbortController();
   onCleanup(() => ctl.abort());
   const { history, streamError } = subscribeMetricHistory(app, ctl.signal);
-  const { latest, cpuPoints, memPoints } = projectHistory(history, () =>
+  const { latest, points } = projectHistory(history, () =>
     windowMsFor(WIDEST_HISTORY_WINDOW),
   );
 
@@ -440,6 +490,11 @@ function HostCard(props: { host: string; onSelect: () => void }) {
   const memText = createMemo(() => {
     const gb = memGb(sys());
     return `${gb.used}/${gb.total} GB · ${mem().toFixed(0)}%`;
+  });
+  const disk = createMemo(() => diskPct(sys()));
+  const diskText = createMemo(() => {
+    const gb = diskGb(sys());
+    return `/ · ${gb.used}/${gb.total} GB · ${disk().toFixed(0)}%`;
   });
 
   return (
@@ -474,6 +529,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
           detail={`${cpuPct().toFixed(0)}% · ${coreCount()} cores`}
         />
         <CardMetric label="mem" pct={mem()} detail={memText()} />
+        <CardMetric label="disk" pct={disk()} detail={diskText()} />
         <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400">
           <span>
             load{" "}
@@ -489,18 +545,19 @@ function HostCard(props: { host: string; onSelect: () => void }) {
         <div class="flex flex-col gap-0.5">
           <div class="flex items-center gap-2 text-xs text-gray-500">
             <span class="uppercase tracking-wide">{WIDEST_HISTORY_WINDOW}</span>
-            <span class="ml-auto flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-              <span class="inline-block h-2 w-2 rounded-sm bg-emerald-500" />
-              cpu
-            </span>
-            <span class="flex items-center gap-1 text-indigo-600 dark:text-indigo-400">
-              <span class="inline-block h-2 w-2 rounded-sm bg-indigo-500" />
-              mem
-            </span>
+            <div class="ml-auto flex items-center gap-2">
+              <For each={SERIES}>
+                {(s) => (
+                  <span class={`flex items-center gap-1 ${s.chip}`}>
+                    <span class={`inline-block h-2 w-2 rounded-sm ${s.swatch}`} />
+                    {s.label}
+                  </span>
+                )}
+              </For>
+            </div>
           </div>
           <Sparkline
-            cpuPoints={cpuPoints()}
-            memPoints={memPoints()}
+            points={points()}
             placeholder={sparklinePlaceholder(latest(), streamError())}
             class="h-10"
           />
@@ -687,10 +744,7 @@ function HostView(props: { host: string }) {
   // both down on unmount. The fleet card runs the same two steps off its own
   // controller (see `subscribeMetricHistory` / `projectHistory`).
   const { history, streamError } = subscribeMetricHistory(app, ctl.signal);
-  const { latest: latestSample, cpuPoints, memPoints } = projectHistory(
-    history,
-    windowMs,
-  );
+  const { latest: latestSample, points } = projectHistory(history, windowMs);
 
   // The currently-selected process resolved against the live store: null when
   // nothing is selected OR the selected pid has left the set. The clear-at-
@@ -715,8 +769,7 @@ function HostView(props: { host: string }) {
         fallback={<ConnectingOverlay state={currentConnection().state} />}
       >
         <HistoryChart
-          cpuPoints={cpuPoints()}
-          memPoints={memPoints()}
+          points={points()}
           latest={latestSample()}
           streamError={streamError()}
           windowKey={historyWindow()}
@@ -789,6 +842,8 @@ function Header(props: {
   // memory readout at "0.0/0.0 GB (0%)" forever. Mirrors HostCard.
   const pct = createMemo(() => memPct(props.system));
   const gb = createMemo(() => memGb(props.system));
+  const diskP = createMemo(() => diskPct(props.system));
+  const diskG = createMemo(() => diskGb(props.system));
   return (
     <div class="border-b border-gray-200 dark:border-gray-800">
       <UsageBar pct={pct()} />
@@ -831,6 +886,11 @@ function Header(props: {
           <span class="ml-1 text-gray-400">
             ({pct().toFixed(0)}%)
           </span>
+        </span>
+        <span>
+          disk <span class="font-semibold">{diskG().used}</span>
+          <span class="text-gray-400">/{diskG().total} GB</span>
+          <span class="ml-1 text-gray-400">({diskP().toFixed(0)}%)</span>
         </span>
         <span>
           uptime{" "}
@@ -1271,17 +1331,16 @@ function NetCell(props: {
   );
 }
 
-// Per-host time-series chart: CPU% and memory% over the selected window,
-// drawn as two overlaid SVG sparklines. Pure renderer — `HostView` owns the
-// ring and projects it to the `cpuPoints` / `memPoints` strings, so this
-// component only paints (the same computed-props shape as Header / CpuStrip).
-// The viewBox is a fixed 0-100 grid (percentages on both axes), so
-// `preserveAspectRatio="none"` lets the trace stretch to whatever width the
-// panel happens to be; the strokes use `vector-effect="non-scaling-stroke"`
-// to stay 1px crisp under that stretch.
+// Per-host time-series chart: one trace per `SERIES` entry (CPU%, memory%,
+// disk%) over the selected window, drawn as overlaid SVG sparklines. Pure
+// renderer — `HostView` owns the ring and projects it to the per-series
+// `points` map, so this component only paints (the same computed-props shape
+// as Header / CpuStrip). The viewBox is a fixed 0-100 grid (percentages on
+// both axes), so `preserveAspectRatio="none"` lets the trace stretch to
+// whatever width the panel happens to be; the strokes use
+// `vector-effect="non-scaling-stroke"` to stay 1px crisp under that stretch.
 function HistoryChart(props: {
-  cpuPoints: string;
-  memPoints: string;
+  points: Record<MetricKey, string>;
   latest: MetricSample | null;
   streamError: Error | null;
   windowKey: HistoryWindowKey;
@@ -1292,20 +1351,20 @@ function HistoryChart(props: {
       <div class="mb-1 flex items-center justify-between gap-2">
         <div class="flex items-center gap-3 text-xs uppercase tracking-wide text-gray-500">
           <span>history</span>
-          <span class="flex items-center gap-1 normal-case text-emerald-600 dark:text-emerald-400">
-            <span class="inline-block h-2 w-2 rounded-sm bg-emerald-500" />
-            cpu {props.latest ? `${props.latest.cpu.toFixed(0)}%` : "—"}
-          </span>
-          <span class="flex items-center gap-1 normal-case text-indigo-600 dark:text-indigo-400">
-            <span class="inline-block h-2 w-2 rounded-sm bg-indigo-500" />
-            mem {props.latest ? `${props.latest.mem.toFixed(0)}%` : "—"}
-          </span>
+          <For each={SERIES}>
+            {(s) => (
+              <span class={`flex items-center gap-1 normal-case ${s.chip}`}>
+                <span class={`inline-block h-2 w-2 rounded-sm ${s.swatch}`} />
+                {s.label}{" "}
+                {props.latest ? `${props.latest[s.key].toFixed(0)}%` : "—"}
+              </span>
+            )}
+          </For>
         </div>
         <DurationPicker selected={props.windowKey} onSelect={props.onWindow} />
       </div>
       <Sparkline
-        cpuPoints={props.cpuPoints}
-        memPoints={props.memPoints}
+        points={props.points}
         placeholder={sparklinePlaceholder(props.latest, props.streamError)}
         class="h-24"
       />
@@ -1313,8 +1372,8 @@ function HistoryChart(props: {
   );
 }
 
-// The two overlaid CPU/mem polylines — the shared visual primitive behind both
-// the full history panel and the fleet card sparkline. The viewBox is a fixed
+// One overlaid polyline per `SERIES` entry — the shared visual primitive
+// behind both the full history panel and the fleet card sparkline. The viewBox is a fixed
 // 0-100 grid (percentages on both axes), so `preserveAspectRatio="none"` lets
 // the trace stretch to whatever the caller sizes it (`class` sets the height);
 // the strokes use `vector-effect="non-scaling-stroke"` to stay 1px crisp under
@@ -1322,8 +1381,7 @@ function HistoryChart(props: {
 // "collecting…" before the first sample, "unavailable" on a dead feed — in
 // place of the trace.
 function Sparkline(props: {
-  cpuPoints: string;
-  memPoints: string;
+  points: Record<MetricKey, string>;
   placeholder: string | null;
   class?: string;
 }) {
@@ -1337,24 +1395,19 @@ function Sparkline(props: {
         preserveAspectRatio="none"
         aria-hidden="true"
       >
-        <polyline
-          class="text-emerald-500"
-          points={props.cpuPoints}
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1"
-          stroke-linejoin="round"
-          vector-effect="non-scaling-stroke"
-        />
-        <polyline
-          class="text-indigo-500"
-          points={props.memPoints}
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1"
-          stroke-linejoin="round"
-          vector-effect="non-scaling-stroke"
-        />
+        <For each={SERIES}>
+          {(s) => (
+            <polyline
+              class={s.line}
+              points={props.points[s.key]}
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1"
+              stroke-linejoin="round"
+              vector-effect="non-scaling-stroke"
+            />
+          )}
+        </For>
       </svg>
       <Show when={props.placeholder !== null}>
         <div class="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-500">

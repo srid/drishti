@@ -26,6 +26,13 @@ export function memPct(system: SystemInfo): number {
   return pctOf(system.memUsed, system.memTotal);
 }
 
+/** Root-filesystem used as a percentage of total — the disk twin of
+ *  `memPct`, reusing the same guarded `pctOf` formula. 0 when the host
+ *  reports no disk total (agent couldn't `statfs`), never NaN. */
+export function diskPct(system: SystemInfo): number {
+  return pctOf(system.diskUsed, system.diskTotal);
+}
+
 /** Mean busy-percentage across the supplied per-core usages — the single
  *  "host CPU%" number the fleet card and the history ring both use. Zero
  *  for a host with no reported cores (e.g. not yet connected), never NaN. */

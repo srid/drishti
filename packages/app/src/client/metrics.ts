@@ -11,7 +11,7 @@
 
 import type { SystemInfo } from "../common/surface";
 
-export { averageCoreUsage, memPct, pctOf } from "../common/metrics";
+export { averageCoreUsage, diskPct, memPct, pctOf } from "../common/metrics";
 
 /** Used / total memory in gigabytes, formatted to one decimal — the
  *  string form the header and the fleet cards both render. */
@@ -19,6 +19,15 @@ export function memGb(system: SystemInfo): { used: string; total: string } {
   return {
     used: (system.memUsed / 1e9).toFixed(1),
     total: (system.memTotal / 1e9).toFixed(1),
+  };
+}
+
+/** Used / total root-filesystem space in gigabytes, formatted to one
+ *  decimal — the disk twin of `memGb`, same decimal-GB convention. */
+export function diskGb(system: SystemInfo): { used: string; total: string } {
+  return {
+    used: (system.diskUsed / 1e9).toFixed(1),
+    total: (system.diskTotal / 1e9).toFixed(1),
   };
 }
 
