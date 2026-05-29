@@ -434,9 +434,9 @@ export function parsePsLine(line: string): [Pid, Process] | null {
   ];
 }
 
-/** Parse `vm_stat` (darwin) into a cache-aware {total, available}, so the
- *  darwin path means the same thing as linux's MemAvailable-based number
- *  (`linuxReader().readSystem` does `total - available`).
+/** Parse `vm_stat` (darwin) into a cache-aware *available* byte count, so
+ *  the darwin path can mean the same thing as linux's MemAvailable-based
+ *  number (`darwinReader().readSystem` does `total - available`).
  *
  *  macOS `os.freemem()` counts only truly-free Mach pages, so
  *  `total - free` reports a host as 80-95% used even when most of that is
@@ -445,13 +445,13 @@ export function parsePsLine(line: string): [Pid, Process] | null {
  *  evictable under pressure, so they count as *available*, matching
  *  Linux's MemAvailable heuristic.
  *
- *  vm_stat reports no physical total (only page counts), so `total` is
- *  left 0 here and the reader fills it from `totalmem()` — the
- *  authoritative `hw.memsize`. The shape is still MemInfo so the
- *  cross-OS equivalence is type-visible. `pageSize` defaults to the size
- *  in the header (`(page size of N bytes)`); the param lets tests pin it.
- *  Pure — no clock or platform state — to stay unit-testable, mirroring
- *  parsePsLine / parseNetstatIb. */
+ *  This returns only what vm_stat knows — available bytes. The physical
+ *  total is a different, non-volatile source (`totalmem()`/`hw.memsize`)
+ *  the reader owns; it assembles the MemInfo where total and available are
+ *  genuinely co-present. `pageSize` defaults to the size in the header
+ *  (`(page size of N bytes)`); the param lets tests pin it. Pure — no
+ *  clock or platform state — to stay unit-testable, mirroring parsePsLine
+ *  / parseNetstatIb. */
 export function parseVmStat(
   stdout: string,
   pageSize?: number,
@@ -498,7 +498,7 @@ function darwinReader(): ProcReader {
       // cache-aware "available" from vm_stat instead, then mirror linux's
       // `total - available` (kept inline, like linuxReader). totalmem() is
       // the authoritative physical total — vm_stat reports only page
-      // counts, so parseVmStat leaves total 0 and we fill it here.
+      // counts, so this line is where total and available are co-present.
       const { stdout } = await exec("vm_stat");
       const mem: MemInfo = {
         total: totalmem(),
