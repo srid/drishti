@@ -66,6 +66,11 @@ describe("formatBytes", () => {
     expect(formatBytes(1_200_000)).toBe("1.2 MB");
     expect(formatBytes(3_400_000_000)).toBe("3.4 GB");
   });
+
+  it("promotes to the next unit when rounding hits the boundary", () => {
+    // 999_999 → 999.999 KB; .toFixed(1) would render "1000.0 KB".
+    expect(formatBytes(999_999)).toBe("1.0 MB");
+  });
 });
 
 describe("formatThroughput", () => {

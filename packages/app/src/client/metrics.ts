@@ -51,6 +51,13 @@ export function formatBytes(bytes: number): string {
     value /= 1000;
     unit++;
   }
+  // Rounding to one decimal can push the value back up to 1000 (e.g.
+  // 999_999 → 999.999 KB → "1000.0 KB"); promote one more unit so it reads
+  // "1.0 MB". Guard against the top unit, which has nowhere to promote to.
+  if (unit < BYTE_UNITS.length - 1 && Number(value.toFixed(1)) >= 1000) {
+    value /= 1000;
+    unit++;
+  }
   return `${value.toFixed(1)} ${BYTE_UNITS[unit]}`;
 }
 
