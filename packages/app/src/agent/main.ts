@@ -68,24 +68,30 @@ function usage(): never {
   process.exit(1);
 }
 
-// Whether a process's wire-visible state changed since the last poll —
-// the gate for re-publishing a row. Compares every `Process` field the UI
-// renders EXCEPT `startedAtMs`, which is immutable per pid (a process can't
-// change when it started) and would otherwise spam upserts off the darwin
-// path's sub-second recomputation. Centralised here so adding a field can't
-// silently leave a column frozen (the prior inline OR-chain was one edit away
-// from that).
+// The mutable per-tick fields of `Process` — the ones whose change must
+// re-publish a row. All of these can shift over a process's life; `startedAtMs`
+// cannot (a process can't change when it started — immutable per pid), so it is
+// deliberately absent, which also keeps it out of the publish gate regardless
+// of how the agent derives it. Listing membership explicitly (rather than a
+// hand-maintained OR-chain, which had already silently dropped `user`) keeps it
+// exhaustively reviewable, and `satisfies` ties each entry to a real schema
+// field so a typo or renamed field fails to compile.
+const MUTABLE_PROCESS_FIELDS = [
+  "user",
+  "cpuPct",
+  "rssBytes",
+  "command",
+  "cwd",
+  "ppid",
+  "state",
+  "nice",
+  "threads",
+] as const satisfies readonly (keyof Process)[];
+
+// Whether a process's wire-visible state changed since the last poll — the
+// gate for re-publishing a row.
 function processChanged(a: Process, b: Process): boolean {
-  return (
-    a.cpuPct !== b.cpuPct ||
-    a.rssBytes !== b.rssBytes ||
-    a.command !== b.command ||
-    a.cwd !== b.cwd ||
-    a.ppid !== b.ppid ||
-    a.state !== b.state ||
-    a.nice !== b.nice ||
-    a.threads !== b.threads
-  );
+  return MUTABLE_PROCESS_FIELDS.some((f) => a[f] !== b[f]);
 }
 
 async function main(): Promise<void> {
