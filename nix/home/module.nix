@@ -49,15 +49,15 @@ in
     };
 
     hostsFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
+      type = lib.types.nullOr lib.types.path;
       default = null;
-      example = lib.literalExpression ''"''${config.home.homeDirectory}/.local/state/drishti/hosts.json"'';
+      example = lib.literalExpression ''/home/alice/.local/state/drishti/hosts.json'';
       description = ''
         Override the file drishti reads/writes its host set to (the
         `DRISHTI_HOSTS_FILE` env var). `null` uses the default
-        `$XDG_STATE_HOME/drishti/hosts.json`. Must be an absolute path —
-        systemd `%h` specifiers are not expanded here and would not work on
-        launchd anyway.
+        `$XDG_STATE_HOME/drishti/hosts.json`. The `path` type enforces an
+        absolute path; systemd `%h` specifiers are not expanded here and
+        would not work on launchd anyway.
       '';
     };
   };
