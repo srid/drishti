@@ -385,7 +385,7 @@ function HostView(props: { host: string }) {
   // tick allocate fresh row identities, so the whole table was torn down
   // and rebuilt per snapshot (43 k tr add/remove vs 28 text changes in
   // 6 s, observed). Field reads moved into <ProcessRow> below so per-cell
-  // reactivity updates only the changed cpuPct/memPct text nodes.
+  // reactivity updates only the changed cpuPct/rssBytes text nodes.
   const visiblePids = createMemo<Pid[]>(() => {
     const q = filter().trim().toLowerCase();
     const pids = allPids();

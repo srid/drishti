@@ -61,16 +61,15 @@ describe("parseNetstatIb", () => {
 });
 
 describe("parsePsLine", () => {
-  // `ps -axo pid=,user=,pcpu=,pmem=,rss=,comm=` — rss is in KB on macOS,
+  // `ps -axo pid=,user=,pcpu=,rss=,comm=` — rss is in KB on macOS,
   // comm is last/greedy (may contain spaces).
   it("parses rss (KB) into absolute resident bytes", () => {
-    const parsed = parsePsLine("  501 alice 12.5  3.2 348160 /usr/bin/foo");
+    const parsed = parsePsLine("  501 alice 12.5 348160 /usr/bin/foo");
     expect(parsed).not.toBeNull();
     const [pid, proc] = parsed!;
     expect(pid).toBe(501);
     expect(proc.user).toBe("alice");
     expect(proc.cpuPct).toBe(12.5);
-    expect(proc.memPct).toBe(3.2);
     // 348160 KB × 1024 = absolute bytes (≈ 356 MB).
     expect(proc.rssBytes).toBe(348160 * 1024);
     expect(proc.command).toBe("/usr/bin/foo");
@@ -78,7 +77,7 @@ describe("parsePsLine", () => {
   });
 
   it("keeps a command with embedded spaces intact (comm is the trailing field)", () => {
-    const [, proc] = parsePsLine("99 root 0.0 0.1 2048 com.apple.Some Helper")!;
+    const [, proc] = parsePsLine("99 root 0.0 2048 com.apple.Some Helper")!;
     expect(proc.command).toBe("com.apple.Some Helper");
     expect(proc.rssBytes).toBe(2048 * 1024);
   });
