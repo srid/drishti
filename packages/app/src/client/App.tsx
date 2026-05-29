@@ -44,6 +44,7 @@ import {
   STATE_TEXT,
 } from "./connectionColors";
 import { averageCoreUsage, formatUptime, memGb, memPct } from "./metrics";
+import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import { TabStrip } from "./TabStrip";
 import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
 
@@ -491,15 +492,10 @@ function Header(props: {
 }
 
 function UsageBar(props: { pct: number }) {
-  const colour = () => {
-    if (props.pct > 85) return "bg-red-500";
-    if (props.pct > 65) return "bg-amber-500";
-    return "bg-emerald-500";
-  };
   return (
     <div class="h-1 w-full bg-gray-100 dark:bg-gray-800">
       <div
-        class={`h-full transition-all ${colour()}`}
+        class={`h-full transition-all ${usageBarColor(props.pct)}`}
         style={{ width: `${Math.min(100, props.pct).toFixed(1)}%` }}
       />
     </div>
@@ -616,12 +612,12 @@ function ProcessRow(props: {
       <td class="px-3 py-0.5 text-right tabular-nums">{props.pid}</td>
       <td class="px-3 py-0.5 text-left">{proc()?.user ?? ""}</td>
       <td
-        class={`px-3 py-0.5 text-right tabular-nums ${pctClass(cpu())}`}
+        class={`px-3 py-0.5 text-right tabular-nums ${processPctColor(cpu())}`}
       >
         {cpu().toFixed(1)}
       </td>
       <td
-        class={`px-3 py-0.5 text-right tabular-nums ${pctClass(mem())}`}
+        class={`px-3 py-0.5 text-right tabular-nums ${processPctColor(mem())}`}
       >
         {mem().toFixed(1)}
       </td>
@@ -671,12 +667,6 @@ function SortableTh(props: {
   );
 }
 
-function pctClass(pct: number): string {
-  if (pct > 50) return "font-semibold text-red-500";
-  if (pct > 10) return "text-amber-500";
-  return "text-gray-700 dark:text-gray-400";
-}
-
 function CpuStrip(props: {
   coreIds: readonly CoreId[];
   getCore: (id: CoreId) => CpuCore | undefined;
@@ -700,18 +690,12 @@ function CpuStrip(props: {
 function CpuCoreCell(props: { id: CoreId; get: () => CpuCore | undefined }) {
   const core = createMemo(() => props.get());
   const pct = () => core()?.usagePct ?? 0;
-  const barColor = createMemo(() => {
-    const p = pct();
-    if (p > 80) return "bg-red-500";
-    if (p > 50) return "bg-amber-500";
-    return "bg-emerald-500";
-  });
   return (
     <div class="flex items-center gap-1 text-xs">
       <span class="w-6 shrink-0 text-gray-500 tabular-nums">c{props.id}</span>
       <div class="h-2 flex-1 overflow-hidden rounded bg-gray-100 dark:bg-gray-800">
         <div
-          class={`h-full transition-all ${barColor()}`}
+          class={`h-full transition-all ${coreUsageColor(pct())}`}
           style={{ width: `${Math.min(100, pct()).toFixed(1)}%` }}
         />
       </div>
