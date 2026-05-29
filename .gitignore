@@ -15,3 +15,5 @@ state/
 
 # justci transient state
 /.ci/
+
+/.worktrees
