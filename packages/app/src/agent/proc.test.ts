@@ -2,9 +2,11 @@ import { describe, expect, it } from "bun:test";
 import {
   computeNetThroughput,
   type NetCounters,
+  parseMeminfo,
   parseNetstatIb,
   parseProcNetDev,
   parsePsLine,
+  parseVmStat,
 } from "./proc";
 
 describe("parseProcNetDev", () => {
@@ -86,6 +88,71 @@ describe("parsePsLine", () => {
     expect(parsePsLine("")).toBeNull();
     expect(parsePsLine("   ")).toBeNull();
     expect(parsePsLine("not a ps line")).toBeNull();
+  });
+});
+
+describe("parseVmStat", () => {
+  // Realistic `vm_stat` output on Apple Silicon (16 KiB pages). The header
+  // carries the page size; each line is `Label:   <count>.`.
+  const sample = [
+    "Mach Virtual Memory Statistics: (page size of 16384 bytes)",
+    'Pages free:                              100000.',
+    'Pages active:                            500000.',
+    'Pages inactive:                          200000.',
+    'Pages speculative:                        30000.',
+    'Pages throttled:                              0.',
+    'Pages wired down:                        300000.',
+    'Pages purgeable:                          40000.',
+    '"Translation faults":                 123456789.',
+    "Pages copy-on-write:                    1000000.",
+    "Pages zero filled:                    900000000.",
+    "Pages reactivated:                       500000.",
+    "Pages purged:                            100000.",
+    'File-backed pages:                       150000.',
+    'Anonymous pages:                         550000.',
+    "Pages stored in compressor:              200000.",
+    "Pages occupied by compressor:            100000.",
+    "",
+  ].join("\n");
+
+  // available = pageSize × (free + inactive + purgeable + speculative + file-backed)
+  const PAGE = 16384;
+  const reclaimablePages = 100000 + 200000 + 40000 + 30000 + 150000;
+
+  it("derives cache-aware available from reclaimable page classes, parsing page size from the header", () => {
+    const mem = parseVmStat(sample);
+    expect(mem.available).toBe(PAGE * reclaimablePages);
+  });
+
+  it("lets an explicit pageSize argument override the header", () => {
+    const mem = parseVmStat(sample, 4096);
+    expect(mem.available).toBe(4096 * reclaimablePages);
+  });
+
+  it("falls back to 0-count for page classes absent from the dump", () => {
+    const minimal = [
+      "Mach Virtual Memory Statistics: (page size of 16384 bytes)",
+      "Pages free:                              100000.",
+      "",
+    ].join("\n");
+    // Only free pages are reclaimable here; the rest default to 0.
+    expect(parseVmStat(minimal).available).toBe(PAGE * 100000);
+  });
+});
+
+describe("parseMeminfo", () => {
+  it("reads MemTotal/MemAvailable as bytes (kB × 1024)", () => {
+    const sample = [
+      "MemTotal:       16384000 kB",
+      "MemFree:         1000000 kB",
+      "MemAvailable:    8192000 kB",
+      "Buffers:          500000 kB",
+      "",
+    ].join("\n");
+    expect(parseMeminfo(sample)).toEqual({
+      total: 16384000 * 1024,
+      available: 8192000 * 1024,
+    });
   });
 });
 

@@ -334,7 +334,7 @@ interface MemInfo {
   available: number;
 }
 
-function parseMeminfo(s: string): MemInfo {
+export function parseMeminfo(s: string): MemInfo {
   const get = (key: string): number => {
     const m = s.match(new RegExp(`^${key}:\\s+(\\d+)\\s+kB`, "m"));
     return m && m[1] !== undefined ? Number(m[1]) * 1024 : 0;
@@ -434,6 +434,48 @@ export function parsePsLine(line: string): [Pid, Process] | null {
   ];
 }
 
+/** Parse `vm_stat` (darwin) into a cache-aware {total, available}, so the
+ *  darwin path means the same thing as linux's MemAvailable-based number
+ *  (`linuxReader().readSystem` does `total - available`).
+ *
+ *  macOS `os.freemem()` counts only truly-free Mach pages, so
+ *  `total - free` reports a host as 80-95% used even when most of that is
+ *  reclaimable file cache. The reclaimable classes — free, inactive,
+ *  purgeable, speculative, and file-backed (external) pages — are all
+ *  evictable under pressure, so they count as *available*, matching
+ *  Linux's MemAvailable heuristic.
+ *
+ *  vm_stat reports no physical total (only page counts), so `total` is
+ *  left 0 here and the reader fills it from `totalmem()` — the
+ *  authoritative `hw.memsize`. The shape is still MemInfo so the
+ *  cross-OS equivalence is type-visible. `pageSize` defaults to the size
+ *  in the header (`(page size of N bytes)`); the param lets tests pin it.
+ *  Pure — no clock or platform state — to stay unit-testable, mirroring
+ *  parsePsLine / parseNetstatIb. */
+export function parseVmStat(stdout: string, pageSize?: number): MemInfo {
+  const size =
+    pageSize ??
+    (() => {
+      const m = stdout.match(/page size of (\d+) bytes/);
+      return m && m[1] !== undefined ? Number(m[1]) : 4096;
+    })();
+  // Each count line is `Label:   <count>.` — read the integer after the
+  // label's colon, defaulting absent classes to 0.
+  const pages = (label: string): number => {
+    const m = stdout.match(
+      new RegExp(`^${label}:\\s+(\\d+)\\.`, "m"),
+    );
+    return m && m[1] !== undefined ? Number(m[1]) : 0;
+  };
+  const reclaimable =
+    pages("Pages free") +
+    pages("Pages inactive") +
+    pages("Pages purgeable") +
+    pages("Pages speculative") +
+    pages("File-backed pages");
+  return { total: 0, available: size * reclaimable };
+}
+
 function darwinReader(): ProcReader {
   const readCpuCores = createCpuCoresReader();
   const readNetwork = createNetReader(async () => {
@@ -448,12 +490,21 @@ function darwinReader(): ProcReader {
       // os.loadavg() works on darwin; sysctl fallback only needed for
       // very old node versions.
       const la = loadavg();
-      const total = totalmem();
-      const free = freemem();
+      // os.freemem() on darwin counts only truly-free pages, so it would
+      // over-report usage by ignoring reclaimable cache. Derive a
+      // cache-aware "available" from vm_stat instead, then mirror linux's
+      // `total - available` (kept inline, like linuxReader). totalmem() is
+      // the authoritative physical total — vm_stat reports only page
+      // counts, so parseVmStat leaves total 0 and we fill it here.
+      const { stdout } = await exec("vm_stat");
+      const mem: MemInfo = {
+        total: totalmem(),
+        available: parseVmStat(stdout).available,
+      };
       return {
         loadAvg: [la[0] ?? 0, la[1] ?? 0, la[2] ?? 0],
-        memUsed: total - free,
-        memTotal: total,
+        memUsed: mem.total - mem.available,
+        memTotal: mem.total,
         uptime: uptime(),
         os: "darwin",
         hostname: hostname(),
@@ -483,6 +534,12 @@ function stubReader(): ProcReader {
     readNetwork: async () => new Map<IfaceName, NetInterface>(),
     readSystem: async () => {
       const la = loadavg();
+      // Known limitation: total-free undercounts reclaimable (cache /
+      // inactive / purgeable) memory on darwin-like kernels — the very
+      // miscount darwinReader fixes via vm_stat. It's tolerated here
+      // because macOS always dispatches to darwinReader (createProcReader),
+      // so this stub is never the Mac path; it's the last-resort fallback
+      // for genuinely-unknown platforms with no vm_stat / /proc to query.
       return {
         loadAvg: [la[0] ?? 0, la[1] ?? 0, la[2] ?? 0],
         memUsed: totalmem() - freemem(),
