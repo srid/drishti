@@ -210,8 +210,7 @@ function sparklinePlaceholder(
 // Tailwind's JIT scanner can't resolve interpolated class names, so each
 // color is a complete literal (`text-emerald-500`, never `text-${c}-500`) —
 // the strings must appear verbatim in source to survive the CSS build.
-const SERIES: ReadonlyArray<{
-  key: MetricKey;
+interface SeriesMeta {
   label: string;
   /** Polyline stroke, applied via `currentColor`. */
   line: string;
@@ -219,29 +218,42 @@ const SERIES: ReadonlyArray<{
   swatch: string;
   /** Legend label text color (light / dark). */
   chip: string;
-}> = [
-  {
-    key: "cpu",
+}
+
+// Keyed by `MetricKey` and pinned with `satisfies Record<MetricKey, …>` so the
+// compiler enforces the set in *both* directions: a metric added to the
+// `MetricKey` union without an entry here fails to compile (rather than
+// silently rendering a blank trace), and a stale key is rejected too. That
+// exhaustiveness is what makes the `as Record<MetricKey, string>` cast in
+// `projectHistory` provably safe.
+const SERIES_META = {
+  cpu: {
     label: "cpu",
     line: "text-emerald-500",
     swatch: "bg-emerald-500",
     chip: "text-emerald-600 dark:text-emerald-400",
   },
-  {
-    key: "mem",
+  mem: {
     label: "mem",
     line: "text-indigo-500",
     swatch: "bg-indigo-500",
     chip: "text-indigo-600 dark:text-indigo-400",
   },
-  {
-    key: "disk",
+  disk: {
     label: "disk",
     line: "text-amber-500",
     swatch: "bg-amber-500",
     chip: "text-amber-600 dark:text-amber-400",
   },
-];
+} satisfies Record<MetricKey, SeriesMeta>;
+
+// The ordered list the projection, polylines, and legends iterate. Render
+// (and legend) order follows the declaration order in `SERIES_META` above —
+// `Object.entries` preserves string-key insertion order — so reordering the
+// traces is a matter of reordering that object literal.
+const SERIES: ReadonlyArray<{ key: MetricKey } & SeriesMeta> = (
+  Object.entries(SERIES_META) as [MetricKey, SeriesMeta][]
+).map(([key, meta]) => ({ key, ...meta }));
 
 // Project a metric ring to one SVG polyline string per series plus the latest
 // sample, for the given window. `now` anchors to the newest sample (not
