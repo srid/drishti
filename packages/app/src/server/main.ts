@@ -120,16 +120,9 @@ async function main(): Promise<void> {
     log(`serving prebuilt client bundle from ${distDir}`);
   }
   const app = new Hono();
-  // Serve the web manifest with the correct media type. serveStatic infers
-  // MIME from the file extension and has no entry for `.webmanifest`, so on
-  // its own the manifest ships as octet-stream and strict PWA tooling
-  // rejects it. One explicit route fixes that; everything else stays on
-  // serveStatic below (this GET is registered first, so it wins the match).
-  app.get("/manifest.webmanifest", () => {
-    return new Response(Bun.file(resolve(distDir, "manifest.webmanifest")), {
-      headers: { "content-type": "application/manifest+json; charset=utf-8" },
-    });
-  });
+  // serveStatic serves the whole dist tree, including the PWA assets. It
+  // already maps `.webmanifest` to `application/manifest+json` (via
+  // hono/utils/mime), so the manifest needs no special-casing here.
   app.use("*", serveStatic({ root: distDir }));
 
   const httpServer = serve(
