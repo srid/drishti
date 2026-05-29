@@ -799,8 +799,6 @@ function NetCell(props: {
   const nic = createMemo(() => props.get());
   const rxRate = () => nic()?.rxRate ?? 0;
   const txRate = () => nic()?.txRate ?? 0;
-  const rxTotal = () => nic()?.rxBytes ?? 0;
-  const txTotal = () => nic()?.txBytes ?? 0;
   return (
     <div class="flex items-center gap-2 text-xs">
       <span class="w-20 shrink-0 truncate text-gray-500" title={props.name}>
@@ -808,13 +806,13 @@ function NetCell(props: {
       </span>
       <span
         class="tabular-nums text-emerald-600 dark:text-emerald-400"
-        title={`${formatBytes(rxTotal())} received total`}
+        title={`${formatBytes(nic()?.rxBytes ?? 0)} received total`}
       >
         ↓ {formatThroughput(rxRate())}
       </span>
       <span
         class="tabular-nums text-indigo-600 dark:text-indigo-400"
-        title={`${formatBytes(txTotal())} transmitted total`}
+        title={`${formatBytes(nic()?.txBytes ?? 0)} transmitted total`}
       >
         ↑ {formatThroughput(txRate())}
       </span>
