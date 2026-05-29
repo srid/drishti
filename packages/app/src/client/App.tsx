@@ -16,6 +16,7 @@
 
 import { streamCall } from "@kolu/surface/client";
 import {
+  type Accessor,
   batch,
   createEffect,
   createMemo,
@@ -62,6 +63,7 @@ import {
   isHistoryWindowKey,
   polylinePoints,
   pushSample,
+  WIDEST_HISTORY_WINDOW,
   windowMsFor,
   windowSlice,
 } from "../common/history";
@@ -97,6 +99,97 @@ function createPersistedSignal<T extends string>(
   const [value, setValue] = createSignal<T>(readPref(key, fallback, accept));
   createEffect(on(value, (v) => writePref(key, v), { defer: true }));
   return [value, setValue];
+}
+
+// ── Metric-history client primitive (shared by HostView and HostCard) ──
+// The parent owns an in-memory CPU%/mem% ring per host, sampled every poll
+// tick whether or not a tab is open. Both the full history panel and the
+// fleet card sparkline drive off the same two steps — subscribe to that ring,
+// then project it to the chart's polylines — so they live here, in one place,
+// rather than being copied into each call site (where the snapshot/delta
+// contract and the projection maths would drift apart).
+
+// Accumulate a host's streamed metric ring into a signal: the full snapshot on
+// connect, then one delta per tick, bounded to the server's retention. The
+// stream lives off the passed `signal`, so the caller's controller (shared or
+// its own) tears it down on unmount. `streamError` carries a dead feed into
+// the reactive graph — every other per-host subscription (system / connection
+// / cores / nics) already surfaces its `onError`; without this the metric
+// stream would be the lone one swallowing failure to the console, leaving an
+// empty ring to read identically as "no samples yet" and "stream died".
+function subscribeMetricHistory(
+  app: ReturnType<typeof surfaceForHost>,
+  signal: AbortSignal,
+): {
+  history: Accessor<MetricSample[]>;
+  streamError: Accessor<Error | null>;
+} {
+  const [history, setHistory] = createSignal<MetricSample[]>([]);
+  const [streamError, setStreamError] = createSignal<Error | null>(null);
+  void (async () => {
+    try {
+      const stream = await streamCall(
+        app.rpc.surface.metricHistory.get,
+        {},
+        { signal },
+      );
+      for await (const msg of stream) {
+        if (msg.kind === "snapshot") setHistory(msg.samples);
+        else
+          setHistory((prev) =>
+            pushSample(prev, msg.sample, HISTORY_RETENTION_MS),
+          );
+      }
+    } catch (err) {
+      if (!signal.aborted) {
+        console.error("metricHistory stream failed", err);
+        setStreamError(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  })();
+  return { history, streamError };
+}
+
+// Overlay text for a sparkline with no drawable point yet — the one place that
+// distinguishes the two states an empty ring conflates: a feed that simply
+// hasn't produced its first sample ("collecting…") from one whose stream has
+// died ("unavailable"). Returns null once any sample exists, so the trace
+// itself is what's shown.
+function sparklinePlaceholder(
+  latest: MetricSample | null,
+  error: Error | null,
+): string | null {
+  if (latest !== null) return null;
+  return error ? "unavailable" : "collecting…";
+}
+
+// Project a metric ring to the chart's two SVG polylines plus the latest
+// sample, for the given window. `now` anchors to the newest sample (not
+// wall-clock) so the trace's right edge is always "latest data", never
+// drifting ahead between ticks. Keeping the projection here — not in the
+// renderer — lets the chart components stay pure, fed precomputed point
+// strings (the same computed-props shape as Header / CpuStrip / NetStrip).
+function projectHistory(
+  history: Accessor<readonly MetricSample[]>,
+  windowMs: Accessor<number>,
+): {
+  latest: Accessor<MetricSample | null>;
+  cpuPoints: Accessor<string>;
+  memPoints: Accessor<string>;
+} {
+  const latest = createMemo<MetricSample | null>(() => {
+    const s = history();
+    return s.length > 0 ? s[s.length - 1]! : null;
+  });
+  const now = createMemo(() => latest()?.t ?? 0);
+  const windowed = createMemo(() => windowSlice(history(), windowMs(), now()));
+  const cpuPoints = createMemo(() =>
+    polylinePoints(windowed(), "cpu", now(), windowMs()),
+  );
+  const memPoints = createMemo(() =>
+    polylinePoints(windowed(), "mem", now(), windowMs()),
+  );
+  return { latest, cpuPoints, memPoints };
 }
 
 export default function App() {
@@ -289,6 +382,17 @@ function HostCard(props: { host: string; onSelect: () => void }) {
     onError: (err) => console.error("cpuCores subscription failed", err),
   });
 
+  // Same parent-owned ring the open host view draws, streamed over the card's
+  // already-warm socket. The card pins the widest window (WIDEST_HISTORY_WINDOW)
+  // — it's a glanceable trend, not an interactive chart, so there's no per-card
+  // duration picker — and tears the stream down with the card via `ctl`.
+  const ctl = new AbortController();
+  onCleanup(() => ctl.abort());
+  const { history, streamError } = subscribeMetricHistory(app, ctl.signal);
+  const { latest, cpuPoints, memPoints } = projectHistory(history, () =>
+    windowMsFor(WIDEST_HISTORY_WINDOW),
+  );
+
   const sys = createMemo<SystemInfo>(() => system.value() ?? DEFAULT_SYSTEM);
   const state = createMemo<ConnectionState>(
     () => (connection.value() ?? DEFAULT_CONNECTION).state,
@@ -350,6 +454,25 @@ function HostCard(props: { host: string; onSelect: () => void }) {
           <span>
             up {formatUptime(sys().uptime)} · {sys().os}
           </span>
+        </div>
+        <div class="flex flex-col gap-0.5">
+          <div class="flex items-center gap-2 text-xs text-gray-500">
+            <span class="uppercase tracking-wide">{WIDEST_HISTORY_WINDOW}</span>
+            <span class="ml-auto flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+              <span class="inline-block h-2 w-2 rounded-sm bg-emerald-500" />
+              cpu
+            </span>
+            <span class="flex items-center gap-1 text-indigo-600 dark:text-indigo-400">
+              <span class="inline-block h-2 w-2 rounded-sm bg-indigo-500" />
+              mem
+            </span>
+          </div>
+          <Sparkline
+            cpuPoints={cpuPoints()}
+            memPoints={memPoints()}
+            placeholder={sparklinePlaceholder(latest(), streamError())}
+            class="h-10"
+          />
         </div>
       </Show>
     </button>
@@ -496,11 +619,7 @@ function HostView(props: { host: string }) {
   // ── Metric history (parent-owned ring, streamed in) ─────────────────
   // The CPU%/mem% history isn't sampled here — the parent owns an in-memory
   // ring per host and samples it on every poll tick (whether or not a tab is
-  // open), so it survives reloads and tab switches. This subscribes to that
-  // ring: the first frame is a full snapshot (the entire ring, replayed on
-  // every fresh mount), then one delta per tick. `pushSample` bounds the
-  // locally-accumulated deltas to the same retention as the server ring.
-  const [history, setHistory] = createSignal<MetricSample[]>([]);
+  // open), so it survives reloads and tab switches.
   const [historyWindow, setHistoryWindow] =
     createPersistedSignal<HistoryWindowKey>(
       "window",
@@ -510,48 +629,14 @@ function HostView(props: { host: string }) {
     );
   const windowMs = createMemo(() => windowMsFor(historyWindow()));
 
-  // Reuses `ctl` — the metricHistory and processesSnapshot streams share
-  // this HostView's mount/cleanup lifecycle exactly, so one controller
-  // tears both down on unmount.
-  void (async () => {
-    try {
-      const stream = await streamCall(
-        app.rpc.surface.metricHistory.get,
-        {},
-        { signal: ctl.signal },
-      );
-      for await (const msg of stream) {
-        if (msg.kind === "snapshot") setHistory(msg.samples);
-        else
-          setHistory((prev) =>
-            pushSample(prev, msg.sample, HISTORY_RETENTION_MS),
-          );
-      }
-    } catch (err) {
-      if (!ctl.signal.aborted)
-        console.error("metricHistory stream failed", err);
-    }
-  })();
-
-  // Project the ring to the chart's two SVG polylines here — not inside
-  // HistoryChart — so the component stays a pure renderer fed precomputed
-  // point strings, the same computed-props shape as Header / CpuStrip /
-  // NetStrip. `chartNow` anchors to the newest sample so the trace's right
-  // edge is always "latest data", not wall-clock drifting ahead of the
-  // last point between ticks.
-  const latestSample = createMemo<MetricSample | null>(() => {
-    const s = history();
-    return s.length > 0 ? s[s.length - 1]! : null;
-  });
-  const chartNow = createMemo(() => latestSample()?.t ?? 0);
-  const windowedSamples = createMemo(() =>
-    windowSlice(history(), windowMs(), chartNow()),
-  );
-  const cpuPoints = createMemo(() =>
-    polylinePoints(windowedSamples(), "cpu", chartNow(), windowMs()),
-  );
-  const memPoints = createMemo(() =>
-    polylinePoints(windowedSamples(), "mem", chartNow(), windowMs()),
+  // Reuses `ctl` so the metricHistory stream shares this HostView's
+  // mount/cleanup lifecycle with processesSnapshot — one controller tears
+  // both down on unmount. The fleet card runs the same two steps off its own
+  // controller (see `subscribeMetricHistory` / `projectHistory`).
+  const { history, streamError } = subscribeMetricHistory(app, ctl.signal);
+  const { latest: latestSample, cpuPoints, memPoints } = projectHistory(
+    history,
+    windowMs,
   );
 
   return (
@@ -569,6 +654,7 @@ function HostView(props: { host: string }) {
           cpuPoints={cpuPoints()}
           memPoints={memPoints()}
           latest={latestSample()}
+          streamError={streamError()}
           windowKey={historyWindow()}
           onWindow={setHistoryWindow}
         />
@@ -1004,6 +1090,7 @@ function HistoryChart(props: {
   cpuPoints: string;
   memPoints: string;
   latest: MetricSample | null;
+  streamError: Error | null;
   windowKey: HistoryWindowKey;
   onWindow: (k: HistoryWindowKey) => void;
 }) {
@@ -1023,39 +1110,65 @@ function HistoryChart(props: {
         </div>
         <DurationPicker selected={props.windowKey} onSelect={props.onWindow} />
       </div>
-      <div class="relative h-24 w-full overflow-hidden rounded bg-gray-100 dark:bg-gray-800/50">
-        <svg
-          class="h-full w-full"
-          viewBox="0 0 100 100"
-          preserveAspectRatio="none"
-          aria-hidden="true"
-        >
-          <polyline
-            class="text-emerald-500"
-            points={props.cpuPoints}
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1"
-            stroke-linejoin="round"
-            vector-effect="non-scaling-stroke"
-          />
-          <polyline
-            class="text-indigo-500"
-            points={props.memPoints}
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1"
-            stroke-linejoin="round"
-            vector-effect="non-scaling-stroke"
-          />
-        </svg>
-        <Show when={props.latest === null}>
-          <div class="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-500">
-            collecting…
-          </div>
-        </Show>
-      </div>
+      <Sparkline
+        cpuPoints={props.cpuPoints}
+        memPoints={props.memPoints}
+        placeholder={sparklinePlaceholder(props.latest, props.streamError)}
+        class="h-24"
+      />
     </MetricSection>
+  );
+}
+
+// The two overlaid CPU/mem polylines — the shared visual primitive behind both
+// the full history panel and the fleet card sparkline. The viewBox is a fixed
+// 0-100 grid (percentages on both axes), so `preserveAspectRatio="none"` lets
+// the trace stretch to whatever the caller sizes it (`class` sets the height);
+// the strokes use `vector-effect="non-scaling-stroke"` to stay 1px crisp under
+// that stretch. `placeholder` (when non-null) overlays a status word —
+// "collecting…" before the first sample, "unavailable" on a dead feed — in
+// place of the trace.
+function Sparkline(props: {
+  cpuPoints: string;
+  memPoints: string;
+  placeholder: string | null;
+  class?: string;
+}) {
+  return (
+    <div
+      class={`relative w-full overflow-hidden rounded bg-gray-100 dark:bg-gray-800/50${props.class ? ` ${props.class}` : ""}`}
+    >
+      <svg
+        class="h-full w-full"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <polyline
+          class="text-emerald-500"
+          points={props.cpuPoints}
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1"
+          stroke-linejoin="round"
+          vector-effect="non-scaling-stroke"
+        />
+        <polyline
+          class="text-indigo-500"
+          points={props.memPoints}
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1"
+          stroke-linejoin="round"
+          vector-effect="non-scaling-stroke"
+        />
+      </svg>
+      <Show when={props.placeholder !== null}>
+        <div class="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-500">
+          {props.placeholder}
+        </div>
+      </Show>
+    </div>
   );
 }
 

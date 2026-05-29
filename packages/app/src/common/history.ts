@@ -33,6 +33,15 @@ export const HISTORY_WINDOWS = [
 
 export type HistoryWindowKey = (typeof HISTORY_WINDOWS)[number]["key"];
 
+/** The widest selectable window — the one the fleet card sparkline pins to,
+ *  so the card always shows the same span as the retention bound. Derived
+ *  from the last entry (the array is ascending by span) so adding a wider
+ *  window automatically widens the sparkline too. */
+// Non-null assertion: HISTORY_WINDOWS is a non-empty const tuple, so .at(-1)
+// always resolves. TypeScript can't prove this from the index type alone.
+export const WIDEST_HISTORY_WINDOW: HistoryWindowKey =
+  HISTORY_WINDOWS.at(-1)!.key;
+
 /** Default window on first open — the middle ground popular monitors land
  *  on: long enough to show a trend, short enough to stay responsive. */
 export const DEFAULT_HISTORY_WINDOW: HistoryWindowKey = "5m";
