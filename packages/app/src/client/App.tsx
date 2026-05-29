@@ -34,16 +34,14 @@ import {
   DEFAULT_SYSTEM,
   type Pid,
   type Process,
+  type SystemInfo,
 } from "../common/surface";
+import { STATE } from "./connectionColors";
+import type { View } from "./view";
+import { averageCoreUsage, formatUptime, memGb, memPct } from "./metrics";
+import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import { TabStrip } from "./TabStrip";
 import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
-
-const STATE_COLOR: Record<ConnectionState, string> = {
-  connected: "text-emerald-500",
-  disconnected: "text-red-500",
-  copying: "text-amber-500",
-  connecting: "text-amber-500",
-};
 
 type SortKey = "cpu" | "mem" | "pid" | "user";
 
@@ -78,22 +76,28 @@ export default function App() {
     }),
   );
 
-  const [activeHost, setActiveHost] = createSignal<string | null>(null);
-  // Keep the active host in sync with the host set: pick the first if
-  // none is selected yet, or fall back when the active one is removed.
-  const resolvedActive = createMemo<string | null>(() => {
-    const list = hostList();
-    const current = activeHost();
-    if (list.length === 0) return null;
-    if (current !== null && list.includes(current)) return current;
-    return list[0] ?? null;
+  // The fleet overview is the default landing view — the "single pane of
+  // glass" across every host. `view` holds the user's intent; the host
+  // set it resolves against is owned by the admin collection.
+  const [view, setView] = createSignal<View>({ kind: "fleet" });
+  // Resolve intent against the live host set: a host view whose host has
+  // been removed falls back to the fleet overview rather than a blank
+  // pane, and the fleet view always resolves to itself.
+  const resolvedView = createMemo<View>(() => {
+    const v = view();
+    if (v.kind === "host" && hostList().includes(v.host)) return v;
+    return { kind: "fleet" };
+  });
+  const selectedHost = createMemo<string | null>(() => {
+    const v = resolvedView();
+    return v.kind === "host" ? v.host : null;
   });
 
   const onAdd = async (host: string): Promise<string | null> => {
     try {
       const res = await admin.rpc.surface.hosts.add({ host });
       if (!res.ok) return res.error ?? "add failed";
-      setActiveHost(host);
+      setView({ kind: "host", host });
       return null;
     } catch (err) {
       return (err as Error).message;
@@ -103,7 +107,8 @@ export default function App() {
   const onRemove = async (host: string) => {
     try {
       await admin.rpc.surface.hosts.remove({ host });
-      if (activeHost() === host) setActiveHost(null);
+      // No manual view reset needed: resolvedView falls back to fleet
+      // once the host leaves the collection.
     } catch (err) {
       console.error(`remove ${host} failed`, err);
     }
@@ -114,24 +119,147 @@ export default function App() {
       <div class="mx-auto max-w-6xl overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
         <TabStrip
           hosts={hostList()}
-          active={resolvedActive()}
-          onSelect={(h) => setActiveHost(h)}
+          activeTab={resolvedView()}
+          onSelectFleet={() => setView({ kind: "fleet" })}
+          onSelect={(h) => setView({ kind: "host", host: h })}
           onAdd={onAdd}
           onRemove={onRemove}
         />
         <Show
-          when={resolvedActive()}
+          when={hostList().length > 0}
           fallback={
             <div class="px-4 py-12 text-center text-gray-500 dark:text-gray-400">
               <div class="mb-2 text-lg">No hosts configured</div>
               <div class="text-xs">Use the + button above to add one.</div>
             </div>
           }
-          keyed
         >
-          {(host) => <HostView host={host} />}
+          <Show
+            when={selectedHost()}
+            fallback={
+              <FleetView
+                hosts={hostList()}
+                onSelect={(h) => setView({ kind: "host", host: h })}
+              />
+            }
+            keyed
+          >
+            {(host) => <HostView host={host} />}
+          </Show>
         </Show>
       </div>
+    </div>
+  );
+}
+
+// ── Fleet overview: every host as a live summary card ──────────────────
+
+// The aggregate "pane of glass". Each card subscribes to its host's
+// `system` / `connection` cells and `cpuCores` collection — the same
+// per-host sockets the tab chips already keep warm — so opening the
+// overview costs subscriptions, not new connections. Clicking a card
+// drills into that host's full htop body.
+function FleetView(props: {
+  hosts: readonly string[];
+  onSelect: (host: string) => void;
+}) {
+  return (
+    <div class="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+      <For each={props.hosts}>
+        {(host) => (
+          <HostCard host={host} onSelect={() => props.onSelect(host)} />
+        )}
+      </For>
+    </div>
+  );
+}
+
+function HostCard(props: { host: string; onSelect: () => void }) {
+  const app = surfaceForHost(props.host);
+  const system = app.cells.system.use({});
+  const connection = app.cells.connection.use({});
+  const cores = app.collections.cpuCores.use({
+    onError: (err) => console.error("cpuCores subscription failed", err),
+  });
+
+  const sys = createMemo<SystemInfo>(() => system.value() ?? DEFAULT_SYSTEM);
+  const state = createMemo<ConnectionState>(
+    () => (connection.value() ?? DEFAULT_CONNECTION).state,
+  );
+  // coreCount and cpuPct share a single cores.keys() iteration so the
+  // detail string in CardMetric doesn't need a second spread.
+  const coreCount = createMemo(() => [...cores.keys()].length);
+  const cpuPct = createMemo(() =>
+    averageCoreUsage(
+      [...cores.keys()].map((id) => cores.byKey(id)?.()?.usagePct ?? 0),
+    ),
+  );
+  const mem = createMemo(() => memPct(sys()));
+  const memText = createMemo(() => {
+    const gb = memGb(sys());
+    return `${gb.used}/${gb.total} GB · ${mem().toFixed(0)}%`;
+  });
+
+  return (
+    <button
+      type="button"
+      onClick={props.onSelect}
+      class="flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3 text-left transition-colors hover:border-indigo-400 hover:bg-white dark:border-gray-800 dark:bg-gray-900/40 dark:hover:border-indigo-500 dark:hover:bg-gray-900"
+    >
+      <div class="flex items-center gap-2">
+        <span
+          class={`inline-block h-2 w-2 shrink-0 rounded-full ${STATE[state()].dotBg} ${STATE[state()].pending ? "animate-pulse" : ""}`}
+        />
+        <span class="truncate font-semibold" title={props.host}>
+          {props.host}
+        </span>
+        <span class={`ml-auto shrink-0 text-xs ${STATE[state()].text}`}>
+          {state()}
+        </span>
+      </div>
+
+      <Show
+        when={state() === "connected"}
+        fallback={
+          <div class="py-3 text-center text-xs text-gray-400 dark:text-gray-500">
+            {STATE[state()].label}
+          </div>
+        }
+      >
+        <CardMetric
+          label="cpu"
+          pct={cpuPct()}
+          detail={`${cpuPct().toFixed(0)}% · ${coreCount()} cores`}
+        />
+        <CardMetric label="mem" pct={mem()} detail={memText()} />
+        <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400">
+          <span>
+            load{" "}
+            <span class="font-semibold text-gray-700 dark:text-gray-300">
+              {sys().loadAvg[0].toFixed(2)}
+            </span>{" "}
+            {sys().loadAvg[1].toFixed(2)} {sys().loadAvg[2].toFixed(2)}
+          </span>
+          <span>
+            up {formatUptime(sys().uptime)} · {sys().os}
+          </span>
+        </div>
+      </Show>
+    </button>
+  );
+}
+
+// One labelled metric row inside a host card: a label, a usage bar, and
+// a detail string. Reuses the same UsageBar as the per-host header so the
+// >85% red / >65% amber thresholds stay single-sourced.
+function CardMetric(props: { label: string; pct: number; detail: string }) {
+  return (
+    <div class="flex flex-col gap-0.5">
+      <div class="flex justify-between text-xs">
+        <span class="uppercase tracking-wide text-gray-500">{props.label}</span>
+        <span class="text-gray-500 dark:text-gray-400">{props.detail}</span>
+      </div>
+      <UsageBar pct={props.pct} />
     </div>
   );
 }
@@ -298,26 +426,14 @@ function Header(props: {
   connection: ReturnType<() => typeof DEFAULT_CONNECTION>;
   count: number;
 }) {
-  const memPct = () => {
-    const total = props.system.memTotal;
-    return total > 0 ? (100 * props.system.memUsed) / total : 0;
-  };
-  const memGb = () => ({
-    used: (props.system.memUsed / 1e9).toFixed(1),
-    total: (props.system.memTotal / 1e9).toFixed(1),
-  });
-  const uptimeFmt = () => {
-    const u = props.system.uptime;
-    const d = Math.floor(u / 86400);
-    const h = Math.floor((u % 86400) / 3600);
-    const m = Math.floor((u % 3600) / 60);
-    if (d > 0) return `${d}d ${h}h`;
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m`;
-  };
+  // Pure derivations cached once per render — props.system is a reactive
+  // read that re-runs this component body when it changes, so these are
+  // computed once per system tick, not once per JSX expression.
+  const pct = memPct(props.system);
+  const gb = memGb(props.system);
   return (
     <div class="border-b border-gray-200 dark:border-gray-800">
-      <UsageBar pct={memPct()} />
+      <UsageBar pct={pct} />
       <div class="flex items-center justify-between px-4 py-2">
         <div class="flex items-center gap-3">
           <span class="font-semibold">drishti</span>
@@ -326,7 +442,7 @@ function Header(props: {
             <span class="text-gray-500">host:</span>{" "}
             <span class="font-semibold">{props.system.hostname || "—"}</span>
           </span>
-          <span class={STATE_COLOR[props.connection.state]}>
+          <span class={STATE[props.connection.state].text}>
             ● {props.connection.state}
           </span>
           <span class="text-gray-500">·</span>
@@ -352,12 +468,15 @@ function Header(props: {
           </span>
         </span>
         <span>
-          mem <span class="font-semibold">{memGb().used}</span>
-          <span class="text-gray-400">/{memGb().total} GB</span>
-          <span class="ml-1 text-gray-400">({memPct().toFixed(0)}%)</span>
+          mem <span class="font-semibold">{gb.used}</span>
+          <span class="text-gray-400">/{gb.total} GB</span>
+          <span class="ml-1 text-gray-400">
+            ({pct.toFixed(0)}%)
+          </span>
         </span>
         <span>
-          uptime <span class="font-semibold">{uptimeFmt()}</span>
+          uptime{" "}
+          <span class="font-semibold">{formatUptime(props.system.uptime)}</span>
         </span>
         <span>
           os <span class="font-semibold">{props.system.os}</span>
@@ -368,15 +487,10 @@ function Header(props: {
 }
 
 function UsageBar(props: { pct: number }) {
-  const colour = () => {
-    if (props.pct > 85) return "bg-red-500";
-    if (props.pct > 65) return "bg-amber-500";
-    return "bg-emerald-500";
-  };
   return (
     <div class="h-1 w-full bg-gray-100 dark:bg-gray-800">
       <div
-        class={`h-full transition-all ${colour()}`}
+        class={`h-full transition-all ${usageBarColor(props.pct)}`}
         style={{ width: `${Math.min(100, props.pct).toFixed(1)}%` }}
       />
     </div>
@@ -405,16 +519,10 @@ function FilterBar(props: {
   );
 }
 
-function ConnectingOverlay(props: { state: string }) {
-  const msg = () =>
-    ({
-      copying: "Copying agent to remote…",
-      connecting: "Connecting…",
-      disconnected: "Disconnected. Retrying…",
-    })[props.state] ?? "Initializing…";
+function ConnectingOverlay(props: { state: ConnectionState }) {
   return (
     <div class="px-4 py-12 text-center text-gray-600 dark:text-gray-400">
-      <div class="mb-2 text-lg">{msg()}</div>
+      <div class="mb-2 text-lg">{STATE[props.state].message}</div>
       <div class="text-xs">
         First connect provisions the agent closure via <code>nix copy</code>.
         Subsequent connects reuse it.
@@ -499,12 +607,12 @@ function ProcessRow(props: {
       <td class="px-3 py-0.5 text-right tabular-nums">{props.pid}</td>
       <td class="px-3 py-0.5 text-left">{proc()?.user ?? ""}</td>
       <td
-        class={`px-3 py-0.5 text-right tabular-nums ${pctClass(cpu())}`}
+        class={`px-3 py-0.5 text-right tabular-nums ${processPctColor(cpu())}`}
       >
         {cpu().toFixed(1)}
       </td>
       <td
-        class={`px-3 py-0.5 text-right tabular-nums ${pctClass(mem())}`}
+        class={`px-3 py-0.5 text-right tabular-nums ${processPctColor(mem())}`}
       >
         {mem().toFixed(1)}
       </td>
@@ -554,12 +662,6 @@ function SortableTh(props: {
   );
 }
 
-function pctClass(pct: number): string {
-  if (pct > 50) return "font-semibold text-red-500";
-  if (pct > 10) return "text-amber-500";
-  return "text-gray-700 dark:text-gray-400";
-}
-
 function CpuStrip(props: {
   coreIds: readonly CoreId[];
   getCore: (id: CoreId) => CpuCore | undefined;
@@ -583,18 +685,12 @@ function CpuStrip(props: {
 function CpuCoreCell(props: { id: CoreId; get: () => CpuCore | undefined }) {
   const core = createMemo(() => props.get());
   const pct = () => core()?.usagePct ?? 0;
-  const barColor = createMemo(() => {
-    const p = pct();
-    if (p > 80) return "bg-red-500";
-    if (p > 50) return "bg-amber-500";
-    return "bg-emerald-500";
-  });
   return (
     <div class="flex items-center gap-1 text-xs">
       <span class="w-6 shrink-0 text-gray-500 tabular-nums">c{props.id}</span>
       <div class="h-2 flex-1 overflow-hidden rounded bg-gray-100 dark:bg-gray-800">
         <div
-          class={`h-full transition-all ${barColor()}`}
+          class={`h-full transition-all ${coreUsageColor(pct())}`}
           style={{ width: `${Math.min(100, pct()).toFixed(1)}%` }}
         />
       </div>
