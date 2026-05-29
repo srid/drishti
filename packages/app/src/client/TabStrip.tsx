@@ -17,7 +17,7 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import { type ConnectionState, DEFAULT_CONNECTION } from "../common/surface";
 import type { View } from "./view";
 import { STATE } from "./connectionColors";
-import type { Theme } from "./theme";
+import { otherTheme, type Theme } from "./theme";
 import { surfaceForHost } from "./wire";
 
 // Shared chip chrome — the fleet tab and the host chips are the same
@@ -69,13 +69,12 @@ export function TabStrip(props: {
 // it will switch *to*, the common affordance: a moon while light, a sun
 // while dark.
 function ThemeToggle(props: { theme: Theme; onToggle: () => void }) {
-  const next = createMemo(() => (props.theme === "dark" ? "light" : "dark"));
   return (
     <button
       type="button"
       class="ml-auto flex items-center px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60"
-      title={`Switch to ${next()} theme`}
-      aria-label={`Switch to ${next()} theme`}
+      title={`Switch to ${otherTheme(props.theme)} theme`}
+      aria-label={`Switch to ${otherTheme(props.theme)} theme`}
       onClick={props.onToggle}
     >
       <span aria-hidden="true">{props.theme === "dark" ? "☀" : "☾"}</span>
