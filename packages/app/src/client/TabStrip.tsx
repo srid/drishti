@@ -19,6 +19,16 @@ import { type ConnectionState, DEFAULT_CONNECTION } from "../common/surface";
 import { DOT_BG, isPendingState } from "./connectionColors";
 import { surfaceForHost } from "./wire";
 
+// Shared chip chrome — the fleet tab and the host chips are the same
+// visual control, so the class strings live in one place rather than
+// being copied into each component.
+const TAB_BASE =
+  "flex items-center gap-2 border-r border-gray-200 px-3 py-1.5 text-xs dark:border-gray-800";
+const TAB_INACTIVE =
+  "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60";
+const TAB_ACTIVE =
+  "bg-white text-gray-900 shadow-[inset_0_-2px_0_0_theme(colors.indigo.500)] dark:bg-gray-900 dark:text-gray-100";
+
 export function TabStrip(props: {
   hosts: readonly string[];
   activeTab: View;
@@ -59,16 +69,10 @@ function FleetTab(props: {
   count: number;
   onSelect: () => void;
 }) {
-  const baseClasses =
-    "flex items-center gap-2 border-r border-gray-200 px-3 py-1.5 text-xs dark:border-gray-800";
-  const inactiveClasses =
-    "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60";
-  const activeClasses =
-    "bg-white text-gray-900 shadow-[inset_0_-2px_0_0_theme(colors.indigo.500)] dark:bg-gray-900 dark:text-gray-100";
   return (
     <button
       type="button"
-      class={`${baseClasses} ${props.active ? activeClasses : inactiveClasses}`}
+      class={`${TAB_BASE} ${props.active ? TAB_ACTIVE : TAB_INACTIVE}`}
       onClick={props.onSelect}
       title="Fleet overview — all hosts at a glance"
     >
@@ -91,16 +95,8 @@ function TabChip(props: {
     () => (connection.value() ?? DEFAULT_CONNECTION).state,
   );
 
-  const baseClasses =
-    "flex items-center gap-2 border-r border-gray-200 px-3 py-1.5 text-xs dark:border-gray-800";
-  const inactiveClasses =
-    "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60";
-  const activeClasses =
-    "bg-white text-gray-900 shadow-[inset_0_-2px_0_0_theme(colors.indigo.500)] dark:bg-gray-900 dark:text-gray-100";
   return (
-    <div
-      class={`${baseClasses} ${props.active ? activeClasses : inactiveClasses}`}
-    >
+    <div class={`${TAB_BASE} ${props.active ? TAB_ACTIVE : TAB_INACTIVE}`}>
       <button
         type="button"
         class="flex items-center gap-2"
