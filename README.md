@@ -1,10 +1,19 @@
 # drishti
 
-A live process monitor that runs against any host you can `ssh` into. Browser SolidJS UI ↔ local parent server (Bun) ↔ remote agent over `ssh` stdio. Built on [`@kolu/surface`](https://kolu.dev/blog/surface-framework/) (with https://github.com/juspay/kolu/pull/984) for the typed reactive transport.
+**htop for your whole fleet — with nothing installed on the remote.** If you can `ssh` into a host and its Nix daemon trusts you, you can watch its live processes, CPU, memory, and network. drishti ships its own agent *over the SSH connection* on first connect — no package to install, no inbound port to open, no daemon to configure on the far end.
+
+Browser (SolidJS) ↔ local parent server (Bun) ↔ remote agent over `ssh` stdio, on the typed reactive transport [`@kolu/surface`](https://kolu.dev/blog/surface-framework/) (with https://github.com/juspay/kolu/pull/984).
 
 ## Demo
 
 ▶ **[Watch drishti in action](https://x.com/sridca/status/2060333167463088637)** — a short screencast demoing the multi-host fleet view and live htop drill-down.
+
+## Why drishti
+
+- **Zero install on the remote.** The agent closure is shipped over SSH (`nix copy --derivation` then realise) on first connect and reused after. The remote needs only passwordless `ssh` + a `nix-daemon` that trusts your user — no agent binary to install, no inbound port, no config file to drop.
+- **Zero config locally.** No database, no persisted metrics, no setup. History lives in memory for the life of the process. `nix run` and you're watching.
+- **One pane, many hosts, mixed arch.** A macOS laptop can drive Linux *and* macOS remotes from a single `nix run` — drishti probes each host's Nix system and ships the matching build.
+- **Cross-OS, same numbers.** Linux (`/proc`) and macOS (`sysctl` / `vm_stat` / `netstat`) report the same metrics the same way — memory "used" is cache-aware on both.
 
 ## Quick start
 
@@ -14,15 +23,15 @@ nix run github:srid/drishti -- user@host               # one remote
 nix run github:srid/drishti -- localhost a.lan b.lan   # multiple hosts (tabbed UI)
 ```
 
-Open <http://localhost:7720>. The UI opens on the **fleet** tab — a single overview pane with one live summary card per host (connection state, CPU, memory, load average, uptime); click a card (or a host's tab) to drill into that host's full htop. Each host also has its own tab with a live connection-state dot.
+Open <http://localhost:7720>. The UI opens on the **fleet** tab — a single overview pane with one live summary card per host (connection state, CPU, memory, load average, uptime); click a card (or a host's tab) to drill into that host's full htop. Every view has its own URL, so you can bookmark or share a link straight to a host: selecting a host updates the address to <http://localhost:7720/?host=user@host> (the fleet overview is the bare <http://localhost:7720/>), and opening such a link — or reloading — lands directly on that host.
 
-A host's htop view carries a **time-series chart** above the CPU strip: CPU% and memory% plotted over a rolling, in-memory history. A segmented control switches the visible window (1m / 5m / 15m / 30m), like the time-range chips in btop and Netdata. The **parent server owns the history ring** — it samples every host on each poll tick (whether or not a tab is open) and keeps it in memory for the life of the process, so the chart **survives page reloads and tab switches** and is already populated the first time you open a host. It's never persisted to disk (restarting the parent starts fresh), preserving the zero-config posture.
+## Features
 
-Every view has its own URL, so you can bookmark or share a link straight to a host: selecting a host updates the address to <http://localhost:7720/?host=user@host> (the fleet overview is the bare <http://localhost:7720/>). Opening such a link, or reloading the page, lands directly on that host.
-
-Use the `+ add host` button in the tab strip to add hosts at runtime; the `×` on each tab removes one. Added/removed hosts persist to `$XDG_STATE_HOME/drishti/hosts.json` (override with `DRISHTI_HOSTS_FILE`), so `nix run github:srid/drishti` with no args restores the last session.
-
-Your in-browser reading preferences stick across reloads via `localStorage`: the **chart window** (1m / 5m / 15m / 30m), the **process sort column**, and the **process filter** are remembered **per host**, so each tab reopens the way you left it. A **light/dark toggle** (top-right of the tab strip) overrides the OS theme and is remembered globally; until you touch it, the theme follows your system preference.
+- **Live time-series charts** (CPU% / memory%) over a rolling 1m / 5m / 15m / 30m window, switched by a segmented control. The parent server samples every host on each poll tick — whether or not a tab is open — so the chart survives page reloads and tab switches and is already populated the first time you open a host. History is in-memory only; restarting the parent starts fresh.
+- **Runtime host management** — the `+ add host` button adds hosts, the `×` on each tab removes one. Added/removed hosts persist to `$XDG_STATE_HOME/drishti/hosts.json` (override with `DRISHTI_HOSTS_FILE`), so `nix run github:srid/drishti` with no args restores the last session.
+- **Per-host view memory** — the chart window, process sort column, and process filter stick across reloads via `localStorage`, remembered per host. A **light/dark toggle** (top-right of the tab strip) overrides the OS theme and is remembered globally; until you touch it, the theme follows your system preference.
+- **Idle NICs collapse** behind a `+N idle` toggle by default, so the few interfaces moving traffic aren't buried under the dozens of always-zero virtual ones (utunN, anpiN, …).
+- **Process kill** — sends `TERM` / `KILL` / `HUP` / `INT`; the only mutation.
 
 Requirements:
 
