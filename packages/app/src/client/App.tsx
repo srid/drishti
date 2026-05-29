@@ -37,20 +37,13 @@ import {
   type SystemInfo,
 } from "../common/surface";
 import { STATE } from "./connectionColors";
+import type { View } from "./view";
 import { averageCoreUsage, formatUptime, memGb, memPct } from "./metrics";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import { TabStrip } from "./TabStrip";
 import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
 
 type SortKey = "cpu" | "mem" | "pid" | "user";
-
-// What the main pane shows: the aggregate fleet overview, or one host's
-// full htop body. Modelled as a sum so "which host" only exists in the
-// branch where a host is selected — there's no nullable host floating
-// alongside a separate "is fleet" flag to keep consistent. Exported so
-// the tab strip highlights the active tab from this one value rather
-// than a flattened (fleetActive, activeHost) pair that can disagree.
-export type View = { kind: "fleet" } | { kind: "host"; host: string };
 
 export default function App() {
   const admin = adminClient();

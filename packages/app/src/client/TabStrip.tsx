@@ -14,8 +14,8 @@
  */
 
 import { createMemo, createSignal, For, Show } from "solid-js";
-import type { View } from "./App";
 import { type ConnectionState, DEFAULT_CONNECTION } from "../common/surface";
+import type { View } from "./view";
 import { STATE } from "./connectionColors";
 import { surfaceForHost } from "./wire";
 
