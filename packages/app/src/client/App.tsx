@@ -48,6 +48,7 @@ import {
   formatBytes,
   formatThroughput,
   formatUptime,
+  isActiveNic,
   memGb,
   memPct,
 } from "./metrics";
@@ -809,20 +810,44 @@ function MetricSection(props: { class?: string; children: JSX.Element }) {
 // header, and the responsive grid that <For>s over a stable key array. The
 // cells differ per metric, so the caller supplies both the items and the
 // per-item renderer; only the grid columns vary between strips.
+//
+// `primary` is the opt-in collapse hook: items it rejects are hidden behind a
+// "+N idle" toggle (collapsed by default) so a strip with dozens of always-
+// zero entries doesn't crowd the layout. Omitting it (as CpuStrip does) shows
+// every item, unchanged. The predicate may read reactive state — it's
+// evaluated inside a memo, so the partition re-runs as items go active/idle.
 function MetricStrip<T>(props: {
   label: string;
   items: readonly T[];
   gridClass: string;
   children: (item: T) => JSX.Element;
+  primary?: (item: T) => boolean;
 }) {
+  const [expanded, setExpanded] = createSignal(false);
+  const shown = createMemo(() => {
+    if (props.primary === undefined || expanded()) return props.items;
+    return props.items.filter(props.primary);
+  });
+  const hidden = () => props.items.length - shown().length;
   return (
     <Show when={props.items.length > 0}>
       <MetricSection>
-        <div class="mb-1 text-xs uppercase tracking-wide text-gray-500">
-          {props.label} ({props.items.length})
+        <div class="mb-1 flex items-center gap-2 text-xs uppercase tracking-wide text-gray-500">
+          <span>
+            {props.label} ({shown().length}/{props.items.length})
+          </span>
+          <Show when={expanded() || hidden() > 0}>
+            <button
+              type="button"
+              class="cursor-pointer normal-case text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              onClick={() => setExpanded((e) => !e)}
+            >
+              {expanded() ? "− hide idle" : `+${hidden()} idle`}
+            </button>
+          </Show>
         </div>
         <div class={`grid ${props.gridClass}`}>
-          <For each={props.items}>{(item) => props.children(item)}</For>
+          <For each={shown()}>{(item) => props.children(item)}</For>
         </div>
       </MetricSection>
     </Show>
@@ -866,6 +891,9 @@ function CpuCoreCell(props: { id: CoreId; get: () => CpuCore | undefined }) {
 // Per-NIC network I/O strip — the throughput counterpart to CpuStrip.
 // Mounts once per interface; each NetCell tracks only its own rx/tx
 // fields, so a busy NIC's rate updates without re-rendering its siblings.
+// Idle interfaces (no live throughput) collapse behind a toggle by default —
+// hosts carry dozens of always-zero virtual NICs that would otherwise bury
+// the few moving traffic.
 function NetStrip(props: {
   ifaceNames: readonly IfaceName[];
   getNic: (name: IfaceName) => NetInterface | undefined;
@@ -875,6 +903,7 @@ function NetStrip(props: {
       label="network"
       items={props.ifaceNames}
       gridClass="grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3"
+      primary={(name) => isActiveNic(props.getNic(name))}
     >
       {(name) => <NetCell name={name} get={() => props.getNic(name)} />}
     </MetricStrip>

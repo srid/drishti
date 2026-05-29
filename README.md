@@ -52,7 +52,7 @@ Per-host primitives:
 | **Collection** | `processes` | Keyed by PID — `{ user, cpuPct, rssBytes, command, cwd }`. The table shows absolute resident memory (`rssBytes`, auto-scaled to MB/GB). Snapshot-then-delta. `cwd` is from `/proc/<pid>/cwd` on linux (empty on darwin / kernel threads / other-user pids). |
 | **Stream** | `processesSnapshot` | Bulk-snapshot variant for ~600-PID htop refresh in one frame. |
 | **Collection** | `cpuCores` | Per-core CPU usage (`Collection<K,T>` showcase). |
-| **Collection** | `networkInterfaces` | Per-NIC network I/O, keyed by interface name — `{ rxBytes, txBytes, rxRate, txRate }` (cumulative bytes since boot + bytes/sec throughput). `/proc/net/dev` on linux, `netstat -ib` on darwin; loopback filtered out. |
+| **Collection** | `networkInterfaces` | Per-NIC network I/O, keyed by interface name — `{ rxBytes, txBytes, rxRate, txRate }` (cumulative bytes since boot + bytes/sec throughput). `/proc/net/dev` on linux, `netstat -ib` on darwin; loopback filtered out. The UI strip collapses idle interfaces (both rates 0) behind a `+N idle` toggle by default, so the few NICs moving traffic aren't buried under the dozens of always-zero virtual ones (utunN, anpiN, …). |
 | **Procedure** | `process.kill` | The only mutation — sends `TERM` / `KILL` / `HUP` / `INT`. |
 
 Admin surface primitives:
