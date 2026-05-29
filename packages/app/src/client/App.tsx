@@ -461,6 +461,27 @@ function HostView(props: { host: string }) {
     ),
   );
 
+  // Project the ring to the chart's two SVG polylines here — not inside
+  // HistoryChart — so the component stays a pure renderer fed precomputed
+  // point strings, the same computed-props shape as Header / CpuStrip /
+  // NetStrip. `chartNow` anchors to the newest sample so the trace's right
+  // edge is always "latest data", not wall-clock drifting ahead of the
+  // last point between ticks.
+  const latestSample = createMemo<Sample | null>(() => {
+    const s = history();
+    return s.length > 0 ? s[s.length - 1]! : null;
+  });
+  const chartNow = createMemo(() => latestSample()?.t ?? 0);
+  const windowedSamples = createMemo(() =>
+    windowSlice(history(), windowMs(), chartNow()),
+  );
+  const cpuPoints = createMemo(() =>
+    polylinePoints(windowedSamples(), "cpu", chartNow(), windowMs()),
+  );
+  const memPoints = createMemo(() =>
+    polylinePoints(windowedSamples(), "mem", chartNow(), windowMs()),
+  );
+
   const killProcess = async (pid: number, signal: "TERM" | "KILL") => {
     try {
       await app.rpc.surface.process.kill({ pid, signal });
@@ -481,8 +502,10 @@ function HostView(props: { host: string }) {
         fallback={<ConnectingOverlay state={currentConnection().state} />}
       >
         <HistoryChart
-          samples={history()}
-          windowMs={windowMs()}
+          cpuPoints={cpuPoints()}
+          memPoints={memPoints()}
+          latest={latestSample()}
+          hasSamples={history().length > 0}
           windowKey={historyWindow()}
           onWindow={setHistoryWindow}
         />
@@ -876,32 +899,21 @@ function NetCell(props: {
 }
 
 // Per-host time-series chart: CPU% and memory% over the selected window,
-// drawn as two overlaid SVG sparklines. The viewBox is a fixed 0-100 grid
-// (percentages on both axes), so `preserveAspectRatio="none"` lets the
-// trace stretch to whatever width the panel happens to be; the strokes use
-// `vector-effect="non-scaling-stroke"` to stay 1px crisp under that
-// stretch. Time anchors to the newest sample (not wall-clock now) so the
-// right edge is always "latest data", not a gap that grows between ticks.
+// drawn as two overlaid SVG sparklines. Pure renderer — `HostView` owns the
+// ring and projects it to the `cpuPoints` / `memPoints` strings, so this
+// component only paints (the same computed-props shape as Header / CpuStrip).
+// The viewBox is a fixed 0-100 grid (percentages on both axes), so
+// `preserveAspectRatio="none"` lets the trace stretch to whatever width the
+// panel happens to be; the strokes use `vector-effect="non-scaling-stroke"`
+// to stay 1px crisp under that stretch.
 function HistoryChart(props: {
-  samples: readonly Sample[];
-  windowMs: number;
+  cpuPoints: string;
+  memPoints: string;
+  latest: Sample | null;
+  hasSamples: boolean;
   windowKey: HistoryWindowKey;
   onWindow: (k: HistoryWindowKey) => void;
 }) {
-  const latest = createMemo(() =>
-    props.samples.length > 0 ? props.samples[props.samples.length - 1]! : null,
-  );
-  const now = createMemo(() => latest()?.t ?? 0);
-  const windowed = createMemo(() =>
-    windowSlice(props.samples, props.windowMs, now()),
-  );
-  const cpuPoints = createMemo(() =>
-    polylinePoints(windowed(), "cpu", now(), props.windowMs),
-  );
-  const memPoints = createMemo(() =>
-    polylinePoints(windowed(), "mem", now(), props.windowMs),
-  );
-
   return (
     <div class="border-b border-gray-200 px-4 py-2 dark:border-gray-800">
       <div class="mb-1 flex items-center justify-between gap-2">
@@ -909,11 +921,11 @@ function HistoryChart(props: {
           <span>history</span>
           <span class="flex items-center gap-1 normal-case text-emerald-600 dark:text-emerald-400">
             <span class="inline-block h-2 w-2 rounded-sm bg-emerald-500" />
-            cpu {latest() ? `${latest()!.cpu.toFixed(0)}%` : "—"}
+            cpu {props.latest ? `${props.latest.cpu.toFixed(0)}%` : "—"}
           </span>
           <span class="flex items-center gap-1 normal-case text-indigo-600 dark:text-indigo-400">
             <span class="inline-block h-2 w-2 rounded-sm bg-indigo-500" />
-            mem {latest() ? `${latest()!.mem.toFixed(0)}%` : "—"}
+            mem {props.latest ? `${props.latest.mem.toFixed(0)}%` : "—"}
           </span>
         </div>
         <DurationPicker selected={props.windowKey} onSelect={props.onWindow} />
@@ -927,7 +939,7 @@ function HistoryChart(props: {
         >
           <polyline
             class="text-emerald-500"
-            points={cpuPoints()}
+            points={props.cpuPoints}
             fill="none"
             stroke="currentColor"
             stroke-width="1"
@@ -936,7 +948,7 @@ function HistoryChart(props: {
           />
           <polyline
             class="text-indigo-500"
-            points={memPoints()}
+            points={props.memPoints}
             fill="none"
             stroke="currentColor"
             stroke-width="1"
@@ -944,7 +956,7 @@ function HistoryChart(props: {
             vector-effect="non-scaling-stroke"
           />
         </svg>
-        <Show when={props.samples.length === 0}>
+        <Show when={!props.hasSamples}>
           <div class="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-500">
             collecting…
           </div>
