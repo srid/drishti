@@ -7,6 +7,7 @@ import {
   isHistoryWindowKey,
   polylinePoints,
   pushSample,
+  WIDEST_HISTORY_WINDOW,
   windowMsFor,
   windowSlice,
 } from "./history";
@@ -38,6 +39,12 @@ describe("HISTORY_WINDOWS", () => {
     expect(HISTORY_RETENTION_MS).toBe(
       Math.max(...HISTORY_WINDOWS.map((w) => w.ms)),
     );
+  });
+
+  it("names the widest window as the fleet card's pinned span", () => {
+    const widest = HISTORY_WINDOWS.reduce((a, b) => (b.ms > a.ms ? b : a));
+    expect(WIDEST_HISTORY_WINDOW).toBe(widest.key);
+    expect(windowMsFor(WIDEST_HISTORY_WINDOW)).toBe(HISTORY_RETENTION_MS);
   });
 });
 

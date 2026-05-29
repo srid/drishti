@@ -63,6 +63,7 @@ import {
   isHistoryWindowKey,
   polylinePoints,
   pushSample,
+  WIDEST_HISTORY_WINDOW,
   windowMsFor,
   windowSlice,
 } from "../common/history";
@@ -382,14 +383,14 @@ function HostCard(props: { host: string; onSelect: () => void }) {
   });
 
   // Same parent-owned ring the open host view draws, streamed over the card's
-  // already-warm socket. The card pins the widest (30m) window — it's a
-  // glanceable trend, not an interactive chart, so there's no per-card
+  // already-warm socket. The card pins the widest window (WIDEST_HISTORY_WINDOW)
+  // — it's a glanceable trend, not an interactive chart, so there's no per-card
   // duration picker — and tears the stream down with the card via `ctl`.
   const ctl = new AbortController();
   onCleanup(() => ctl.abort());
   const { history, streamError } = subscribeMetricHistory(app, ctl.signal);
   const { latest, cpuPoints, memPoints } = projectHistory(history, () =>
-    windowMsFor("30m"),
+    windowMsFor(WIDEST_HISTORY_WINDOW),
   );
 
   const sys = createMemo<SystemInfo>(() => system.value() ?? DEFAULT_SYSTEM);
@@ -456,7 +457,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
         </div>
         <div class="flex flex-col gap-0.5">
           <div class="flex items-center gap-2 text-xs text-gray-500">
-            <span class="uppercase tracking-wide">30m</span>
+            <span class="uppercase tracking-wide">{WIDEST_HISTORY_WINDOW}</span>
             <span class="ml-auto flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
               <span class="inline-block h-2 w-2 rounded-sm bg-emerald-500" />
               cpu
