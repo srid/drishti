@@ -396,7 +396,7 @@ function HostView(props: { host: string }) {
   // tick allocate fresh row identities, so the whole table was torn down
   // and rebuilt per snapshot (43 k tr add/remove vs 28 text changes in
   // 6 s, observed). Field reads moved into <ProcessRow> below so per-cell
-  // reactivity updates only the changed cpuPct/memPct text nodes.
+  // reactivity updates only the changed cpuPct/rssBytes text nodes.
   const visiblePids = createMemo<Pid[]>(() => {
     const q = filter().trim().toLowerCase();
     const pids = allPids();
@@ -542,7 +542,7 @@ function pidComparator(
   if (key === "cpu")
     return (a, b) => procs[b]!.cpuPct - procs[a]!.cpuPct || a - b;
   if (key === "mem")
-    return (a, b) => procs[b]!.memPct - procs[a]!.memPct || a - b;
+    return (a, b) => procs[b]!.rssBytes - procs[a]!.rssBytes || a - b;
   if (key === "user")
     return (a, b) => procs[a]!.user.localeCompare(procs[b]!.user) || a - b;
   return (a, b) => a - b;
@@ -553,14 +553,15 @@ function Header(props: {
   connection: ReturnType<() => typeof DEFAULT_CONNECTION>;
   count: number;
 }) {
-  // Pure derivations cached once per render — props.system is a reactive
-  // read that re-runs this component body when it changes, so these are
-  // computed once per system tick, not once per JSX expression.
-  const pct = memPct(props.system);
-  const gb = memGb(props.system);
+  // The component body runs ONCE at mount — when props.system is still
+  // DEFAULT_SYSTEM (memUsed/memTotal 0). Derive through createMemo so these
+  // re-run on every system tick; a plain const would freeze the header's
+  // memory readout at "0.0/0.0 GB (0%)" forever. Mirrors HostCard.
+  const pct = createMemo(() => memPct(props.system));
+  const gb = createMemo(() => memGb(props.system));
   return (
     <div class="border-b border-gray-200 dark:border-gray-800">
-      <UsageBar pct={pct} />
+      <UsageBar pct={pct()} />
       <div class="flex items-center justify-between px-4 py-2">
         <div class="flex items-center gap-3">
           <span class="font-semibold">drishti</span>
@@ -595,10 +596,10 @@ function Header(props: {
           </span>
         </span>
         <span>
-          mem <span class="font-semibold">{gb.used}</span>
-          <span class="text-gray-400">/{gb.total} GB</span>
+          mem <span class="font-semibold">{gb().used}</span>
+          <span class="text-gray-400">/{gb().total} GB</span>
           <span class="ml-1 text-gray-400">
-            ({pct.toFixed(0)}%)
+            ({pct().toFixed(0)}%)
           </span>
         </span>
         <span>
@@ -689,7 +690,7 @@ function ProcessTable(props: {
               onClick={() => props.onSort("cpu")}
             />
             <SortableTh
-              label="MEM%"
+              label="MEM"
               align="right"
               active={props.sortKey === "mem"}
               onClick={() => props.onSort("mem")}
@@ -728,7 +729,7 @@ function ProcessRow(props: {
 }) {
   const proc = () => props.processes[props.pid];
   const cpu = () => proc()?.cpuPct ?? 0;
-  const mem = () => proc()?.memPct ?? 0;
+  const rssBytes = () => proc()?.rssBytes ?? 0;
   return (
     <tr class="border-b border-gray-100 hover:bg-gray-50 dark:border-gray-800/50 dark:hover:bg-gray-800/40">
       <td class="px-3 py-0.5 text-right tabular-nums">{props.pid}</td>
@@ -738,10 +739,8 @@ function ProcessRow(props: {
       >
         {cpu().toFixed(1)}
       </td>
-      <td
-        class={`px-3 py-0.5 text-right tabular-nums ${processPctColor(mem())}`}
-      >
-        {mem().toFixed(1)}
+      <td class="px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
+        {formatBytes(rssBytes())}
       </td>
       <td class="max-w-md truncate px-3 py-0.5 text-left text-gray-700 dark:text-gray-300">
         <span>{proc()?.command ?? ""}</span>

@@ -211,7 +211,7 @@ async function main(): Promise<void> {
         if (
           prev === undefined ||
           prev.cpuPct !== value.cpuPct ||
-          prev.memPct !== value.memPct ||
+          prev.rssBytes !== value.rssBytes ||
           prev.command !== value.command ||
           prev.cwd !== value.cwd
         ) {

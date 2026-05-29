@@ -19,7 +19,10 @@ const PidSchema = z.number().int().nonnegative();
 const ProcessSchema = z.object({
   user: z.string(),
   cpuPct: z.number(),
-  memPct: z.number(),
+  /** Resident set size in bytes — the absolute physical memory the
+   *  process occupies. The headline memory number the UI shows; a ratio
+   *  view can derive `rssBytes / system.memTotal` at the call site. */
+  rssBytes: z.number(),
   command: z.string(),
   /** Current working directory. Empty string when unknown — kernel
    *  threads have no cwd, other-user pids hit EACCES on `/proc/<pid>/cwd`,
