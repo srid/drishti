@@ -70,14 +70,6 @@
       };
     in
     {
-      nixosConfigurations.example = nixpkgs.lib.nixosSystem {
-        system = linuxSystem;
-        modules = [
-          home-manager.nixosModules.home-manager
-          nixosModule
-        ];
-      };
-
       # Linux: VM test boots the config and verifies drishti listens on its port.
       checks.${linuxSystem}.vm-test = linuxPkgs.testers.nixosTest {
         name = "drishti-service";
