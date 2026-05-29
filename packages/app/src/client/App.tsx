@@ -834,9 +834,15 @@ function MetricStrip<T>(props: {
       <MetricSection>
         <div class="mb-1 flex items-center gap-2 text-xs uppercase tracking-wide text-gray-500">
           <span>
-            {props.label} ({shown().length}/{props.items.length})
+            {props.label} (
+            {props.primary === undefined
+              ? props.items.length
+              : `${shown().length}/${props.items.length}`}
+            )
           </span>
-          <Show when={expanded() || hidden() > 0}>
+          <Show
+            when={props.primary !== undefined && (hidden() > 0 || expanded())}
+          >
             <button
               type="button"
               class="cursor-pointer normal-case text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
