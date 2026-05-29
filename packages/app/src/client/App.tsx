@@ -25,6 +25,7 @@ import {
   on,
   onCleanup,
   Show,
+  type Signal,
 } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import {
@@ -58,15 +59,45 @@ import {
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
   type HistoryWindowKey,
+  isHistoryWindowKey,
   polylinePoints,
   pushSample,
   windowMsFor,
   windowSlice,
 } from "../common/history";
 import { TabStrip } from "./TabStrip";
+import { prefKey, readPref, writePref } from "./localStorageState";
+import {
+  applyTheme,
+  initialTheme,
+  otherTheme,
+  THEME_KEY,
+  type Theme,
+} from "./theme";
 import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
 
-type SortKey = "cpu" | "mem" | "pid" | "user";
+const SORT_KEYS = ["cpu", "mem", "pid", "user"] as const;
+type SortKey = (typeof SORT_KEYS)[number];
+
+// Bind a per-host preference to a signal: seed from localStorage and mirror
+// every change back, keyed by host (`defer` skips the redundant write of the
+// just-read seed). Computing the storage key once is the point — it removes
+// the hazard of the seed-read and the write-back drifting to different keys.
+// This is the signal-is-truth / store-is-projection shape of urlState's URL
+// mirror, against a private store (localStorage) instead of the shareable
+// one (the URL). It lives here, not in the framework-free localStorageState.ts
+// (HostView is its only caller), so that module keeps its pure-I/O boundary.
+function createPersistedSignal<T extends string>(
+  pref: string,
+  host: string,
+  fallback: T,
+  accept?: (raw: string) => boolean,
+): Signal<T> {
+  const key = prefKey(pref, host);
+  const [value, setValue] = createSignal<T>(readPref(key, fallback, accept));
+  createEffect(on(value, (v) => writePref(key, v), { defer: true }));
+  return [value, setValue];
+}
 
 export default function App() {
   const admin = adminClient();
@@ -141,6 +172,29 @@ export default function App() {
     return v.kind === "host" ? v.host : null;
   });
 
+  // Theme is global app chrome (like `view`), so it lives here, not per
+  // host. The signal seeds from the attribute the pre-paint bootstrap in
+  // index.html already applied; toggling flips the attribute and persists
+  // the choice. `applyTheme` is the single writer of both DOM and storage.
+  const [theme, setTheme] = createSignal<Theme>(initialTheme());
+  // The signal is the source of truth; this effect projects it to the DOM
+  // (via theme.ts, which owns the attribute/element detail) and persists
+  // the choice — the same signal-is-truth / store-is-projection shape as
+  // the per-host pref effects below. `defer` skips the redundant first
+  // write: the pre-paint bootstrap in index.html already applied the
+  // initial theme and storage already holds it.
+  createEffect(
+    on(
+      theme,
+      (t) => {
+        applyTheme(t);
+        writePref(THEME_KEY, t);
+      },
+      { defer: true },
+    ),
+  );
+  const toggleTheme = () => setTheme(otherTheme(theme()));
+
   const onAdd = async (host: string): Promise<string | null> => {
     try {
       const res = await admin.rpc.surface.hosts.add({ host });
@@ -175,6 +229,8 @@ export default function App() {
           onSelect={(h) => setView({ kind: "host", host: h })}
           onAdd={onAdd}
           onRemove={onRemove}
+          theme={theme()}
+          onToggleTheme={toggleTheme}
         />
         <Show
           when={hostList().length > 0}
@@ -361,8 +417,21 @@ function HostView(props: { host: string }) {
     }
   })();
 
-  const [filter, setFilter] = createSignal("");
-  const [sortKey, setSortKey] = createSignal<SortKey>("cpu");
+  // Per-host UI preferences, persisted to localStorage and keyed by host.
+  // These signals live in this keyed component, so each host restores its
+  // own filter/sort/window on reload or tab switch — per-host scope falls
+  // out of where the state already lives.
+  const [filter, setFilter] = createPersistedSignal<string>(
+    "filter",
+    props.host,
+    "",
+  );
+  const [sortKey, setSortKey] = createPersistedSignal<SortKey>(
+    "sort",
+    props.host,
+    "cpu",
+    (raw) => (SORT_KEYS as readonly string[]).includes(raw),
+  );
 
   const currentSystem = createMemo(() => system.value() ?? DEFAULT_SYSTEM);
   const currentConnection = createMemo(
@@ -433,7 +502,12 @@ function HostView(props: { host: string }) {
   // locally-accumulated deltas to the same retention as the server ring.
   const [history, setHistory] = createSignal<MetricSample[]>([]);
   const [historyWindow, setHistoryWindow] =
-    createSignal<HistoryWindowKey>(DEFAULT_HISTORY_WINDOW);
+    createPersistedSignal<HistoryWindowKey>(
+      "window",
+      props.host,
+      DEFAULT_HISTORY_WINDOW,
+      isHistoryWindowKey,
+    );
   const windowMs = createMemo(() => windowMsFor(historyWindow()));
 
   // Reuses `ctl` — the metricHistory and processesSnapshot streams share

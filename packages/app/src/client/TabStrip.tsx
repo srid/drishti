@@ -17,6 +17,7 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import { type ConnectionState, DEFAULT_CONNECTION } from "../common/surface";
 import type { View } from "./view";
 import { STATE } from "./connectionColors";
+import { otherTheme, type Theme } from "./theme";
 import { surfaceForHost } from "./wire";
 
 // Shared chip chrome — the fleet tab and the host chips are the same
@@ -36,6 +37,8 @@ export function TabStrip(props: {
   onSelect: (h: string) => void;
   onAdd: (h: string) => Promise<string | null>;
   onRemove: (h: string) => Promise<void>;
+  theme: Theme;
+  onToggleTheme: () => void;
 }) {
   return (
     <div class="flex flex-wrap items-stretch border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/60">
@@ -57,7 +60,25 @@ export function TabStrip(props: {
         )}
       </For>
       <AddHostForm onAdd={props.onAdd} />
+      <ThemeToggle theme={props.theme} onToggle={props.onToggleTheme} />
     </div>
+  );
+}
+
+// Right-aligned (`ml-auto`) light/dark switch. Shows the icon of the theme
+// it will switch *to*, the common affordance: a moon while light, a sun
+// while dark.
+function ThemeToggle(props: { theme: Theme; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      class="ml-auto flex items-center px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60"
+      title={`Switch to ${otherTheme(props.theme)} theme`}
+      aria-label={`Switch to ${otherTheme(props.theme)} theme`}
+      onClick={props.onToggle}
+    >
+      <span aria-hidden="true">{props.theme === "dark" ? "☀" : "☾"}</span>
+    </button>
   );
 }
 

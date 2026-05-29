@@ -4,6 +4,7 @@ import {
   captureSample,
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
+  isHistoryWindowKey,
   polylinePoints,
   pushSample,
   windowMsFor,
@@ -44,6 +45,17 @@ describe("windowMsFor", () => {
   it("resolves a known key to its span", () => {
     expect(windowMsFor("1m")).toBe(60_000);
     expect(windowMsFor("15m")).toBe(15 * 60_000);
+  });
+});
+
+describe("isHistoryWindowKey", () => {
+  it("accepts every selectable window key", () => {
+    for (const w of HISTORY_WINDOWS) expect(isHistoryWindowKey(w.key)).toBe(true);
+  });
+
+  it("rejects unknown or stale keys", () => {
+    expect(isHistoryWindowKey("2h")).toBe(false);
+    expect(isHistoryWindowKey("")).toBe(false);
   });
 });
 

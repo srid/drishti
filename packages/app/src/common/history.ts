@@ -52,6 +52,13 @@ export function windowMsFor(key: HistoryWindowKey): number {
   return HISTORY_WINDOWS.find((w) => w.key === key)?.ms ?? HISTORY_WINDOWS[0].ms;
 }
 
+/** Whether a raw string is a selectable window key — the guard for
+ *  restoring a persisted choice, so a key dropped from a future build
+ *  falls back to the default instead of selecting nothing. */
+export function isHistoryWindowKey(raw: string): boolean {
+  return HISTORY_WINDOWS.some((w) => w.key === raw);
+}
+
 /** Assemble a `MetricSample` from a live system snapshot and the per-core
  *  usages captured at one instant — the single home for "what a captured
  *  sample is." Adding a series (say, load) becomes one edit here plus the

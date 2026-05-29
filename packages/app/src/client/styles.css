@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Drive the `dark:` variant from an explicit `data-theme="dark"` attribute
+ * on <html> (set by the theme toggle / the pre-paint bootstrap in
+ * index.html) instead of the OS `prefers-color-scheme` media query, so a
+ * click can override the system theme. The attribute is seeded from the OS
+ * preference on first visit, so default behaviour is unchanged. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 :root {
   font-family:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu,

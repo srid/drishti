@@ -18,6 +18,8 @@ Every view has its own URL, so you can bookmark or share a link straight to a ho
 
 Use the `+ add host` button in the tab strip to add hosts at runtime; the `×` on each tab removes one. Added/removed hosts persist to `$XDG_STATE_HOME/drishti/hosts.json` (override with `DRISHTI_HOSTS_FILE`), so `nix run github:srid/drishti` with no args restores the last session.
 
+Your in-browser reading preferences stick across reloads via `localStorage`: the **chart window** (1m / 5m / 15m / 30m), the **process sort column**, and the **process filter** are remembered **per host**, so each tab reopens the way you left it. A **light/dark toggle** (top-right of the tab strip) overrides the OS theme and is remembered globally; until you touch it, the theme follows your system preference.
+
 Requirements:
 
 - The remote host must be `ssh`-reachable with **passwordless** auth and a working **`nix-daemon`** that **trusts your user** (`trusted-users` in `nix.conf`) — drishti provisions the agent by shipping its `.drv` to the remote with `nix copy --derivation` and realising it there.
