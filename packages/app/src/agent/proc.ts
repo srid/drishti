@@ -507,8 +507,8 @@ export function parsePsLine(line: string): [Pid, Process] | null {
       ppid: Number(ppid),
       state: state[0] ?? "",
       nice: Number(nice),
-      threads: 0,
-      startedAtMs: 0,
+      threads: null,
+      startedAtMs: null,
     },
   ];
 }
@@ -658,8 +658,8 @@ function stubReader(): ProcReader {
         ppid: process.ppid,
         state: "",
         nice: 0,
-        threads: 0,
-        startedAtMs: 0,
+        threads: null,
+        startedAtMs: null,
       });
       return out;
     },

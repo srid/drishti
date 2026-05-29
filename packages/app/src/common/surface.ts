@@ -43,16 +43,17 @@ const ProcessSchema = z.object({
   /** Nice value (scheduling priority, -20..19). `/proc/<pid>/stat` field 19
    *  on linux, `ps -o nice=` on darwin. */
   nice: z.number().int(),
-  /** Thread count (`/proc/<pid>/stat` field 20). 0 when unknown — darwin's
-   *  `ps` has no cheap per-process thread count, so it's 0 there (the same
-   *  "blank when the platform can't cheaply source it" convention as cwd). */
-  threads: z.number().int().nonnegative(),
-  /** Process start time as epoch milliseconds, or 0 when unknown. Derived on
-   *  linux from the host boot time plus `/proc/<pid>/stat` field 22
-   *  (start-ticks-since-boot); 0 on darwin, which has no cheap per-pid start
+  /** Thread count (`/proc/<pid>/stat` field 20), or null when the platform
+   *  can't cheaply source it — darwin's `ps` has no per-process thread count.
+   *  Null (not 0) so "unavailable" is distinct from a real count at the type
+   *  level; a live linux process always has >= 1. */
+  threads: z.number().int().positive().nullable(),
+  /** Process start time as epoch milliseconds, or null when unknown. Derived
+   *  on linux from the host boot time plus `/proc/<pid>/stat` field 22
+   *  (start-ticks-since-boot); null on darwin, which has no cheap per-pid start
    *  source in the `ps` columns we read. Immutable per pid, so the poll loop
    *  excludes it from change detection. */
-  startedAtMs: z.number(),
+  startedAtMs: z.number().nullable(),
 });
 
 const CpuCoreSchema = z.object({

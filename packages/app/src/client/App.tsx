@@ -1075,15 +1075,19 @@ function ProcessDetail(props: {
         <DetailRow label="nice">
           <span class="tabular-nums">{p().nice}</span>
         </DetailRow>
-        <Show when={p().threads > 0}>
-          <DetailRow label="threads">
-            <span class="tabular-nums">{p().threads}</span>
-          </DetailRow>
+        <Show when={p().threads}>
+          {(threads) => (
+            <DetailRow label="threads">
+              <span class="tabular-nums">{threads()}</span>
+            </DetailRow>
+          )}
         </Show>
-        <Show when={p().startedAtMs > 0}>
-          <DetailRow label="started">
-            {new Date(p().startedAtMs).toLocaleString()}
-          </DetailRow>
+        <Show when={p().startedAtMs}>
+          {(ms) => (
+            <DetailRow label="started">
+              {new Date(ms()).toLocaleString()}
+            </DetailRow>
+          )}
         </Show>
       </dl>
     </div>

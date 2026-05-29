@@ -81,9 +81,10 @@ describe("parsePsLine", () => {
     expect(proc.ppid).toBe(1);
     expect(proc.nice).toBe(0);
     expect(proc.state).toBe("S");
-    // darwin's ps carries neither cheaply — both report unknown (0).
-    expect(proc.threads).toBe(0);
-    expect(proc.startedAtMs).toBe(0);
+    // darwin's ps carries neither cheaply — both report unknown (null,
+    // distinct from a real 0/count at the type level).
+    expect(proc.threads).toBeNull();
+    expect(proc.startedAtMs).toBeNull();
   });
 
   it("keeps a command with embedded spaces intact (comm is the trailing field)", () => {
