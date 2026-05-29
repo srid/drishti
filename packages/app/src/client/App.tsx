@@ -635,7 +635,7 @@ function FilterBar(props: {
   total: number;
 }) {
   return (
-    <div class="flex items-center gap-2 border-b border-gray-200 px-4 py-2 dark:border-gray-800">
+    <MetricSection class="flex items-center gap-2">
       <input
         type="text"
         placeholder="filter pid / user / command / cwd"
@@ -646,7 +646,7 @@ function FilterBar(props: {
       <span class="text-xs text-gray-500">
         showing {props.visible} of {props.total}
       </span>
-    </div>
+    </MetricSection>
   );
 }
 
@@ -793,6 +793,22 @@ function SortableTh(props: {
   );
 }
 
+// The section scaffold every per-host strip sits in: a bottom border and
+// the standard horizontal/vertical padding. Single-sourced here so the one
+// "what a section looks like" decision can't drift across the CPU / network
+// strips, the filter bar, and the history chart (which previously each
+// repeated the class string). `class` appends layout the caller needs on
+// the same element — e.g. the filter bar's flex row.
+function MetricSection(props: { class?: string; children: JSX.Element }) {
+  return (
+    <div
+      class={`border-b border-gray-200 px-4 py-2 dark:border-gray-800${props.class ? ` ${props.class}` : ""}`}
+    >
+      {props.children}
+    </div>
+  );
+}
+
 // Shared chrome for the per-key metric strips (CPU cores, NICs): the
 // hide-when-empty guard, the bordered section, the uppercase label+count
 // header, and the responsive grid that <For>s over a stable key array. The
@@ -806,14 +822,14 @@ function MetricStrip<T>(props: {
 }) {
   return (
     <Show when={props.items.length > 0}>
-      <div class="border-b border-gray-200 px-4 py-2 dark:border-gray-800">
+      <MetricSection>
         <div class="mb-1 text-xs uppercase tracking-wide text-gray-500">
           {props.label} ({props.items.length})
         </div>
         <div class={`grid ${props.gridClass}`}>
           <For each={props.items}>{(item) => props.children(item)}</For>
         </div>
-      </div>
+      </MetricSection>
     </Show>
   );
 }
@@ -915,7 +931,7 @@ function HistoryChart(props: {
   onWindow: (k: HistoryWindowKey) => void;
 }) {
   return (
-    <div class="border-b border-gray-200 px-4 py-2 dark:border-gray-800">
+    <MetricSection>
       <div class="mb-1 flex items-center justify-between gap-2">
         <div class="flex items-center gap-3 text-xs uppercase tracking-wide text-gray-500">
           <span>history</span>
@@ -962,7 +978,7 @@ function HistoryChart(props: {
           </div>
         </Show>
       </div>
-    </div>
+    </MetricSection>
   );
 }
 
