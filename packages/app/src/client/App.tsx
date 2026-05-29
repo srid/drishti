@@ -51,6 +51,17 @@ import {
   memPct,
 } from "./metrics";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
+import {
+  DEFAULT_HISTORY_WINDOW,
+  HISTORY_RETENTION_MS,
+  HISTORY_WINDOWS,
+  type HistoryWindowKey,
+  polylinePoints,
+  pushSample,
+  type Sample,
+  windowMsFor,
+  windowSlice,
+} from "./history";
 import { TabStrip } from "./TabStrip";
 import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
 
@@ -412,6 +423,44 @@ function HostView(props: { host: string }) {
     return filtered;
   });
 
+  // ── Ephemeral metric history (per-host, in-memory) ──────────────────
+  // A time-bounded ring of CPU%/mem% samples feeding the time-series
+  // chart. Sampled on a timer at the host's own poll cadence so points
+  // are evenly spaced regardless of when individual cells/collections
+  // happen to fire; ticks while disconnected are skipped, leaving an
+  // honest gap. The ring lives and dies with this HostView mount — it is
+  // never persisted (the in-memory-ring decision from the feature plan).
+  const [history, setHistory] = createSignal<Sample[]>([]);
+  const [historyWindow, setHistoryWindow] =
+    createSignal<HistoryWindowKey>(DEFAULT_HISTORY_WINDOW);
+  const windowMs = createMemo(() => windowMsFor(historyWindow()));
+
+  // Re-arm the sampler whenever the poll cadence changes (it's 0 until the
+  // first `system` tick, then the agent's real interval). Reads inside the
+  // timer callback are untracked — it just snapshots the latest values.
+  createEffect(
+    on(
+      () => currentSystem().pollIntervalMs,
+      (pollMs) => {
+        const intervalMs = pollMs > 0 ? pollMs : 2000;
+        const id = setInterval(() => {
+          if (currentConnection().state !== "connected") return;
+          const cpu = averageCoreUsage(
+            coreIds().map((cid) => cores.byKey(cid)?.()?.usagePct ?? 0),
+          );
+          setHistory((prev) =>
+            pushSample(
+              prev,
+              { t: Date.now(), cpu, mem: memPct(currentSystem()) },
+              HISTORY_RETENTION_MS,
+            ),
+          );
+        }, intervalMs);
+        onCleanup(() => clearInterval(id));
+      },
+    ),
+  );
+
   const killProcess = async (pid: number, signal: "TERM" | "KILL") => {
     try {
       await app.rpc.surface.process.kill({ pid, signal });
@@ -431,6 +480,12 @@ function HostView(props: { host: string }) {
         when={currentConnection().state === "connected"}
         fallback={<ConnectingOverlay state={currentConnection().state} />}
       >
+        <HistoryChart
+          samples={history()}
+          windowMs={windowMs()}
+          windowKey={historyWindow()}
+          onWindow={setHistoryWindow}
+        />
         <CpuStrip coreIds={coreIds()} getCore={(id) => cores.byKey(id)?.()} />
         <NetStrip
           ifaceNames={ifaceNames()}
@@ -816,6 +871,113 @@ function NetCell(props: {
       >
         ↑ {formatThroughput(txRate())}
       </span>
+    </div>
+  );
+}
+
+// Per-host time-series chart: CPU% and memory% over the selected window,
+// drawn as two overlaid SVG sparklines. The viewBox is a fixed 0-100 grid
+// (percentages on both axes), so `preserveAspectRatio="none"` lets the
+// trace stretch to whatever width the panel happens to be; the strokes use
+// `vector-effect="non-scaling-stroke"` to stay 1px crisp under that
+// stretch. Time anchors to the newest sample (not wall-clock now) so the
+// right edge is always "latest data", not a gap that grows between ticks.
+function HistoryChart(props: {
+  samples: readonly Sample[];
+  windowMs: number;
+  windowKey: HistoryWindowKey;
+  onWindow: (k: HistoryWindowKey) => void;
+}) {
+  const latest = createMemo(() =>
+    props.samples.length > 0 ? props.samples[props.samples.length - 1]! : null,
+  );
+  const now = createMemo(() => latest()?.t ?? 0);
+  const windowed = createMemo(() =>
+    windowSlice(props.samples, props.windowMs, now()),
+  );
+  const cpuPoints = createMemo(() =>
+    polylinePoints(windowed(), "cpu", now(), props.windowMs),
+  );
+  const memPoints = createMemo(() =>
+    polylinePoints(windowed(), "mem", now(), props.windowMs),
+  );
+
+  return (
+    <div class="border-b border-gray-200 px-4 py-2 dark:border-gray-800">
+      <div class="mb-1 flex items-center justify-between gap-2">
+        <div class="flex items-center gap-3 text-xs uppercase tracking-wide text-gray-500">
+          <span>history</span>
+          <span class="flex items-center gap-1 normal-case text-emerald-600 dark:text-emerald-400">
+            <span class="inline-block h-2 w-2 rounded-sm bg-emerald-500" />
+            cpu {latest() ? `${latest()!.cpu.toFixed(0)}%` : "—"}
+          </span>
+          <span class="flex items-center gap-1 normal-case text-indigo-600 dark:text-indigo-400">
+            <span class="inline-block h-2 w-2 rounded-sm bg-indigo-500" />
+            mem {latest() ? `${latest()!.mem.toFixed(0)}%` : "—"}
+          </span>
+        </div>
+        <DurationPicker selected={props.windowKey} onSelect={props.onWindow} />
+      </div>
+      <div class="relative h-24 w-full overflow-hidden rounded bg-gray-100 dark:bg-gray-800/50">
+        <svg
+          class="h-full w-full"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <polyline
+            class="text-emerald-500"
+            points={cpuPoints()}
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1"
+            stroke-linejoin="round"
+            vector-effect="non-scaling-stroke"
+          />
+          <polyline
+            class="text-indigo-500"
+            points={memPoints()}
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1"
+            stroke-linejoin="round"
+            vector-effect="non-scaling-stroke"
+          />
+        </svg>
+        <Show when={props.samples.length === 0}>
+          <div class="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-500">
+            collecting…
+          </div>
+        </Show>
+      </div>
+    </div>
+  );
+}
+
+// Segmented duration control — the time-range chips popular monitors put
+// above their graphs. Drives the parent's window signal; the chart re-slices
+// reactively, so switching is instant against the already-buffered samples.
+function DurationPicker(props: {
+  selected: HistoryWindowKey;
+  onSelect: (k: HistoryWindowKey) => void;
+}) {
+  return (
+    <div class="flex shrink-0 overflow-hidden rounded border border-gray-300 dark:border-gray-700">
+      <For each={HISTORY_WINDOWS}>
+        {(w) => (
+          <button
+            type="button"
+            onClick={() => props.onSelect(w.key)}
+            class={`px-2 py-0.5 text-xs tabular-nums ${
+              props.selected === w.key
+                ? "bg-emerald-500 text-white"
+                : "text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700"
+            }`}
+          >
+            {w.label}
+          </button>
+        )}
+      </For>
     </div>
   );
 }
