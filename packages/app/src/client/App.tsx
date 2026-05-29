@@ -21,6 +21,7 @@ import {
   createMemo,
   createSignal,
   For,
+  type JSX,
   on,
   onCleanup,
   Show,
@@ -714,23 +715,43 @@ function SortableTh(props: {
   );
 }
 
+// Shared chrome for the per-key metric strips (CPU cores, NICs): the
+// hide-when-empty guard, the bordered section, the uppercase label+count
+// header, and the responsive grid that <For>s over a stable key array. The
+// cells differ per metric, so the caller supplies both the items and the
+// per-item renderer; only the grid columns vary between strips.
+function MetricStrip<T>(props: {
+  label: string;
+  items: readonly T[];
+  gridClass: string;
+  children: (item: T) => JSX.Element;
+}) {
+  return (
+    <Show when={props.items.length > 0}>
+      <div class="border-b border-gray-200 px-4 py-2 dark:border-gray-800">
+        <div class="mb-1 text-xs uppercase tracking-wide text-gray-500">
+          {props.label} ({props.items.length})
+        </div>
+        <div class={`grid ${props.gridClass}`}>
+          <For each={props.items}>{(item) => props.children(item)}</For>
+        </div>
+      </div>
+    </Show>
+  );
+}
+
 function CpuStrip(props: {
   coreIds: readonly CoreId[];
   getCore: (id: CoreId) => CpuCore | undefined;
 }) {
   return (
-    <Show when={props.coreIds.length > 0}>
-      <div class="border-b border-gray-200 px-4 py-2 dark:border-gray-800">
-        <div class="mb-1 text-xs uppercase tracking-wide text-gray-500">
-          CPU cores ({props.coreIds.length})
-        </div>
-        <div class="grid grid-cols-4 gap-2 md:grid-cols-8">
-          <For each={props.coreIds}>
-            {(id) => <CpuCoreCell id={id} get={() => props.getCore(id)} />}
-          </For>
-        </div>
-      </div>
-    </Show>
+    <MetricStrip
+      label="CPU cores"
+      items={props.coreIds}
+      gridClass="grid-cols-4 gap-2 md:grid-cols-8"
+    >
+      {(id) => <CpuCoreCell id={id} get={() => props.getCore(id)} />}
+    </MetricStrip>
   );
 }
 
@@ -761,18 +782,13 @@ function NetStrip(props: {
   getNic: (name: IfaceName) => NetInterface | undefined;
 }) {
   return (
-    <Show when={props.ifaceNames.length > 0}>
-      <div class="border-b border-gray-200 px-4 py-2 dark:border-gray-800">
-        <div class="mb-1 text-xs uppercase tracking-wide text-gray-500">
-          network ({props.ifaceNames.length})
-        </div>
-        <div class="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
-          <For each={props.ifaceNames}>
-            {(name) => <NetCell name={name} get={() => props.getNic(name)} />}
-          </For>
-        </div>
-      </div>
-    </Show>
+    <MetricStrip
+      label="network"
+      items={props.ifaceNames}
+      gridClass="grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3"
+    >
+      {(name) => <NetCell name={name} get={() => props.getNic(name)} />}
+    </MetricStrip>
   );
 }
 
