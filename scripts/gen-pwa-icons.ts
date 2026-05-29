@@ -124,6 +124,8 @@ function renderRGBA(size: number, mode: Mode): Uint8Array {
 
 // ── Minimal PNG encoder (truecolour + alpha, no compression heuristics) ──
 
+const ENC = new TextEncoder();
+
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -141,7 +143,7 @@ function crc32(bytes: Uint8Array): number {
 }
 
 function chunk(type: string, data: Uint8Array): Uint8Array {
-  const typeBytes = new TextEncoder().encode(type);
+  const typeBytes = ENC.encode(type);
   const body = new Uint8Array(typeBytes.length + data.length);
   body.set(typeBytes, 0);
   body.set(data, typeBytes.length);
