@@ -54,6 +54,7 @@ import {
   formatUptime,
   memGb,
   memPct,
+  pctOf,
 } from "./metrics";
 import { isActiveNic } from "./nic";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
@@ -1021,10 +1022,9 @@ function ProcessDetail(props: {
   onClose: () => void;
 }) {
   const p = () => props.process;
-  // Same divide-by-zero guard as `memPct` — a freshly-connected host whose
-  // first `system` tick hasn't landed reports memTotal 0.
-  const memShare = () =>
-    props.memTotal > 0 ? (100 * p().rssBytes) / props.memTotal : 0;
+  // Resident memory as a share of host RAM — the same guarded "part of a
+  // total" formula `memPct` uses for the host header.
+  const memShare = () => pctOf(p().rssBytes, props.memTotal);
   const stateLabel = () => {
     const s = p().state;
     if (s === "") return "—";

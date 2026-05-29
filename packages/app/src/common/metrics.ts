@@ -12,11 +12,18 @@
 
 import type { SystemInfo } from "./surface";
 
-/** Memory used as a percentage of total. Zero when total is unknown
- *  (a freshly-connected host whose first `system` tick hasn't landed),
- *  so callers never divide by zero. */
+/** `part` as a percentage of `whole`, guarded: 0 when `whole` is 0 (or
+ *  negative) so callers never divide by zero — e.g. a freshly-connected host
+ *  whose first `system` tick hasn't landed yet reports a 0 total. The single
+ *  "share of a total" formula, used for both host memory (`memPct`) and a
+ *  process's share of host RAM in the detail panel. */
+export function pctOf(part: number, whole: number): number {
+  return whole > 0 ? (100 * part) / whole : 0;
+}
+
+/** Memory used as a percentage of total. */
 export function memPct(system: SystemInfo): number {
-  return system.memTotal > 0 ? (100 * system.memUsed) / system.memTotal : 0;
+  return pctOf(system.memUsed, system.memTotal);
 }
 
 /** Mean busy-percentage across the supplied per-core usages — the single

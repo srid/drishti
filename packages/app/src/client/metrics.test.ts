@@ -7,6 +7,7 @@ import {
   formatUptime,
   memGb,
   memPct,
+  pctOf,
 } from "./metrics";
 
 function sys(over: Partial<SystemInfo> = {}): SystemInfo {
@@ -21,6 +22,16 @@ function sys(over: Partial<SystemInfo> = {}): SystemInfo {
     ...over,
   };
 }
+
+describe("pctOf", () => {
+  it("computes part as a percentage of whole", () => {
+    expect(pctOf(4e9, 16e9)).toBe(25);
+  });
+
+  it("returns 0 when whole is 0 (no divide-by-zero)", () => {
+    expect(pctOf(4e9, 0)).toBe(0);
+  });
+});
 
 describe("memPct", () => {
   it("computes used/total as a percentage", () => {
