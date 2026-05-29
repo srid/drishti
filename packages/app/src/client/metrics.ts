@@ -1,19 +1,17 @@
 /**
- * Pure metric derivations shared by the per-host header and the fleet
- * overview cards. Kept free of Solid and DOM so the aggregation maths
- * (the part that's wrong at runtime if the formula slips) is unit
- * testable in isolation — `import type` erases the surface dependency so
- * `bun test` never loads zod / @kolu/surface.
+ * Client-side metric formatting for the per-host header and the fleet
+ * overview cards — GB strings, uptime, byte/throughput sizes. Kept free of
+ * Solid and DOM so it's unit testable in isolation.
+ *
+ * The numeric derivations (`memPct`, `averageCoreUsage`) now live in
+ * `common/metrics.ts` because the parent's history sampler needs them too;
+ * they're re-exported here so existing client imports keep resolving
+ * against one module.
  */
 
 import type { SystemInfo } from "../common/surface";
 
-/** Memory used as a percentage of total. Zero when total is unknown
- *  (a freshly-connected host whose first `system` tick hasn't landed),
- *  so callers never divide by zero. */
-export function memPct(system: SystemInfo): number {
-  return system.memTotal > 0 ? (100 * system.memUsed) / system.memTotal : 0;
-}
+export { averageCoreUsage, memPct } from "../common/metrics";
 
 /** Used / total memory in gigabytes, formatted to one decimal — the
  *  string form the header and the fleet cards both render. */
@@ -64,13 +62,4 @@ export function formatBytes(bytes: number): string {
 /** Throughput rendered as a per-second byte rate, e.g. "1.2 MB/s". */
 export function formatThroughput(bytesPerSec: number): string {
   return `${formatBytes(bytesPerSec)}/s`;
-}
-
-/** Mean busy-percentage across the supplied per-core usages — the single
- *  "host CPU%" number the fleet card shows in place of the full per-core
- *  strip. Zero for a host with no reported cores (e.g. not yet
- *  connected), never NaN. */
-export function averageCoreUsage(usages: readonly number[]): number {
-  if (usages.length === 0) return 0;
-  return usages.reduce((s, u) => s + u, 0) / usages.length;
 }

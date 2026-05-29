@@ -38,6 +38,7 @@ import {
   type CpuCore,
   DEFAULT_CONNECTION,
   type IfaceName,
+  type MetricHistoryMsg,
   type NetInterface,
   type Pid,
   type Process,
@@ -154,6 +155,22 @@ async function main(): Promise<void> {
           for await (const delta of snapshotDeltaBus.subscribe(signal)) {
             yield delta;
           }
+        },
+      },
+      // ⚠ **INERT STUB — the agent keeps no history.** Declared on the
+      // shared surface so the browser can subscribe; the parent is the
+      // authoritative source (see router.ts). A direct-to-agent client sees
+      // an empty, never-updating history — by design, like `connection`.
+      // After the empty snapshot it parks until the subscriber leaves —
+      // never an active transport, so there's no channel to allocate.
+      metricHistory: {
+        source: async function* (_input, signal) {
+          yield { kind: "snapshot", samples: [] } satisfies MetricHistoryMsg;
+          await new Promise<void>((resolve) => {
+            if (!signal || signal.aborted) resolve();
+            else
+              signal.addEventListener("abort", () => resolve(), { once: true });
+          });
         },
       },
     },

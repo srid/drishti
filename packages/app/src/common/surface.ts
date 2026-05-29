@@ -128,6 +128,37 @@ const ProcessesSnapshotMessage = z.discriminatedUnion("kind", [
   }),
 ]);
 
+/** One point in a host's metric history — CPU% and memory% at a wall-clock
+ *  instant. Captured by the **parent** on each agent poll tick (the parent
+ *  is the only tier that observes every tick regardless of which browser
+ *  tabs are open) and retained in an in-memory ring for the life of the
+ *  parent process. */
+const MetricSampleSchema = z.object({
+  /** Wall-clock capture time, epoch ms. */
+  t: z.number(),
+  /** Mean busy-percentage across all cores at capture (0-100). */
+  cpu: z.number(),
+  /** Memory used as a percentage of total at capture (0-100). */
+  mem: z.number(),
+});
+
+/** Snapshot-then-delta `Stream<>` for the per-host metric-history ring —
+ *  the same bulk-friendly shape as `processesSnapshot`. A new subscriber
+ *  (a freshly-loaded browser, or a tab just switched to this host) gets the
+ *  parent's entire ring in one `snapshot` frame, then one `delta` per poll
+ *  tick. This is why history survives reloads and tab switches: the state
+ *  lives in the parent, and every subscriber is re-seeded from it. */
+const MetricHistoryMessage = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("snapshot"),
+    samples: z.array(MetricSampleSchema),
+  }),
+  z.object({
+    kind: z.literal("delta"),
+    sample: MetricSampleSchema,
+  }),
+]);
+
 export const surface = defineSurface({
   cells: {
     system: {
@@ -165,6 +196,13 @@ export const surface = defineSurface({
       inputSchema: z.object({}),
       outputSchema: ProcessesSnapshotMessage,
     },
+    /** Per-host CPU%/memory% history. Parent-owned, in-memory, bounded —
+     *  see `MetricHistoryMessage`. The agent serves an inert empty stub
+     *  (it keeps no history); the parent is the authoritative source. */
+    metricHistory: {
+      inputSchema: z.object({}),
+      outputSchema: MetricHistoryMessage,
+    },
   },
   procedures: {
     process: {
@@ -191,3 +229,5 @@ export type SystemInfo = SF["cells"]["system"]["Value"];
 export type ConnectionInfo = SF["cells"]["connection"]["Value"];
 export type ConnectionState = ConnectionInfo["state"];
 export type ProcessesSnapshotMsg = SF["streams"]["processesSnapshot"]["Output"];
+export type MetricSample = z.infer<typeof MetricSampleSchema>;
+export type MetricHistoryMsg = SF["streams"]["metricHistory"]["Output"];

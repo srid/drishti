@@ -34,6 +34,7 @@ import {
   DEFAULT_CONNECTION,
   DEFAULT_SYSTEM,
   type IfaceName,
+  type MetricSample,
   type NetInterface,
   type Pid,
   type Process,
@@ -51,6 +52,16 @@ import {
   memPct,
 } from "./metrics";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
+import {
+  DEFAULT_HISTORY_WINDOW,
+  HISTORY_RETENTION_MS,
+  HISTORY_WINDOWS,
+  type HistoryWindowKey,
+  polylinePoints,
+  pushSample,
+  windowMsFor,
+  windowSlice,
+} from "../common/history";
 import { TabStrip } from "./TabStrip";
 import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
 
@@ -412,6 +423,62 @@ function HostView(props: { host: string }) {
     return filtered;
   });
 
+  // ── Metric history (parent-owned ring, streamed in) ─────────────────
+  // The CPU%/mem% history isn't sampled here — the parent owns an in-memory
+  // ring per host and samples it on every poll tick (whether or not a tab is
+  // open), so it survives reloads and tab switches. This subscribes to that
+  // ring: the first frame is a full snapshot (the entire ring, replayed on
+  // every fresh mount), then one delta per tick. `pushSample` bounds the
+  // locally-accumulated deltas to the same retention as the server ring.
+  const [history, setHistory] = createSignal<MetricSample[]>([]);
+  const [historyWindow, setHistoryWindow] =
+    createSignal<HistoryWindowKey>(DEFAULT_HISTORY_WINDOW);
+  const windowMs = createMemo(() => windowMsFor(historyWindow()));
+
+  // Reuses `ctl` — the metricHistory and processesSnapshot streams share
+  // this HostView's mount/cleanup lifecycle exactly, so one controller
+  // tears both down on unmount.
+  void (async () => {
+    try {
+      const stream = await streamCall(
+        app.rpc.surface.metricHistory.get,
+        {},
+        { signal: ctl.signal },
+      );
+      for await (const msg of stream) {
+        if (msg.kind === "snapshot") setHistory(msg.samples);
+        else
+          setHistory((prev) =>
+            pushSample(prev, msg.sample, HISTORY_RETENTION_MS),
+          );
+      }
+    } catch (err) {
+      if (!ctl.signal.aborted)
+        console.error("metricHistory stream failed", err);
+    }
+  })();
+
+  // Project the ring to the chart's two SVG polylines here — not inside
+  // HistoryChart — so the component stays a pure renderer fed precomputed
+  // point strings, the same computed-props shape as Header / CpuStrip /
+  // NetStrip. `chartNow` anchors to the newest sample so the trace's right
+  // edge is always "latest data", not wall-clock drifting ahead of the
+  // last point between ticks.
+  const latestSample = createMemo<MetricSample | null>(() => {
+    const s = history();
+    return s.length > 0 ? s[s.length - 1]! : null;
+  });
+  const chartNow = createMemo(() => latestSample()?.t ?? 0);
+  const windowedSamples = createMemo(() =>
+    windowSlice(history(), windowMs(), chartNow()),
+  );
+  const cpuPoints = createMemo(() =>
+    polylinePoints(windowedSamples(), "cpu", chartNow(), windowMs()),
+  );
+  const memPoints = createMemo(() =>
+    polylinePoints(windowedSamples(), "mem", chartNow(), windowMs()),
+  );
+
   const killProcess = async (pid: number, signal: "TERM" | "KILL") => {
     try {
       await app.rpc.surface.process.kill({ pid, signal });
@@ -431,6 +498,13 @@ function HostView(props: { host: string }) {
         when={currentConnection().state === "connected"}
         fallback={<ConnectingOverlay state={currentConnection().state} />}
       >
+        <HistoryChart
+          cpuPoints={cpuPoints()}
+          memPoints={memPoints()}
+          latest={latestSample()}
+          windowKey={historyWindow()}
+          onWindow={setHistoryWindow}
+        />
         <CpuStrip coreIds={coreIds()} getCore={(id) => cores.byKey(id)?.()} />
         <NetStrip
           ifaceNames={ifaceNames()}
@@ -558,7 +632,7 @@ function FilterBar(props: {
   total: number;
 }) {
   return (
-    <div class="flex items-center gap-2 border-b border-gray-200 px-4 py-2 dark:border-gray-800">
+    <MetricSection class="flex items-center gap-2">
       <input
         type="text"
         placeholder="filter pid / user / command / cwd"
@@ -569,7 +643,7 @@ function FilterBar(props: {
       <span class="text-xs text-gray-500">
         showing {props.visible} of {props.total}
       </span>
-    </div>
+    </MetricSection>
   );
 }
 
@@ -714,6 +788,22 @@ function SortableTh(props: {
   );
 }
 
+// The section scaffold every per-host strip sits in: a bottom border and
+// the standard horizontal/vertical padding. Single-sourced here so the one
+// "what a section looks like" decision can't drift across the CPU / network
+// strips, the filter bar, and the history chart (which previously each
+// repeated the class string). `class` appends layout the caller needs on
+// the same element — e.g. the filter bar's flex row.
+function MetricSection(props: { class?: string; children: JSX.Element }) {
+  return (
+    <div
+      class={`border-b border-gray-200 px-4 py-2 dark:border-gray-800${props.class ? ` ${props.class}` : ""}`}
+    >
+      {props.children}
+    </div>
+  );
+}
+
 // Shared chrome for the per-key metric strips (CPU cores, NICs): the
 // hide-when-empty guard, the bordered section, the uppercase label+count
 // header, and the responsive grid that <For>s over a stable key array. The
@@ -727,14 +817,14 @@ function MetricStrip<T>(props: {
 }) {
   return (
     <Show when={props.items.length > 0}>
-      <div class="border-b border-gray-200 px-4 py-2 dark:border-gray-800">
+      <MetricSection>
         <div class="mb-1 text-xs uppercase tracking-wide text-gray-500">
           {props.label} ({props.items.length})
         </div>
         <div class={`grid ${props.gridClass}`}>
           <For each={props.items}>{(item) => props.children(item)}</For>
         </div>
-      </div>
+      </MetricSection>
     </Show>
   );
 }
@@ -815,6 +905,101 @@ function NetCell(props: {
       >
         ↑ {formatThroughput(txRate())}
       </span>
+    </div>
+  );
+}
+
+// Per-host time-series chart: CPU% and memory% over the selected window,
+// drawn as two overlaid SVG sparklines. Pure renderer — `HostView` owns the
+// ring and projects it to the `cpuPoints` / `memPoints` strings, so this
+// component only paints (the same computed-props shape as Header / CpuStrip).
+// The viewBox is a fixed 0-100 grid (percentages on both axes), so
+// `preserveAspectRatio="none"` lets the trace stretch to whatever width the
+// panel happens to be; the strokes use `vector-effect="non-scaling-stroke"`
+// to stay 1px crisp under that stretch.
+function HistoryChart(props: {
+  cpuPoints: string;
+  memPoints: string;
+  latest: MetricSample | null;
+  windowKey: HistoryWindowKey;
+  onWindow: (k: HistoryWindowKey) => void;
+}) {
+  return (
+    <MetricSection>
+      <div class="mb-1 flex items-center justify-between gap-2">
+        <div class="flex items-center gap-3 text-xs uppercase tracking-wide text-gray-500">
+          <span>history</span>
+          <span class="flex items-center gap-1 normal-case text-emerald-600 dark:text-emerald-400">
+            <span class="inline-block h-2 w-2 rounded-sm bg-emerald-500" />
+            cpu {props.latest ? `${props.latest.cpu.toFixed(0)}%` : "—"}
+          </span>
+          <span class="flex items-center gap-1 normal-case text-indigo-600 dark:text-indigo-400">
+            <span class="inline-block h-2 w-2 rounded-sm bg-indigo-500" />
+            mem {props.latest ? `${props.latest.mem.toFixed(0)}%` : "—"}
+          </span>
+        </div>
+        <DurationPicker selected={props.windowKey} onSelect={props.onWindow} />
+      </div>
+      <div class="relative h-24 w-full overflow-hidden rounded bg-gray-100 dark:bg-gray-800/50">
+        <svg
+          class="h-full w-full"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <polyline
+            class="text-emerald-500"
+            points={props.cpuPoints}
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1"
+            stroke-linejoin="round"
+            vector-effect="non-scaling-stroke"
+          />
+          <polyline
+            class="text-indigo-500"
+            points={props.memPoints}
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1"
+            stroke-linejoin="round"
+            vector-effect="non-scaling-stroke"
+          />
+        </svg>
+        <Show when={props.latest === null}>
+          <div class="absolute inset-0 flex items-center justify-center text-xs text-gray-400 dark:text-gray-500">
+            collecting…
+          </div>
+        </Show>
+      </div>
+    </MetricSection>
+  );
+}
+
+// Segmented duration control — the time-range chips popular monitors put
+// above their graphs. Drives the parent's window signal; the chart re-slices
+// reactively, so switching is instant against the already-buffered samples.
+function DurationPicker(props: {
+  selected: HistoryWindowKey;
+  onSelect: (k: HistoryWindowKey) => void;
+}) {
+  return (
+    <div class="flex shrink-0 overflow-hidden rounded border border-gray-300 dark:border-gray-700">
+      <For each={HISTORY_WINDOWS}>
+        {(w) => (
+          <button
+            type="button"
+            onClick={() => props.onSelect(w.key)}
+            class={`px-2 py-0.5 text-xs tabular-nums ${
+              props.selected === w.key
+                ? "bg-emerald-500 text-white"
+                : "text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700"
+            }`}
+          >
+            {w.key}
+          </button>
+        )}
+      </For>
     </div>
   );
 }
