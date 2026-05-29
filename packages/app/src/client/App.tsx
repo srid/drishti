@@ -48,10 +48,10 @@ import {
   formatBytes,
   formatThroughput,
   formatUptime,
-  isActiveNic,
   memGb,
   memPct,
 } from "./metrics";
+import { isActiveNic } from "./nic";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import {
   DEFAULT_HISTORY_WINDOW,
