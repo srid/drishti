@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drishti — Process info panel plan</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1d212b;
+    --text: #e6e9ef;
+    --muted: #9aa3b2;
+    --accent: #6ea8fe;
+    --accent-2: #59d18d;
+    --warn: #f0a35e;
+    --border: #2a2f3a;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 48px 24px 96px; }
+  header { border-bottom: 1px solid var(--border); padding-bottom: 24px; margin-bottom: 32px; }
+  h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -0.01em; }
+  h2 { margin: 40px 0 12px; font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { margin: 24px 0 8px; font-size: 15px; color: var(--accent); }
+  .sub { color: var(--muted); font-size: 15px; }
+  p { margin: 10px 0; }
+  code { font-family: var(--mono); background: var(--panel-2); padding: 1px 6px; border-radius: 4px; font-size: 0.9em; }
+  pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-family: var(--mono); font-size: 13px; }
+  ul, ol { margin: 8px 0; padding-left: 22px; }
+  li { margin: 5px 0; }
+  a { color: var(--accent); }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel-2); color: var(--muted); font-weight: 600; }
+  .tag { display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 999px; }
+  .ship { background: rgba(89,209,141,0.15); color: var(--accent-2); }
+  .defer { background: rgba(240,163,94,0.15); color: var(--warn); }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin: 14px 0; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Process info panel</h1>
+  <div class="sub">Click a process row to open a detail panel. Design + delivery record.</div>
+</header>
+
+<p>Status: <span class="tag ship">phases 1 &amp; 2 shipped</span> in the <code>feat/process-info-panel</code> PR. Phase 3 (per-process sparkline) deferred to <a href="https://github.com/srid/drishti/issues/21">issue #21</a>.</p>
+
+<h2>Motivation</h2>
+<p>The process table already renders every field a <code>Process</code> carried (<code>user, cpuPct, rssBytes, command, cwd</code>), but it <em>truncates</em> the command (CSS <code>max-w-md truncate</code>) and crams <code>cwd</code> inline after an <code>@</code>. There was no way to see a process's full command line, its full working directory, or any of the metadata an operator reaches for when triaging (parent, state, niceness, threads, how long it's been up). The feature is two complementary slices:</p>
+<ul>
+  <li><strong>Phase 1</strong> — a click-to-open detail panel that shows the existing fields in full (untruncated command + cwd, exact CPU% and resident bytes, plus the process's share of host RAM).</li>
+  <li><strong>Phase 2</strong> — enrich the <code>Process</code> surface with five new fields so the panel earns its place beyond "a wider row".</li>
+</ul>
+
+<h2>Phase 2 — the new surface fields</h2>
+<table>
+  <tr><th>Field</th><th>linux (/proc)</th><th>darwin (ps)</th></tr>
+  <tr><td><code>ppid</code></td><td><code>/proc/&lt;pid&gt;/stat</code> field 4</td><td><code>ps -o ppid=</code></td></tr>
+  <tr><td><code>state</code></td><td>stat field 3 (single char)</td><td>first char of <code>ps -o state=</code></td></tr>
+  <tr><td><code>nice</code></td><td>stat field 19</td><td><code>ps -o nice=</code></td></tr>
+  <tr><td><code>threads</code></td><td>stat field 20</td><td><code>null</code> — no cheap source</td></tr>
+  <tr><td><code>startedAtMs</code></td><td>boot epoch + stat field 22 / USER_HZ</td><td><code>null</code> — no cheap source</td></tr>
+</table>
+<p class="muted">linux fields come for free from the <code>/proc/&lt;pid&gt;/stat</code> read the agent already does. darwin only gains <code>ppid/nice/state</code> (all standard BSD <code>ps</code> keywords); <code>threads</code>/<code>startedAtMs</code> are <code>null</code> there — an unknown <code>ps</code> keyword would make the whole command fail and drop every process, so we don't reach for one we can't verify. <code>null</code> (not <code>0</code>) keeps "unavailable" distinct from a real value at the type level.</p>
+
+<h2>Design decisions</h2>
+
+<h3>Selection state lives in HostView, reached by rows via context</h3>
+<p><code>selectedPid</code> is an ephemeral <code>createSignal&lt;Pid | null&gt;</code> in <code>HostView</code> — the same tier that owns the <code>processes</code> store and the filter/sort prefs. It is <em>not</em> persisted (a transient focus, not a setting). <code>ProcessRow</code> reaches it through a small <code>SelectionContext</code> for its click + highlight, so <code>ProcessTable</code> stays a pure renderer with an unchanged signature — mirroring how the app-level <code>view</code> signal threads down without widening every component's props.</p>
+
+<h3>The panel is a sibling of the table, fed the resolved Process</h3>
+<p><code>ProcessDetail</code> renders as a <code>&lt;Show&gt;</code> sibling above the table (not an overlay — no z-index/focus-trap machinery), mirroring the app's <code>&lt;Show when={selectedHost()}&gt;</code>. Its prop is the resolved <code>process: Process</code>, so the phase-2 fields flowed in with no signature change — phase 1 and phase 2 met at this boundary.</p>
+
+<h3>Selection resolves against the live set, cleared at the source</h3>
+<p>A selected process can exit. Two guards, each covering a different path: the delta <code>removes</code> loop clears <code>selectedPid</code> at the source (also avoiding stale-pid resurrection under pid recycling), and a <code>selected</code> memo resolves <code>processes[pid]</code> reactively so a process dropped by a full <em>snapshot</em> (which doesn't go through the removes loop) also hides the panel. Same "resolve focus against the live set" shape as the app's <code>resolvedView</code>.</p>
+
+<h3>Change detection by explicit field list</h3>
+<p>The agent poll loop only re-publishes a row when a wire-visible field changed. This was a hand-maintained OR-chain; the feature replaced it with an explicit <code>MUTABLE_PROCESS_FIELDS</code> list compared via <code>.some()</code>, <code>satisfies (keyof Process)[]</code> tying each entry to the schema. <code>startedAtMs</code> is deliberately excluded — it is immutable per pid, so it never gates a publish regardless of how the agent derives it.</p>
+
+<h2>Review outcomes (hickey + lowy)</h2>
+<table>
+  <tr><th>Finding</th><th>Disposition</th></tr>
+  <tr><td>OR-chain change-detection silently dropped <code>user</code> / was fragile</td><td><span class="tag ship">Fixed</span> — explicit field list</td></tr>
+  <tr><td><code>threads</code>/<code>startedAtMs</code> used <code>0</code> as an unavailable sentinel</td><td><span class="tag ship">Fixed</span> — nullable fields</td></tr>
+  <tr><td>memory-share formula duplicated <code>memPct</code></td><td><span class="tag ship">Fixed</span> — shared <code>pctOf</code></td></tr>
+  <tr><td>Include <code>startedAtMs</code> in change detection</td><td><span class="tag defer">No-op</span> — exclusion is the constraint decoupling main.ts from proc.ts's boot-epoch cache (lowy cross-validation)</td></tr>
+  <tr><td>Panel-scoped (focus) Escape handler</td><td><span class="tag defer">No-op</span> — window-global keys off selection state; focus-scoped breaks when selection changes via out-of-panel row clicks (both lenses agreed)</td></tr>
+</table>
+
+<h2>Phase 3 — deferred</h2>
+<p>A per-process CPU/mem sparkline in the panel needs per-PID history retention in the parent (today's <code>metricHistory</code> ring is system-wide, <code>{t, cpu, mem}</code>, no PID). That's a backend lift — bounded per-PID rings with eviction under churn — tracked in <a href="https://github.com/srid/drishti/issues/21">issue #21</a>, not part of this PR.</p>
+
+</div>
+</body>
+</html>

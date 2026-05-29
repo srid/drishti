@@ -256,6 +256,13 @@ function linuxReader(): ProcReader {
   // counters.)
   const prevPid = new Map<number, { ticks: number; startTime: number }>();
   let prevWallMs = 0;
+  // Host boot time as epoch ms, resolved once and reused. `/proc/<pid>/stat`
+  // gives a process's start as ticks-since-boot; `bootEpochMs + startTicks/HZ`
+  // turns that into an absolute wall-clock instant. Boot time is fixed, so
+  // caching it (rather than recomputing `now - uptime` each tick, whose
+  // centisecond uptime + ms now would jitter) keeps `startedAtMs` stable per
+  // pid across polls.
+  let bootEpochMs = 0;
   return {
     os: "linux",
     readCpuCores,
@@ -286,13 +293,13 @@ function linuxReader(): ProcReader {
         pids.map((pid) => readProcLinuxRaw(pid)),
       );
       const nowMs = Date.now();
-      // `USER_HZ` — kernel jiffies-per-second. The kernel reports
-      // utime/stime in jiffies; we divide by Δseconds × USER_HZ to get
-      // "fraction of a core during this window". `getconf CLK_TCK` is
-      // 100 on every standard linux kernel build (it's a Kconfig at
-      // CONFIG_HZ_100/250/300/1000 with 100 as the universal default).
-      // Hardcoding it avoids an extra subprocess on every poll.
-      const USER_HZ = 100;
+      // Resolve the boot epoch once, on the first poll: now − uptime.
+      if (bootEpochMs === 0) {
+        const up = Number(
+          (await readFile("/proc/uptime", "utf-8")).split(" ")[0],
+        );
+        bootEpochMs = nowMs - up * 1000;
+      }
       const winSec = prevWallMs > 0 ? (nowMs - prevWallMs) / 1000 : 0;
       const out = new Map<Pid, Process>();
       const seen = new Set<number>();
@@ -317,6 +324,11 @@ function linuxReader(): ProcReader {
           rssBytes: raw.rssBytes,
           command: raw.command,
           cwd: raw.cwd,
+          ppid: raw.ppid,
+          state: raw.state,
+          nice: raw.nice,
+          threads: raw.threads,
+          startedAtMs: Math.round(bootEpochMs + raw.startTime * USER_HZ_MS),
         });
       }
       // Evict dead pids so the map doesn't grow without bound.
@@ -347,12 +359,51 @@ interface LinuxProcRaw {
   /** utime + stime, in clock ticks. */
   ticks: number;
   /** /proc/<pid>/stat field 22 — ticks-since-boot at fork; the
-   *  tombstone we use to detect PID recycling between polls. */
+   *  tombstone we use to detect PID recycling between polls AND the offset
+   *  the reader turns into a wall-clock start time via the boot epoch. */
   startTime: number;
   /** Resident set size in bytes (VmRSS × 1024). */
   rssBytes: number;
   command: string;
   cwd: string;
+  ppid: Pid;
+  /** Single-char kernel state code (R/S/D/Z/T/I/…). */
+  state: string;
+  nice: number;
+  threads: number;
+}
+
+/** The subset of `/proc/<pid>/stat` (proc(5)) drishti reads. Pure — no I/O —
+ *  so it's unit-testable against a fixture, mirroring `parsePsLine` /
+ *  `parseMeminfo`. After `comm` (wrapped in parens and free to contain spaces,
+ *  so we split on the LAST `)`), the remaining fields are space-separated and
+ *  index from `state` at 0:
+ *    state=0  ppid=1  utime=11  stime=12  nice=16  num_threads=17  starttime=19
+ *  Returns null when there's no `)` to split on (not a stat line). Absent
+ *  trailing fields default to 0. */
+export function parseProcStat(stat: string): {
+  comm: string;
+  state: string;
+  ppid: number;
+  ticks: number;
+  nice: number;
+  threads: number;
+  startTime: number;
+} | null {
+  const commStart = stat.indexOf("(");
+  const commEnd = stat.lastIndexOf(")");
+  if (commStart < 0 || commEnd < commStart) return null;
+  const comm = stat.slice(commStart + 1, commEnd);
+  const tail = stat.slice(commEnd + 2).split(" ");
+  return {
+    comm,
+    state: tail[0] ?? "",
+    ppid: Number(tail[1] ?? 0),
+    ticks: Number(tail[11] ?? 0) + Number(tail[12] ?? 0),
+    nice: Number(tail[16] ?? 0),
+    threads: Number(tail[17] ?? 0),
+    startTime: Number(tail[19] ?? 0),
+  };
 }
 
 async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
@@ -367,14 +418,8 @@ async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
       readFile(`/proc/${pid}/cmdline`, "utf-8"),
       readlink(`/proc/${pid}/cwd`).catch(() => ""),
     ]);
-    // /proc/<pid>/stat: see proc(5). After comm (in parens — may contain
-    // spaces), fields are space-separated. utime + stime are fields 14-15
-    // (0-indexed 11-12 after the comm field, since state is at index 0).
-    const commEnd = statRaw.lastIndexOf(")");
-    const tail = statRaw.slice(commEnd + 2).split(" ");
-    const utime = Number(tail[11] ?? 0);
-    const stime = Number(tail[12] ?? 0);
-    const startTime = Number(tail[19] ?? 0);
+    const stat = parseProcStat(statRaw);
+    if (stat === null) return null;
     const vmRssMatch = statusRaw.match(/^VmRSS:\s+(\d+)\s+kB/m);
     const rssKb =
       vmRssMatch && vmRssMatch[1] !== undefined ? Number(vmRssMatch[1]) : 0;
@@ -382,18 +427,20 @@ async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
     const uid =
       userMatch && userMatch[1] !== undefined ? Number(userMatch[1]) : 0;
     const command =
-      cmdlineRaw.length > 0
-        ? cmdlineRaw.replace(/\0/g, " ").trim()
-        : statRaw.slice(statRaw.indexOf("(") + 1, commEnd);
+      cmdlineRaw.length > 0 ? cmdlineRaw.replace(/\0/g, " ").trim() : stat.comm;
     return {
       // Best-effort user display — /etc/passwd lookup synchronous would
       // block, so render the uid (and humanize uid 0 → "root").
       user: uid === 0 ? "root" : String(uid),
-      ticks: utime + stime,
-      startTime,
+      ticks: stat.ticks,
+      startTime: stat.startTime,
       rssBytes: rssKb * 1024,
       command: truncate(command, PROC_STRING_MAX),
       cwd: truncate(cwdResult, PROC_STRING_MAX),
+      ppid: stat.ppid,
+      state: stat.state,
+      nice: stat.nice,
+      threads: stat.threads,
     };
   } catch {
     // ENOENT is expected for PIDs that vanish between readdir and the
@@ -406,20 +453,39 @@ async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
 
 // ── darwin: ps + sysctl reader ──────────────────────────────────────────
 
-// Compiled once — matches `ps -axo pid=,user=,pcpu=,rss=,comm=` lines.
-// `comm` is greedy/last (it can contain spaces), so it stays the trailing
-// `(.*)`; the integer `rss` (KB) sits just before it.
-const PS_LINE_RE = /^(\d+)\s+(\S+)\s+([\d.]+)\s+(\d+)\s+(.*)$/;
+// Compiled once — matches `ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=`
+// lines. `comm` is greedy/last (it can contain spaces), so it stays the
+// trailing `(.*)`; `state` is a no-space token like `S`/`Ss`/`R+`; `nice`
+// can be negative. All of pid/user/pcpu/rss/ppid/nice/state precede comm.
+const PS_LINE_RE =
+  /^(\d+)\s+(\S+)\s+([\d.]+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)\s+(.*)$/;
 
-/** Parse one `ps -axo pid=,user=,pcpu=,rss=,comm=` line into a
- *  `Process`. `rss` is in KB on macOS, so ×1024 for `rssBytes`. Returns
- *  null for lines that don't match (blank/garbage) so the caller skips
- *  them. Pure — no clock or platform state — to stay unit-testable. */
+/** Parse one `ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=` line
+ *  into a `Process`. `rss` is in KB on macOS, so ×1024 for `rssBytes`; the
+ *  multi-char `state` token's trailing flags (`+`, `s`, …) are dropped to the
+ *  leading single-char code for parity with linux. Returns null for lines that
+ *  don't match (blank/garbage) so the caller skips them. Pure — no clock or
+ *  platform state — to stay unit-testable.
+ *
+ *  `threads` and `startedAtMs` are `null` (unavailable): darwin's `ps` has no
+ *  cheap per-process thread count, and the `ps` columns we read carry no start
+ *  time — `null` (not 0) keeps "unavailable" distinct from a real value at the
+ *  type level, mirroring the schema's `.nullable()` fields. */
 export function parsePsLine(line: string): [Pid, Process] | null {
   const m = line.trim().match(PS_LINE_RE);
   if (!m) return null;
-  const [, pidStr, user, cpu, rssKb, command] = m;
-  if (!pidStr || !user || !cpu || !rssKb || !command) return null;
+  const [, pidStr, user, cpu, rssKb, ppid, nice, state, command] = m;
+  if (
+    !pidStr ||
+    !user ||
+    !cpu ||
+    !rssKb ||
+    !ppid ||
+    !nice ||
+    !state ||
+    !command
+  )
+    return null;
   return [
     Number(pidStr),
     {
@@ -430,6 +496,11 @@ export function parsePsLine(line: string): [Pid, Process] | null {
       // darwin has no cheap per-pid cwd source (`lsof -p` per pid is a
       // fork per row); leave blank — the UI hides it when empty.
       cwd: "",
+      ppid: Number(ppid),
+      state: state[0] ?? "",
+      nice: Number(nice),
+      threads: null,
+      startedAtMs: null,
     },
   ];
 }
@@ -526,7 +597,9 @@ function darwinReader(): ProcReader {
       };
     },
     readProcesses: async () => {
-      const { stdout } = await exec("ps -axo pid=,user=,pcpu=,rss=,comm=");
+      const { stdout } = await exec(
+        "ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=",
+      );
       const out = new Map<Pid, Process>();
       for (const line of stdout.split("\n")) {
         const parsed = parsePsLine(line);
@@ -574,6 +647,11 @@ function stubReader(): ProcReader {
         rssBytes: 0,
         command: `${process.execPath} ${process.argv.slice(1).join(" ")}`,
         cwd: process.cwd(),
+        ppid: process.ppid,
+        state: "",
+        nice: 0,
+        threads: null,
+        startedAtMs: null,
       });
       return out;
     },
@@ -585,6 +663,14 @@ function stubReader(): ProcReader {
 /** Wire cap for per-process string fields (command, cwd, …). One
  *  constant so a change to the limit stays in parity across platforms. */
 const PROC_STRING_MAX = 200;
+
+// `USER_HZ` — kernel jiffies-per-second. The kernel reports utime/stime in
+// jiffies; we divide by Δseconds × USER_HZ to get "fraction of a core during
+// this window". `getconf CLK_TCK` is 100 on every standard linux kernel build
+// (it's a Kconfig at CONFIG_HZ_100/250/300/1000 with 100 as the universal
+// default). Hardcoding it avoids an extra subprocess on every poll.
+const USER_HZ = 100;
+const USER_HZ_MS = 1000 / USER_HZ; // ms per clock tick
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;

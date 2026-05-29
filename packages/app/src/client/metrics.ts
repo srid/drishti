@@ -11,7 +11,7 @@
 
 import type { SystemInfo } from "../common/surface";
 
-export { averageCoreUsage, memPct } from "../common/metrics";
+export { averageCoreUsage, memPct, pctOf } from "../common/metrics";
 
 /** Used / total memory in gigabytes, formatted to one decimal — the
  *  string form the header and the fleet cards both render. */

@@ -31,6 +31,29 @@ const ProcessSchema = z.object({
    *  threads have no cwd, other-user pids hit EACCES on `/proc/<pid>/cwd`,
    *  and darwin has no cheap per-pid cwd source so it's blank there. */
   cwd: z.string(),
+  /** Parent process id — `/proc/<pid>/stat` field 4 on linux, `ps -o
+   *  ppid=` on darwin. 0 for pid 1 / the rare orphan whose parent has
+   *  already reaped. */
+  ppid: PidSchema,
+  /** Single-char kernel state code: `R` running, `S` sleeping, `D`
+   *  uninterruptible, `Z` zombie, `T` stopped, `I` idle, … `/proc/<pid>/stat`
+   *  field 3 on linux; the first char of `ps -o state=` on darwin (its
+   *  trailing flags like `+`/`s` are dropped). Empty when unknown. */
+  state: z.string(),
+  /** Nice value (scheduling priority, -20..19). `/proc/<pid>/stat` field 19
+   *  on linux, `ps -o nice=` on darwin. */
+  nice: z.number().int(),
+  /** Thread count (`/proc/<pid>/stat` field 20), or null when the platform
+   *  can't cheaply source it — darwin's `ps` has no per-process thread count.
+   *  Null (not 0) so "unavailable" is distinct from a real count at the type
+   *  level; a live linux process always has >= 1. */
+  threads: z.number().int().positive().nullable(),
+  /** Process start time as epoch milliseconds, or null when unknown. Derived
+   *  on linux from the host boot time plus `/proc/<pid>/stat` field 22
+   *  (start-ticks-since-boot); null on darwin, which has no cheap per-pid start
+   *  source in the `ps` columns we read. Immutable per pid, so the poll loop
+   *  excludes it from change detection. */
+  startedAtMs: z.number().nullable(),
 });
 
 const CpuCoreSchema = z.object({

@@ -68,6 +68,32 @@ function usage(): never {
   process.exit(1);
 }
 
+// The mutable per-tick fields of `Process` — the ones whose change must
+// re-publish a row. All of these can shift over a process's life; `startedAtMs`
+// cannot (a process can't change when it started — immutable per pid), so it is
+// deliberately absent, which also keeps it out of the publish gate regardless
+// of how the agent derives it. Listing membership explicitly (rather than a
+// hand-maintained OR-chain, which had already silently dropped `user`) keeps it
+// exhaustively reviewable, and `satisfies` ties each entry to a real schema
+// field so a typo or renamed field fails to compile.
+const MUTABLE_PROCESS_FIELDS = [
+  "user",
+  "cpuPct",
+  "rssBytes",
+  "command",
+  "cwd",
+  "ppid",
+  "state",
+  "nice",
+  "threads",
+] as const satisfies readonly (keyof Process)[];
+
+// Whether a process's wire-visible state changed since the last poll — the
+// gate for re-publishing a row.
+function processChanged(a: Process, b: Process): boolean {
+  return MUTABLE_PROCESS_FIELDS.some((f) => a[f] !== b[f]);
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (!args.includes("--stdio")) usage();
@@ -193,13 +219,7 @@ async function main(): Promise<void> {
       const removes: Pid[] = [];
       for (const [pid, value] of nextProcesses) {
         const prev = processSnapshot.get(pid);
-        if (
-          prev === undefined ||
-          prev.cpuPct !== value.cpuPct ||
-          prev.rssBytes !== value.rssBytes ||
-          prev.command !== value.command ||
-          prev.cwd !== value.cwd
-        ) {
+        if (prev === undefined || processChanged(prev, value)) {
           fragment.ctx.collections.processes.upsert(pid, value);
           upserts.push([pid, value]);
         }
