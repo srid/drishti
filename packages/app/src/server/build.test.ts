@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildClient } from "./build";
@@ -65,6 +65,39 @@ describe("buildClient — PWA assets", () => {
     expect(html).toContain('rel="apple-touch-icon"');
     // the entry script is rewritten from the source .tsx to the built .js
     expect(html).toContain('src="./main.js"');
+  });
+});
+
+describe("buildClient — offline shell is complete", () => {
+  // The service worker precaches a hand-maintained SHELL list. If an icon is
+  // referenced (by the manifest or index.html) but missing from SHELL, the
+  // installed app shows a broken image offline; if a SHELL entry doesn't
+  // exist in dist, install fails to cache it. Both are silent without this.
+  const shellURLs = () => {
+    const body = read("sw.js").match(/SHELL = \[([\s\S]*?)\]/)?.[1] ?? "";
+    return [...body.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  };
+  const referencedIcons = () => {
+    const manifest = JSON.parse(read("manifest.webmanifest"));
+    const fromManifest = manifest.icons
+      .map((i: { src: string }) => i.src)
+      .filter((src: string) => src.startsWith("/icons/"));
+    const fromHtml = [...read("index.html").matchAll(/href="(\/icons\/[^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    return new Set([...fromManifest, ...fromHtml]);
+  };
+
+  it("precaches every icon the manifest and index.html reference", () => {
+    const shell = new Set(shellURLs());
+    for (const icon of referencedIcons()) expect(shell.has(icon)).toBe(true);
+  });
+
+  it("precaches only assets that exist in the built bundle", () => {
+    for (const url of shellURLs()) {
+      const rel = url === "/" ? "index.html" : url.replace(/^\//, "");
+      expect(existsSync(join(dist, rel))).toBe(true);
+    }
   });
 });
 

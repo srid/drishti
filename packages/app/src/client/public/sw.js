@@ -14,6 +14,10 @@
  */
 
 const CACHE = "drishti-shell-v1";
+// Every static asset the installed app references, so an offline launch
+// finds them all cached. Keep this in sync with the icons in
+// manifest.webmanifest and index.html — build.test.ts asserts that every
+// referenced icon appears here.
 const SHELL = [
   "/",
   "/main.js",
@@ -22,6 +26,8 @@ const SHELL = [
   "/icons/icon.svg",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
+  "/icons/icon-maskable-512.png",
+  "/icons/apple-touch-icon.png",
 ];
 
 self.addEventListener("install", (event) => {
