@@ -18,8 +18,6 @@
  * not per host.
  */
 
-import { writePref } from "./localStorageState";
-
 export type Theme = "light" | "dark";
 
 /**
@@ -58,8 +56,12 @@ export function otherTheme(theme: Theme): Theme {
   return theme === "dark" ? "light" : "dark";
 }
 
-/** Apply a theme to the document and persist the choice for next visit. */
+/**
+ * Apply a theme to the document. This module owns the *how* — which element
+ * and attribute carry the theme — so that detail stays in one place. The
+ * *when* (and persistence) is the caller's reactive effect, keeping the
+ * theme signal the single source of truth.
+ */
 export function applyTheme(theme: Theme): void {
   document.documentElement.dataset.theme = theme;
-  writePref(THEME_KEY, theme);
 }
