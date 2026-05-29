@@ -974,6 +974,12 @@ function ProcessRow(props: {
       <td class="px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
         {formatBytes(rssBytes())}
       </td>
+      {/* COMMAND absorbs the row's residual width and ellipsizes at the cell
+          edge. Both classes are load-bearing in `table-layout: auto`: `w-full`
+          claims the leftover width after the fixed numeric columns, and
+          `max-w-0` stops the `truncate` nowrap content from ballooning the cell
+          past the card (the card clips horizontally, so an un-capped cell would
+          run off-screen with no ellipsis). Dropping either one breaks it. */}
       <td class="w-full max-w-0 truncate px-3 py-0.5 text-left text-gray-700 dark:text-gray-300">
         <span>{proc()?.command ?? ""}</span>
         <Show when={proc()?.cwd}>
