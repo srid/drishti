@@ -32,6 +32,8 @@ import {
   type CpuCore,
   DEFAULT_CONNECTION,
   DEFAULT_SYSTEM,
+  type IfaceName,
+  type NetInterface,
   type Pid,
   type Process,
   type SystemInfo,
@@ -39,7 +41,14 @@ import {
 import { STATE } from "./connectionColors";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
-import { averageCoreUsage, formatUptime, memGb, memPct } from "./metrics";
+import {
+  averageCoreUsage,
+  formatBytes,
+  formatThroughput,
+  formatUptime,
+  memGb,
+  memPct,
+} from "./metrics";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import { TabStrip } from "./TabStrip";
 import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
@@ -358,6 +367,16 @@ function HostView(props: { host: string }) {
     [...cores.keys()].sort((a, b) => a - b),
   );
 
+  const nics = app.collections.networkInterfaces.use({
+    onError: (err) =>
+      console.error("networkInterfaces subscription failed", err),
+  });
+  // Stable, name-sorted identity array so <For> reuses NetCell DOM across
+  // ticks instead of churning rows (same reasoning as coreIds / visiblePids).
+  const ifaceNames = createMemo<IfaceName[]>(() =>
+    [...nics.keys()].sort((a, b) => a.localeCompare(b)),
+  );
+
   // `<For>` keys by reference identity (=== on array elements). Primitive
   // PIDs make a memo that returns the SAME numbers ([…1234, 1235…]) reuse
   // every existing row DOM — Solid only mounts new PIDs and unmounts gone
@@ -412,6 +431,10 @@ function HostView(props: { host: string }) {
         fallback={<ConnectingOverlay state={currentConnection().state} />}
       >
         <CpuStrip coreIds={coreIds()} getCore={(id) => cores.byKey(id)?.()} />
+        <NetStrip
+          ifaceNames={ifaceNames()}
+          getNic={(name) => nics.byKey(name)?.()}
+        />
         <FilterBar
           filter={filter()}
           onFilter={setFilter}
@@ -725,6 +748,59 @@ function CpuCoreCell(props: { id: CoreId; get: () => CpuCore | undefined }) {
       </div>
       <span class="w-10 shrink-0 text-right tabular-nums text-gray-700 dark:text-gray-300">
         {pct().toFixed(0)}%
+      </span>
+    </div>
+  );
+}
+
+// Per-NIC network I/O strip — the throughput counterpart to CpuStrip.
+// Mounts once per interface; each NetCell tracks only its own rx/tx
+// fields, so a busy NIC's rate updates without re-rendering its siblings.
+function NetStrip(props: {
+  ifaceNames: readonly IfaceName[];
+  getNic: (name: IfaceName) => NetInterface | undefined;
+}) {
+  return (
+    <Show when={props.ifaceNames.length > 0}>
+      <div class="border-b border-gray-200 px-4 py-2 dark:border-gray-800">
+        <div class="mb-1 text-xs uppercase tracking-wide text-gray-500">
+          network ({props.ifaceNames.length})
+        </div>
+        <div class="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+          <For each={props.ifaceNames}>
+            {(name) => <NetCell name={name} get={() => props.getNic(name)} />}
+          </For>
+        </div>
+      </div>
+    </Show>
+  );
+}
+
+function NetCell(props: {
+  name: IfaceName;
+  get: () => NetInterface | undefined;
+}) {
+  const nic = createMemo(() => props.get());
+  const rxRate = () => nic()?.rxRate ?? 0;
+  const txRate = () => nic()?.txRate ?? 0;
+  const rxTotal = () => nic()?.rxBytes ?? 0;
+  const txTotal = () => nic()?.txBytes ?? 0;
+  return (
+    <div class="flex items-center gap-2 text-xs">
+      <span class="w-20 shrink-0 truncate text-gray-500" title={props.name}>
+        {props.name}
+      </span>
+      <span
+        class="tabular-nums text-emerald-600 dark:text-emerald-400"
+        title={`${formatBytes(rxTotal())} received total`}
+      >
+        ↓ {formatThroughput(rxRate())}
+      </span>
+      <span
+        class="tabular-nums text-indigo-600 dark:text-indigo-400"
+        title={`${formatBytes(txTotal())} transmitted total`}
+      >
+        ↑ {formatThroughput(txRate())}
       </span>
     </div>
   );

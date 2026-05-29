@@ -29,6 +29,8 @@ import { promisify } from "node:util";
 import type {
   CoreId,
   CpuCore,
+  IfaceName,
+  NetInterface,
   Pid,
   Process,
   SystemInfo,
@@ -49,6 +51,11 @@ export interface ProcReader {
    *  yet). Universally available via `node:os.cpus()` — same shape on
    *  linux and darwin. */
   readCpuCores: () => Map<CoreId, CpuCore>;
+  /** Per-NIC cumulative bytes + throughput. Like `readCpuCores`, the
+   *  rate is a delta against the previous call — the first call seeds the
+   *  baseline and reports 0 bytes/sec. Async because the source is a file
+   *  read (linux) or a subprocess (darwin). Empty on unknown platforms. */
+  readNetwork: () => Promise<Map<IfaceName, NetInterface>>;
 }
 
 /** Closure that retains the previous `cpus()` snapshot for delta-busy
@@ -87,6 +94,136 @@ function createCpuCoresReader(): () => Map<CoreId, CpuCore> {
   };
 }
 
+// ── Network I/O reading ─────────────────────────────────────────────────
+
+/** Cumulative byte counters for one interface — the raw observation a
+ *  platform parser yields, before throughput is derived. */
+export interface NetCounters {
+  rxBytes: number;
+  txBytes: number;
+}
+
+/** Loopback carries intra-host traffic, not network I/O, and is always
+ *  busy — every comparable monitor (rtop, htop, glances) hides it. Filter
+ *  it in the reader (not the parser) so the parsers stay faithful to their
+ *  source. `lo` on linux, `lo0` on darwin. */
+function isLoopback(name: string): boolean {
+  return name === "lo" || name === "lo0";
+}
+
+/** Parse `/proc/net/dev`. Each data line is `name: rx_bytes rx_packets …
+ *  (8 receive fields) tx_bytes tx_packets …` — so receive bytes are the
+ *  first number after the colon and transmit bytes the ninth. The two
+ *  header lines have no colon and are skipped. Split on the first colon:
+ *  modern interface names (`eth0`, `enp3s0`, `wlan0`, `eth0.100`) contain
+ *  no colon; deprecated `eth0:0` IP aliases are the rare exception and
+ *  would mis-split, but those no longer appear as separate `/proc/net/dev`
+ *  rows on current kernels. */
+export function parseProcNetDev(content: string): Map<string, NetCounters> {
+  const out = new Map<string, NetCounters>();
+  for (const line of content.split("\n")) {
+    const colon = line.indexOf(":");
+    if (colon < 0) continue;
+    const name = line.slice(0, colon).trim();
+    if (name.length === 0) continue;
+    const nums = line
+      .slice(colon + 1)
+      .trim()
+      .split(/\s+/)
+      .map(Number);
+    const rxBytes = nums[0];
+    const txBytes = nums[8];
+    if (rxBytes === undefined || txBytes === undefined) continue;
+    if (Number.isNaN(rxBytes) || Number.isNaN(txBytes)) continue;
+    out.set(name, { rxBytes, txBytes });
+  }
+  return out;
+}
+
+/** Parse `netstat -ib` (darwin). Each interface has several rows (one per
+ *  address family); the `<Link#N>` row is the link-layer aggregate — the
+ *  one whose byte counters cover the whole interface — so we read only
+ *  those. The optional Address (MAC) column shifts the absolute field
+ *  positions, so count from the right, where the layout is stable:
+ *  `… Ibytes Opkts Oerrs Obytes Coll` → Ibytes is 5th-from-last, Obytes
+ *  is 2nd-from-last. */
+export function parseNetstatIb(content: string): Map<string, NetCounters> {
+  const out = new Map<string, NetCounters>();
+  for (const line of content.split("\n")) {
+    if (!line.includes("<Link#")) continue;
+    const cols = line.trim().split(/\s+/);
+    const name = cols[0];
+    const rxBytes = Number(cols[cols.length - 5]);
+    const txBytes = Number(cols[cols.length - 2]);
+    if (name === undefined || name.length === 0) continue;
+    if (Number.isNaN(rxBytes) || Number.isNaN(txBytes)) continue;
+    // First-occurrence wins — one <Link#> row per interface, but guard
+    // against a malformed dump repeating a name.
+    if (!out.has(name)) out.set(name, { rxBytes, txBytes });
+  }
+  return out;
+}
+
+/** Derive per-interface throughput from two cumulative-counter snapshots
+ *  and the seconds between them. Pure — the clock lives in the caller so
+ *  this stays unit-testable. `winSec <= 0` (the first tick) yields 0
+ *  rates. Counters that ran backwards (counter reset, NIC hot-swap, pid
+ *  recycling of the name) clamp to 0 rather than report a negative or
+ *  absurd spike. */
+export function computeNetThroughput(
+  prev: Map<string, NetCounters>,
+  cur: Map<string, NetCounters>,
+  winSec: number,
+): Map<IfaceName, NetInterface> {
+  const out = new Map<IfaceName, NetInterface>();
+  for (const [name, c] of cur) {
+    const p = prev.get(name);
+    let rxRate = 0;
+    let txRate = 0;
+    if (p && winSec > 0) {
+      rxRate = Math.max(0, (c.rxBytes - p.rxBytes) / winSec);
+      txRate = Math.max(0, (c.txBytes - p.txBytes) / winSec);
+    }
+    out.set(name, {
+      rxBytes: c.rxBytes,
+      txBytes: c.txBytes,
+      rxRate: Math.round(rxRate),
+      txRate: Math.round(txRate),
+    });
+  }
+  return out;
+}
+
+/** Closure wrapping `computeNetThroughput` with the previous snapshot and
+ *  wall clock — the same rate-from-delta shape `createCpuCoresReader`
+ *  uses, but async since the raw counters come from a file read or
+ *  subprocess. `readRaw` already excludes loopback. */
+function createNetReader(
+  readRaw: () => Promise<Map<string, NetCounters>>,
+): () => Promise<Map<IfaceName, NetInterface>> {
+  let prev = new Map<string, NetCounters>();
+  let prevMs = 0;
+  return async () => {
+    const cur = await readRaw();
+    const nowMs = Date.now();
+    const winSec = prevMs > 0 ? (nowMs - prevMs) / 1000 : 0;
+    const out = computeNetThroughput(prev, cur, winSec);
+    prev = cur;
+    prevMs = nowMs;
+    return out;
+  };
+}
+
+function filterLoopback(
+  counters: Map<string, NetCounters>,
+): Map<string, NetCounters> {
+  const out = new Map<string, NetCounters>();
+  for (const [name, c] of counters) {
+    if (!isLoopback(name)) out.set(name, c);
+  }
+  return out;
+}
+
 export function createProcReader(): ProcReader {
   const plat = platform();
   if (plat === "linux") return linuxReader();
@@ -98,6 +235,11 @@ export function createProcReader(): ProcReader {
 
 function linuxReader(): ProcReader {
   const readCpuCores = createCpuCoresReader();
+  const readNetwork = createNetReader(async () =>
+    filterLoopback(
+      parseProcNetDev(await readFile("/proc/net/dev", "utf-8")),
+    ),
+  );
   // Per-PID previous tick reading so we can compute "% of one core
   // during the last poll window" — the metric `top`/`htop` show.
   // Without this delta, dividing lifetime ticks by lifetime uptime
@@ -112,6 +254,7 @@ function linuxReader(): ProcReader {
   return {
     os: "linux",
     readCpuCores,
+    readNetwork,
     readSystem: async () => {
       const [loadAvgs, mem, up] = await Promise.all([
         readFile("/proc/loadavg", "utf-8").then((s) =>
@@ -264,9 +407,14 @@ const PS_LINE_RE = /^(\d+)\s+(\S+)\s+([\d.]+)\s+([\d.]+)\s+(.*)$/;
 
 function darwinReader(): ProcReader {
   const readCpuCores = createCpuCoresReader();
+  const readNetwork = createNetReader(async () => {
+    const { stdout } = await exec("netstat -ib");
+    return filterLoopback(parseNetstatIb(stdout));
+  });
   return {
     os: "darwin",
     readCpuCores,
+    readNetwork,
     readSystem: async () => {
       // os.loadavg() works on darwin; sysctl fallback only needed for
       // very old node versions.
@@ -314,6 +462,9 @@ function stubReader(): ProcReader {
   return {
     os: "unknown",
     readCpuCores,
+    // No universal network-counter source off linux/darwin — report no
+    // interfaces rather than guess.
+    readNetwork: async () => new Map<IfaceName, NetInterface>(),
     readSystem: async () => {
       const la = loadavg();
       return {

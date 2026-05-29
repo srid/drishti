@@ -38,6 +38,8 @@ import {
   type CpuCore,
   DEFAULT_CONNECTION,
   DEFAULT_SYSTEM,
+  type IfaceName,
+  type NetInterface,
   type Pid,
   type Process,
   type ProcessesSnapshotMsg,
@@ -64,6 +66,7 @@ export function buildRouter(opts: BuildRouterOptions) {
   });
   const processCache = new Map<Pid, Process>();
   const coreCache = new Map<CoreId, CpuCore>();
+  const netCache = new Map<IfaceName, NetInterface>();
   // Local snapshot bus — every msg the parent receives from the
   // agent's snapshot stream is also re-published here so the parent's
   // own `processesSnapshot` source (consumed by the browser) can
@@ -105,6 +108,15 @@ export function buildRouter(opts: BuildRouterOptions) {
         },
         remove: (key) => {
           coreCache.delete(key);
+        },
+      },
+      networkInterfaces: {
+        readAll: () => netCache,
+        upsert: (key, value) => {
+          netCache.set(key, value);
+        },
+        remove: (key) => {
+          netCache.delete(key);
         },
       },
     },
@@ -185,6 +197,10 @@ type FragmentCtx = {
         upsert: (k: CoreId, v: CpuCore) => void;
         remove: (k: CoreId) => void;
       };
+      networkInterfaces: {
+        upsert: (k: IfaceName, v: NetInterface) => void;
+        remove: (k: IfaceName) => void;
+      };
     };
   };
 };
@@ -226,6 +242,7 @@ async function bridgeAgentToParent(
       pumpSystemCell(client, session, fragment),
       pumpProcessesSnapshot(client, fragment, processCache, browserSnapshotBus),
       pumpCpuCores(client, fragment),
+      pumpNetworkInterfaces(client, fragment),
     ]);
     log("bridge: pumps ended (link likely died) — awaiting next client");
   }
@@ -251,6 +268,28 @@ function pumpCpuCores(
     onUpsert: (key, value) =>
       fragment.ctx.collections.cpuCores.upsert(key, value),
     onRemove: (key) => fragment.ctx.collections.cpuCores.remove(key),
+  });
+}
+
+/** Mirror the agent's `networkInterfaces` collection — same
+ *  `mirrorRemoteCollection` shape as cpuCores, keyed by NIC name. */
+function pumpNetworkInterfaces(
+  client: DrishtiAgent,
+  fragment: FragmentCtx,
+): Promise<void> {
+  return mirrorRemoteCollection<IfaceName, NetInterface>({
+    label: "networkInterfaces",
+    log,
+    keys: client.surface.networkInterfaces.keys({}) as Promise<
+      AsyncIterable<readonly IfaceName[]>
+    >,
+    get: (key, signal) =>
+      client.surface.networkInterfaces.get({ key }, { signal }) as Promise<
+        AsyncIterable<NetInterface>
+      >,
+    onUpsert: (key, value) =>
+      fragment.ctx.collections.networkInterfaces.upsert(key, value),
+    onRemove: (key) => fragment.ctx.collections.networkInterfaces.remove(key),
   });
 }
 

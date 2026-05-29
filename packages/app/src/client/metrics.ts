@@ -36,6 +36,29 @@ export function formatUptime(uptimeSec: number): string {
   return `${m}m`;
 }
 
+// Decimal (1000-based) units, matching the GB convention `memGb` uses —
+// kept consistent so memory and network sizes read the same way.
+const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
+
+/** Human-friendly byte size: "0 B", "812 B", "1.2 MB", "3.4 GB". Whole
+ *  bytes below 1 KB, one decimal above. Decimal units (÷1000), not binary,
+ *  to match `memGb`. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1000) return `${Math.round(bytes)} B`;
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1000 && unit < BYTE_UNITS.length - 1) {
+    value /= 1000;
+    unit++;
+  }
+  return `${value.toFixed(1)} ${BYTE_UNITS[unit]}`;
+}
+
+/** Throughput rendered as a per-second byte rate, e.g. "1.2 MB/s". */
+export function formatThroughput(bytesPerSec: number): string {
+  return `${formatBytes(bytesPerSec)}/s`;
+}
+
 /** Mean busy-percentage across the supplied per-core usages — the single
  *  "host CPU%" number the fleet card shows in place of the full per-core
  *  strip. Zero for a host with no reported cores (e.g. not yet

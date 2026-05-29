@@ -38,7 +38,7 @@ Host 1: drishti-agent     Host 2: drishti-agent     …
 Kernel
 ```
 
-Host identity lives only at the transport layer: each browser tab opens its own WebSocket to `/rpc/ws?host=<id>`; the parent dispatches to a per-host `RPCHandler` (built once per host from the same surface schema). The per-host `surface` schema (system / processes / cpuCores / connection cells) is scalar — no host dimension anywhere in the primitives.
+Host identity lives only at the transport layer: each browser tab opens its own WebSocket to `/rpc/ws?host=<id>`; the parent dispatches to a per-host `RPCHandler` (built once per host from the same surface schema). The per-host `surface` schema (system / processes / cpuCores / networkInterfaces / connection cells) is scalar — no host dimension anywhere in the primitives.
 
 A separate **admin surface** at `/rpc/ws?host=__admin__` exposes the *set* of hosts as a `Collection<string, HostEntry>` plus `addHost` / `removeHost` procedures. The tab strip subscribes to the collection; the `+` / `×` buttons call the procedures.
 
@@ -50,6 +50,7 @@ Per-host primitives:
 | **Collection** | `processes` | Keyed by PID — `{ user, cpuPct, memPct, command, cwd }`. Snapshot-then-delta. `cwd` is from `/proc/<pid>/cwd` on linux (empty on darwin / kernel threads / other-user pids). |
 | **Stream** | `processesSnapshot` | Bulk-snapshot variant for ~600-PID htop refresh in one frame. |
 | **Collection** | `cpuCores` | Per-core CPU usage (`Collection<K,T>` showcase). |
+| **Collection** | `networkInterfaces` | Per-NIC network I/O, keyed by interface name — `{ rxBytes, txBytes, rxRate, txRate }` (cumulative bytes since boot + bytes/sec throughput). `/proc/net/dev` on linux, `netstat -ib` on darwin; loopback filtered out. |
 | **Procedure** | `process.kill` | The only mutation — sends `TERM` / `KILL` / `HUP` / `INT`. |
 
 Admin surface primitives:

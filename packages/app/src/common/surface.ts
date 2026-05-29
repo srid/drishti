@@ -34,6 +34,25 @@ const CpuCoreSchema = z.object({
   speedMHz: z.number(),
   model: z.string(),
 });
+
+/** Per-network-interface I/O. Keyed by NIC name (`eth0`, `en0`, …) in the
+ *  `networkInterfaces` collection. Both a level (cumulative bytes since
+ *  boot) and a rate (bytes/sec over the last poll window) — throughput is
+ *  the headline number; the cumulative totals are the "how much has this
+ *  link carried" context. Loopback is filtered out at the agent: it's
+ *  intra-host traffic, not network I/O, and would otherwise dominate the
+ *  list with constant noise. */
+const NetInterfaceSchema = z.object({
+  /** Cumulative bytes received since boot. */
+  rxBytes: z.number(),
+  /** Cumulative bytes transmitted since boot. */
+  txBytes: z.number(),
+  /** Receive throughput in bytes/sec over the last poll window. 0 on the
+   *  first tick (no previous counters to delta against yet). */
+  rxRate: z.number(),
+  /** Transmit throughput in bytes/sec over the last poll window. */
+  txRate: z.number(),
+});
 const SystemSchema = z.object({
   /** 1-minute, 5-minute, 15-minute load averages. */
   loadAvg: z.tuple([z.number(), z.number(), z.number()]),
@@ -130,6 +149,13 @@ export const surface = defineSurface({
       keySchema: z.number().int().nonnegative(),
       schema: CpuCoreSchema,
     },
+    /** Per-NIC network I/O — small-N keyed by interface name, the same
+     *  `Collection<K,T>` shape as `cpuCores`. Each interface is
+     *  independently observable; the UI renders one rx/tx row per NIC. */
+    networkInterfaces: {
+      keySchema: z.string(),
+      schema: NetInterfaceSchema,
+    },
   },
   streams: {
     processesSnapshot: {
@@ -156,6 +182,8 @@ export type Pid = SF["collections"]["processes"]["Key"];
 export type Process = SF["collections"]["processes"]["Value"];
 export type CoreId = SF["collections"]["cpuCores"]["Key"];
 export type CpuCore = SF["collections"]["cpuCores"]["Value"];
+export type IfaceName = SF["collections"]["networkInterfaces"]["Key"];
+export type NetInterface = SF["collections"]["networkInterfaces"]["Value"];
 export type SystemInfo = SF["cells"]["system"]["Value"];
 export type ConnectionInfo = SF["cells"]["connection"]["Value"];
 export type ConnectionState = ConnectionInfo["state"];
