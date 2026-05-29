@@ -73,23 +73,27 @@ describe("buildClient — offline shell is complete", () => {
   // referenced (by the manifest or index.html) but missing from SHELL, the
   // installed app shows a broken image offline; if a SHELL entry doesn't
   // exist in dist, install fails to cache it. Both are silent without this.
-  const shellURLs = () => {
+  const shellURLs = (): string[] => {
     const body = read("sw.js").match(/SHELL = \[([\s\S]*?)\]/)?.[1] ?? "";
-    return [...body.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    return [...body.matchAll(/"([^"]+)"/g)].map((m) => m[1] ?? "");
   };
-  const referencedIcons = () => {
+  const referencedIcons = (): Set<string> => {
     const manifest = JSON.parse(read("manifest.webmanifest"));
-    const fromManifest = manifest.icons
+    const fromManifest: string[] = manifest.icons
       .map((i: { src: string }) => i.src)
       .filter((src: string) => src.startsWith("/icons/"));
     const fromHtml = [...read("index.html").matchAll(/href="(\/icons\/[^"]+)"/g)].map(
-      (m) => m[1],
+      (m) => m[1] ?? "",
     );
     return new Set([...fromManifest, ...fromHtml]);
   };
 
   it("precaches every icon the manifest and index.html reference", () => {
-    const shell = new Set(shellURLs());
+    const urls = shellURLs();
+    // Guard against a restructured SHELL the regex can't parse — an empty
+    // list would make both this and the existence loop pass vacuously.
+    expect(urls.length).toBeGreaterThan(0);
+    const shell = new Set(urls);
     for (const icon of referencedIcons()) expect(shell.has(icon)).toBe(true);
   });
 
