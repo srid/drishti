@@ -10,6 +10,7 @@
 // calls that break at runtime. Bun.build accepts a `plugins` array
 // directly, so we drive the build ourselves.
 
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -101,6 +102,17 @@ export async function buildClient(distDir: string): Promise<void> {
     resolve(distDir, "index.html"),
     html.replace(`src="./main.tsx"`, `src="./main.js"`),
   );
+
+  // Static PWA assets — the web manifest, service worker, and icons — are
+  // shipped verbatim. They live under client/public/ so "which static
+  // assets exist" is encapsulated in one directory; this step copies the
+  // tree wholesale instead of enumerating filenames that would drift.
+  const PUBLIC_DIR = resolve(CLIENT_DIR, "public");
+  if (!existsSync(PUBLIC_DIR))
+    throw new Error(
+      `public assets dir missing at ${PUBLIC_DIR} — run \`bun scripts/gen-pwa-icons.ts\` to generate the icons.`,
+    );
+  await Bun.$`cp -R ${PUBLIC_DIR}/. ${distDir}/`;
 }
 
 // CLI entrypoint: `bun src/server/build.ts <distDir>` — used by the Nix

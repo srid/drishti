@@ -32,6 +32,7 @@ Open <http://localhost:7720>. The UI opens on the **fleet** tab — a single ove
 - **Per-host view memory** — the chart window, process sort column, and process filter stick across reloads via `localStorage`, remembered per host. A **light/dark toggle** (top-right of the tab strip) overrides the OS theme and is remembered globally; until you touch it, the theme follows your system preference.
 - **Idle NICs collapse** behind a `+N idle` toggle by default, so the few interfaces moving traffic aren't buried under the dozens of always-zero virtual ones (utunN, anpiN, …).
 - **Strictly read-only** — drishti only ever *observes* a host. The per-host surface exposes no procedures, so there is no way to signal, kill, or otherwise mutate a monitored process through the UI or the wire.
+- **Installable PWA** — drishti ships a web app manifest, an emerald aperture icon, and a service worker, so you can install it as a standalone app (desktop, or a phone's home screen) and the shell launches offline. The live process data still needs the connection, of course — the worker only caches the app shell and stays out of the way of the WebSocket transport. Install works out of the box at `http://localhost` (a secure context); reaching the server over a plain-http LAN address falls back to a normal, non-installable web page.
 
 Requirements:
 
