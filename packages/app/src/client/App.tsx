@@ -1136,7 +1136,7 @@ function Sparkline(props: {
 }) {
   return (
     <div
-      class={`relative w-full overflow-hidden rounded bg-gray-100 dark:bg-gray-800/50${props.class ? ` ${props.class}` : ""}`}
+      class={`relative w-full overflow-hidden rounded bg-gray-100 dark:bg-gray-800/50 ${props.class ?? ""}`}
     >
       <svg
         class="h-full w-full"
