@@ -300,14 +300,6 @@ function linuxReader(): ProcReader {
         );
         bootEpochMs = nowMs - up * 1000;
       }
-      const USER_HZ_MS = 1000 / 100; // ms per clock tick (USER_HZ = 100)
-      // `USER_HZ` — kernel jiffies-per-second. The kernel reports
-      // utime/stime in jiffies; we divide by Δseconds × USER_HZ to get
-      // "fraction of a core during this window". `getconf CLK_TCK` is
-      // 100 on every standard linux kernel build (it's a Kconfig at
-      // CONFIG_HZ_100/250/300/1000 with 100 as the universal default).
-      // Hardcoding it avoids an extra subprocess on every poll.
-      const USER_HZ = 100;
       const winSec = prevWallMs > 0 ? (nowMs - prevWallMs) / 1000 : 0;
       const out = new Map<Pid, Process>();
       const seen = new Set<number>();
@@ -475,10 +467,10 @@ const PS_LINE_RE =
  *  don't match (blank/garbage) so the caller skips them. Pure — no clock or
  *  platform state — to stay unit-testable.
  *
- *  `threads` and `startedAtMs` are 0 (unknown): darwin's `ps` has no cheap
- *  per-process thread count, and the `ps` columns we read carry no start time —
- *  the same "blank when the platform can't cheaply source it" convention `cwd`
- *  already follows here. */
+ *  `threads` and `startedAtMs` are `null` (unavailable): darwin's `ps` has no
+ *  cheap per-process thread count, and the `ps` columns we read carry no start
+ *  time — `null` (not 0) keeps "unavailable" distinct from a real value at the
+ *  type level, mirroring the schema's `.nullable()` fields. */
 export function parsePsLine(line: string): [Pid, Process] | null {
   const m = line.trim().match(PS_LINE_RE);
   if (!m) return null;
@@ -671,6 +663,14 @@ function stubReader(): ProcReader {
 /** Wire cap for per-process string fields (command, cwd, …). One
  *  constant so a change to the limit stays in parity across platforms. */
 const PROC_STRING_MAX = 200;
+
+// `USER_HZ` — kernel jiffies-per-second. The kernel reports utime/stime in
+// jiffies; we divide by Δseconds × USER_HZ to get "fraction of a core during
+// this window". `getconf CLK_TCK` is 100 on every standard linux kernel build
+// (it's a Kconfig at CONFIG_HZ_100/250/300/1000 with 100 as the universal
+// default). Hardcoding it avoids an extra subprocess on every poll.
+const USER_HZ = 100;
+const USER_HZ_MS = 1000 / USER_HZ; // ms per clock tick
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
