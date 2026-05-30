@@ -82,23 +82,12 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
           fragment.ctx.collections.hosts.remove(input.host);
           return { ok: true };
         },
-        reconnect: async ({ input }) => {
+        reconnect: ({ input }) => {
           // No `hosts` collection publish: membership is unchanged. The
           // session's copying→connecting→connected transition streams
           // back through the per-host `connection` cell on its own.
           if (!opts.registry.has(input.host)) return { ok: false };
-          // Mirror `remove`'s shape: a throwing re-arm must surface as a
-          // logged failure + `{ ok: false }`, not vanish behind an
-          // unconditional success — the "errors reach the user, never the
-          // void" rule this repo's .agency/code-policy.md codifies.
-          try {
-            opts.registry.reconnect(input.host);
-          } catch (err) {
-            process.stderr.write(
-              `[admin] reconnect ${input.host} failed: ${(err as Error).message}\n`,
-            );
-            return { ok: false };
-          }
+          opts.registry.reconnect(input.host);
           return { ok: true };
         },
       },
