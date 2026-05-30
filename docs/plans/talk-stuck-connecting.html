@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Host stuck in "Connecting" — diagnosis &amp; fix</title>
+<style>
+  :root {
+    --bg: #0b1020; --panel: #121a2e; --panel2: #0e1526; --line: #1f2a44;
+    --ink: #d7deec; --dim: #8a96b0; --faint: #5d6886;
+    --amber: #f59e0b; --emerald: #10b981; --red: #ef4444; --blue: #6366f1;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2.2rem clamp(1rem, 4vw, 3.5rem); background: var(--bg);
+    color: var(--ink); font: 15px/1.6 system-ui, -apple-system, sans-serif;
+  }
+  main { max-width: 920px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 .2rem; }
+  h2 { font-size: 1.05rem; margin: 2.2rem 0 .6rem; color: #fff;
+       border-bottom: 1px solid var(--line); padding-bottom: .35rem; }
+  h3 { font-size: .92rem; margin: 1.3rem 0 .4rem; color: var(--ink); }
+  p { margin: .55rem 0; }
+  code { font-family: var(--mono); font-size: .85em; color: #e6c07b;
+         background: #1a2238; padding: .08em .35em; border-radius: 4px; }
+  .sub { color: var(--dim); margin-top: .1rem; }
+  .cite { font-family: var(--mono); font-size: .8em; color: var(--faint); }
+  .pill { display: inline-block; font-size: .72rem; font-family: var(--mono);
+          padding: .1em .5em; border-radius: 999px; border: 1px solid var(--line);
+          color: var(--dim); }
+  .key { background: #161f38; border: 1px solid var(--line); border-radius: 10px;
+         padding: 1rem 1.2rem; margin: 1rem 0; }
+  .key strong { color: #fff; }
+  .log { background: #07060b; border: 1px solid var(--line); border-radius: 8px;
+         padding: .9rem 1rem; font-family: var(--mono); font-size: .76rem;
+         line-height: 1.55; overflow-x: auto; white-space: pre; color: #aeb6c8; }
+  .log .l { color: var(--dim); }
+  .log .r { color: #7f8aa6; }
+  .log .ok { color: var(--emerald); }
+  .log .warn { color: var(--amber); }
+  .log .stuck { color: var(--red); font-weight: 600; }
+  ul { margin: .5rem 0; padding-left: 1.2rem; }
+  li { margin: .3rem 0; }
+  table { width: 100%; border-collapse: collapse; margin: .8rem 0; font-size: .88rem; }
+  th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; font-size: .78rem; text-transform: uppercase;
+       letter-spacing: .03em; }
+  td code { white-space: nowrap; }
+  .flow { font-family: var(--mono); font-size: .82rem; line-height: 1.9; margin: .6rem 0;
+          color: var(--dim); }
+  .flow b { color: var(--amber); }
+  .flow .g { color: var(--emerald); }
+  .flow .x { color: var(--red); }
+  /* mockup */
+  .mockwrap { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+  @media (max-width: 720px) { .mockwrap { grid-template-columns: 1fr; } }
+  .mock { background: #0a0f1e; border: 1px solid var(--line); border-radius: 10px;
+          padding: 0; overflow: hidden; }
+  .mockhead { font-size: .72rem; color: var(--faint); font-family: var(--mono);
+              padding: .45rem .8rem; border-bottom: 1px solid var(--line);
+              background: #0e1526; }
+  .mockbody { padding: 2.2rem 1rem; text-align: center; min-height: 150px;
+              display: flex; flex-direction: column; justify-content: center; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block;
+         vertical-align: middle; margin-right: .45rem; }
+  .dot.amber { background: var(--amber); }
+  .dot.red { background: var(--red); }
+  .pulse { animation: p 1.4s ease-in-out infinite; }
+  @keyframes p { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .conn-msg { color: var(--dim); font-size: 1.05rem; margin-bottom: .4rem; }
+  .conn-prog { color: var(--faint); font-family: var(--mono); font-size: .72rem; }
+  .card { max-width: 380px; margin: 0 auto; text-align: left;
+          border: 1px solid rgba(239,68,68,.4); background: rgba(239,68,68,.06);
+          border-radius: 8px; padding: .9rem 1rem; }
+  .card .ttl { color: var(--red); font-size: 1.05rem; margin-bottom: .15rem; }
+  .card .gv { color: var(--faint); font-size: .72rem; margin-bottom: .6rem; }
+  .card pre { background: #07060b; border-radius: 5px; padding: .5rem .6rem; margin: 0 0 .6rem;
+              font-family: var(--mono); font-size: .72rem; color: #cdd5e6; white-space: pre-wrap;
+              border: 1px solid var(--line); }
+  .card .hint { color: var(--faint); font-size: .72rem; margin-bottom: .7rem; }
+  .btn { display: inline-block; font-size: .76rem; font-family: var(--mono);
+         border: 1px solid var(--line); background: #0e1526; color: var(--ink);
+         border-radius: 6px; padding: .3rem .7rem; }
+  .verdict { font-size: .8rem; color: var(--faint); margin-top: .4rem; }
+  .verdict.good { color: var(--emerald); }
+  .verdict.bad { color: var(--red); }
+  .rev { font-size: .82rem; color: var(--dim); border-left: 2px solid var(--line);
+         padding: .15rem 0 .15rem .8rem; margin: .5rem 0; }
+  .rev b { color: var(--ink); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Host stuck in “Connecting…” forever</h1>
+<p class="sub">Diagnosis from this machine’s live <code>drishti.err.log</code>, plus the fix and what the user should see. <span class="pill">talk · --html</span></p>
+
+<h2>What’s actually happening (your screenshot, your logs)</h2>
+<p><code>vanjaram</code> is wedged in <code>connecting</code> right now. The log shows the healthy link drop with SSH <code>code=255</code>, the reconnect loop re-arm — and then it spawns, the remote agent starts serving, and the trail just <em>stops</em>:</p>
+
+<div class="log"><span class="l">[vanjaram local]</span>  connection: connected <span class="warn">→ disconnected</span>
+<span class="l">[vanjaram local]</span>  lastError: agent exited (code=255, signal=null)
+<span class="l">[vanjaram local]</span>  reconnecting in 4000ms… (attempt 2/5)
+<span class="l">[vanjaram local]</span>  connection: copying <span class="warn">→ connecting</span>
+<span class="r">[vanjaram remote]</span> serving surface over stdio (read=stdin, write=stdout)
+<span class="stuck">⟨ … nothing. no "first RPC received". no "agent exited". forever. ⟩</span></div>
+
+<p>Contrast the healthy spawns just above it, which always log <code>first RPC received — link is live</code> → <code>connecting → connected</code>. The stuck spawn never gets there: the SSH child is <em>alive</em> (transport up, agent serving), but the first RPC never roundtrips and the process never exits.</p>
+
+<h2>Why nothing recovers it</h2>
+<p>The connection state machine lives in the dependency <code>@kolu/surface-nix-host</code> (<span class="cite">node_modules/@kolu/surface-nix-host/src/hostSession.ts</span>). Every failure path is guarded by a timer — <em>except</em> the one you hit.</p>
+
+<div class="flow">
+copying <span class="g">──provision ok──▶</span> <b>connecting</b> <span class="g">──first RPC──▶</span> connected<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>connecting</b> <span class="x">──child exit/error──▶</span> disconnected ──retry──▶ failed
+</div>
+
+<p>The only exits from <code>connecting</code> are:</p>
+<ul>
+  <li><strong>Success:</strong> <code>markConnected()</code> — fired by drishti’s router after the first system snapshot yields. <span class="cite">router.ts:365 → hostSession.ts:319</span></li>
+  <li><strong>Failure:</strong> <code>child.on("exit")</code> / <code>child.on("error")</code> → <code>scheduleReconnect()</code>. <span class="cite">hostSession.ts:285, :294, :344</span></li>
+</ul>
+
+<div class="key">
+<strong>The gap:</strong> <code>spawn()</code> sets <code>connecting</code> at <span class="cite">hostSession.ts:271</span> and arms <em>no timeout</em>. A child that stays alive but never completes the RPC handshake fires neither exit. <code>markConnected</code> never runs. The 5-attempt give-up gate is downstream of <code>scheduleReconnect</code>, which is never reached. <strong>Stuck in <code>connecting</code> with no escape.</strong>
+</div>
+
+<p>drishti can’t paper over this from its side: <code>session.reconnect()</code> is guarded <code>if (this.clientPromise !== null) return</code> — non-null during connecting, so it no-ops — and there’s no exposed kill. <span class="cite">hostSession.ts:336</span> The fix belongs in <code>@kolu/surface-nix-host</code>.</p>
+
+<h2>Fix: a connect-phase watchdog (post-review design)</h2>
+<p>Symmetrical with the reconnect timer that already exists. On entering <code>connecting</code>, arm a timeout; if <code>markConnected</code> hasn’t fired by then, kill the child and let the <em>existing</em> exit path route it through <code>scheduleReconnect</code> — so it counts toward the give-up gate and lands in the terminal <code>failed</code> state, reusing all of #27’s UI.</p>
+
+<p class="sub">Both the Lowy (boundary) and Hickey (structure) passes ran on the first sketch; the design below already folds in what landed.</p>
+
+<table>
+<tr><th>Decision</th><th>Shape (after review)</th></tr>
+<tr>
+  <td>Where</td>
+  <td>Inside <code>HostSession</code> — same volatility (“link lifecycle &amp; failure”) that already owns <code>reconnectTimer</code>. Not in drishti’s router, which would have to learn the connecting phase, timer lifetime and teardown. <span class="cite">hostSession.ts:99,344</span></td>
+</tr>
+<tr>
+  <td>One timer, not two</td>
+  <td><span class="rev"><b>Hickey F1.</b> A session has <em>at most one</em> pending phase-transition trigger — you wait for the reconnect delay <em>or</em> the connect watchdog, never both. Don’t add a second <code>connectTimer</code> field beside <code>reconnectTimer</code>; collapse both into one <code>pendingTimer</code> + <code>armTimer(ms, fn)</code> / <code>clearTimer()</code>. The two callbacks stay distinct — only the slot is shared, so this de-duplicates without complecting timeout with backoff. Update the double-arm guard at :345 to the unified field.</span></td>
+</tr>
+<tr>
+  <td>Clear in one place</td>
+  <td><span class="rev"><b>Hickey F2.</b> Don’t smear <code>clearTimeout</code> across four transition handlers. Every exit from <code>connecting</code> already routes through <code>updateState()</code> (:203) — clear the timer there when <code>patch.connection !== "connecting"</code>. One mechanical choke-point; <code>teardown()</code> keeps its explicit clear since it isn’t a state transition.</span></td>
+</tr>
+<tr>
+  <td>On fire: kill only</td>
+  <td><span class="rev"><b>Lowy + Hickey P3.</b> The callback sets <code>lastError = "connect handshake timed out after Ns"</code> and calls <code>child.kill("SIGTERM")</code> — nothing else. <code>kill</code> is async, so the existing <code>child.on("exit")</code> handler (:285) fires next tick and does the <code>scheduleReconnect</code> / bookkeeping. Inlining that in the callback would duplicate the body <em>and</em> double-arm the retry. Guard the exit handler to preserve a pre-set <code>lastError</code> instead of overwriting it with the signal string. Add a top-of-callback <code>state === "connecting"</code> check for the markConnected-just-fired race.</span></td>
+</tr>
+<tr>
+  <td>Timeout value</td>
+  <td><span class="rev"><b>Lowy.</b> Surface <code>connectTimeoutMs?: number</code> on <code>HostSessionOptions</code> as a sibling of <code>reconnectDelayMs</code> (:69), default ~30s — a high-latency-VPN consumer or a fast-fail test harness shouldn’t have to fork the module. (<code>MAX_CONSECUTIVE_FAILURES</code> stays a constant — nothing varies it.)</span></td>
+</tr>
+<tr>
+  <td>Shared failure counter?</td>
+  <td>Yes — folding the timeout into <code>consecutiveFailures</code> is correct dedup, not conflation. A host that consistently hangs its handshake is as broken as one that consistently crashes; the 5-attempt ceiling fits both. <span class="cite">hostSession.ts:355</span></td>
+</tr>
+</table>
+
+<p>Net: one field, two helpers, one choke-point clear, ~30 lines in kolu — and drishti passes <code>connectTimeoutMs</code> at <span class="cite">hostRegistry.ts:91</span>. P3 wants a <code>/fact-check</code> on the real diff to confirm the kill→exit ordering.</p>
+
+<h2>What the user sees — before vs. after</h2>
+<p>No new UI to build. The watchdog converts an invisible hang into the <code>failed</code> card that #27 already ships — real error, the likely remediation, and a working Reconnect button.</p>
+
+<div class="mockwrap">
+  <div class="mock">
+    <div class="mockhead">today — wedged, no feedback</div>
+    <div class="mockbody">
+      <div class="conn-msg"><span class="dot amber pulse"></span>Connecting…</div>
+      <div class="conn-prog">[remote] serving surface over stdio (read=stdin, write=stdout)</div>
+      <div class="verdict bad">spins here forever · no error · no button</div>
+    </div>
+  </div>
+  <div class="mock">
+    <div class="mockhead">after — watchdog fires within ~30s × retries → failed</div>
+    <div class="mockbody">
+      <div class="card">
+        <div class="ttl"><span class="dot red"></span>Couldn’t reach this host</div>
+        <div class="gv">Gave up after repeated connection failures.</div>
+        <pre>connect handshake timed out after 30s</pre>
+        <div class="hint">💡 SSH session came up but the agent never answered — flaky link (Tailscale blip), or the remote agent wedged on start.</div>
+        <span class="btn">↻ Reconnect</span>
+      </div>
+      <div class="verdict good">terminal, honest, actionable — reuses FailedCard</div>
+    </div>
+  </div>
+</div>
+<p class="cite">FailedCard: App.tsx:1010 · state presentation: connectionColors.ts:61</p>
+
+<h3>Optional polish (drishti-side, independent)</h3>
+<p>Show elapsed seconds in the connecting overlay (<code>Connecting… 18s</code>) so an abnormally long connect reads as abnormal before the watchdog trips. Minor; the watchdog is the actual fix.</p>
+
+<p class="sub" style="margin-top:2rem">Ready to implement? The core change is a PR against <code>@kolu/surface-nix-host</code> (watchdog) + a one-line option in drishti. Invoke <code>do</code> when you want to ship it.</p>
+
+</main>
+</body>
+</html>

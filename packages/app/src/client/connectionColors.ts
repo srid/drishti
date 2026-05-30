@@ -23,6 +23,16 @@ type StatePresentation = {
   pending: boolean;
 };
 
+/** Append an elapsed-seconds suffix to a pending status message once a
+ *  second has ticked — "Connecting…" → "Connecting… 18s". A connect that
+ *  drags reads as abnormal *before* the parent's connect watchdog trips
+ *  it to `failed`; the live counter is that early signal. Below 1s the
+ *  bare message reads cleaner (and avoids a "0s" flash on every state
+ *  change), so the suffix is omitted. */
+export function withElapsed(message: string, elapsedSec: number): string {
+  return elapsedSec >= 1 ? `${message} ${elapsedSec}s` : message;
+}
+
 export const STATE: Record<ConnectionState, StatePresentation> = {
   connected: {
     dotBg: "bg-emerald-500",
