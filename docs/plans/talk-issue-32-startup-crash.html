@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issue #32 — startup crash-loop fix</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1d2129; --ink: #d8dde6;
+    --dim: #8b93a1; --line: #2a2f3a; --accent: #6ea8fe; --good: #5fcf80;
+    --warn: #e6b860; --bad: #e06c75; --code: #c7d0dc;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 2rem 1rem 5rem;
+  }
+  main { max-width: 920px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+  h2 { font-size: 1.15rem; margin: 2.2rem 0 .6rem; padding-top: .4rem; border-top: 1px solid var(--line); }
+  h3 { font-size: 1rem; margin: 1.4rem 0 .4rem; color: var(--accent); }
+  p { margin: .5rem 0; }
+  .sub { color: var(--dim); margin: 0 0 1.2rem; }
+  code { font-family: var(--mono); font-size: .86em; background: var(--panel2); padding: .1em .35em; border-radius: 4px; color: var(--code); }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .85rem 1rem; overflow-x: auto; font-family: var(--mono); font-size: .82rem; line-height: 1.5; }
+  pre code { background: none; padding: 0; }
+  .cite { color: var(--dim); font-family: var(--mono); font-size: .8em; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; }
+  .verdict { background: linear-gradient(180deg, #182033, #161a22); border: 1px solid #2c3a55; border-radius: 10px; padding: 1rem 1.2rem; margin: 1.2rem 0; }
+  .verdict strong { color: var(--accent); }
+  .flow { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; font-family: var(--mono); font-size: .8rem; margin: .5rem 0; }
+  .node { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: .25rem .55rem; }
+  .node.bad { border-color: #50333a; color: var(--bad); }
+  .node.good { border-color: #2f4d39; color: var(--good); }
+  .arr { color: var(--dim); }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0; font-size: .9rem; }
+  th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+  .tag { display: inline-block; font-size: .72rem; font-family: var(--mono); padding: .1em .5em; border-radius: 99px; border: 1px solid var(--line); }
+  .tag.b { color: var(--good); border-color: #2f4d39; }
+  .tag.a { color: var(--warn); border-color: #50442a; }
+  .tag.bad { color: var(--bad); border-color: #50333a; }
+  ul { margin: .4rem 0; padding-left: 1.3rem; }
+  li { margin: .3rem 0; }
+  .mark { color: var(--warn); }
+  .add { color: var(--good); }
+  .del { color: var(--bad); }
+  .small { font-size: .85rem; color: var(--dim); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Issue #32 — monitor crash-loops when any initial host is unreachable</h1>
+<p class="sub">Regression from PR #31. One offline host at boot kills monitoring of <em>all</em> hosts and the HTTP port never binds.</p>
+
+<div class="verdict">
+<strong>Recommendation: fix the seam in kolu (Plan B), not the symptom in drishti (Plan A).</strong>
+<p style="margin:.5rem 0 0">The volatility "host is unreachable over SSH" is <em>already</em> fully owned by <code>HostSession</code>. The crash happens because drishti runs the arch probe — a <em>second</em>, fatal SSH round-trip — <em>before</em> the resilient session is ever instantiated. Move the probe inside the session's spawn cycle and the crash class disappears at the root. Both reviewer lenses (Lowy/volatility, Hickey/simplicity) landed here independently.</p>
+</div>
+
+<h2>What actually breaks</h2>
+<p>Two SSH round-trips touch the same reachability axis, handled <em>inconsistently</em>:</p>
+
+<table>
+<tr><th>Round-trip</th><th>Where</th><th>On unreachable host</th></tr>
+<tr>
+  <td><strong>Arch probe</strong> — picks which agent <code>.drv</code> matches the host's nix-system</td>
+  <td><span class="cite">archMap.ts:19</span> → kolu <code>resolveSystem</code> <span class="cite">arch.ts:48</span></td>
+  <td class="del">throws (exit 255) — and has <em>no</em> <code>ConnectTimeout</code> (<span class="cite">host.ts:63</span>) / no timeout in <code>runCapture</code> (<span class="cite">process.ts:56</span>), so it can also hang forever</td>
+</tr>
+<tr>
+  <td><strong>Session</strong> — provisions + runs the agent</td>
+  <td>kolu <code>HostSession.spawn</code> <span class="cite">hostSession.ts:327</span></td>
+  <td class="add">resilient: <code>disconnected</code> → backoff → <code>failed</code> → <code>reconnect()</code> re-arms <span class="cite">:444 / :434</span></td>
+</tr>
+</table>
+
+<p>drishti resolves the drv (probe, fatal) <em>before</em> creating the session (resilient):</p>
+<pre><code>// hostRegistry.ts:98
+const buildEntry = async (host) => {
+  const drvPath = await opts.resolveDrvPath(host);   <span class="mark">// ← throws here, before any session exists</span>
+  const session = getHostSession({ host, drvPath, binary: "drishti-agent", ... });
+  ...
+};
+// hostRegistry.ts:116
+const seeded = await Promise.all(initialHosts.map(buildEntry));  <span class="mark">// ← first rejection sinks them all</span></code></pre>
+
+<div class="flow">
+  <span class="node bad">probe throws</span><span class="arr">→</span>
+  <span class="node">Promise.all rejects <span class="cite">hostRegistry:116</span></span><span class="arr">→</span>
+  <span class="node">main().catch <span class="cite">main:248</span></span><span class="arr">→</span>
+  <span class="node bad">process.exit(1)</span>
+</div>
+<p class="small">And <code>serve(...)</code> (<span class="cite">main.ts:128</span>) runs <em>after</em> <code>await buildHostRegistry</code> (<span class="cite">main.ts:95</span>) — so the port never binds and launchd respawn-loops.</p>
+
+<h3>The asymmetry that matters</h3>
+<p>A host that <strong>drops later</strong> was probed successfully once → it has a drv → it has a session → it flows through the resilient machinery. A host unreachable <strong>at boot</strong> never gets a drv → <em>no session is ever created</em> → the machinery never engages. The session pool key is <code>(host, drvPath, binary)</code> <span class="cite">hostSession.ts:522</span>, so the drv is woven into session identity. The "Reconnect" button (<span class="cite">admin-router.ts:85</span>) calls <code>entries.get(host)?.session.reconnect()</code> — a silent no-op for a host that has no session.</p>
+
+<h2>Why not the issue's own suggestion (Plan A, drishti-only)</h2>
+<p>Issue #32 suggests <code>Promise.allSettled</code> + bind-first. That stops the crash, but to satisfy its own "expected behavior" (failed host stays <em>visible</em> and <em>reconnectable</em>) drishti would need to hold a sessionless "pending" entry and retry it with a <em>new registry-level backoff loop</em>. Both lenses flag that as the wrong move:</p>
+
+<ul>
+  <li><span class="tag bad">Hickey</span> The registry backoff loop is <strong>concept multiplication</strong> — a second implementation of "recover an unreachable host" running in <em>series</em> with the session's existing five-state machine. The hand-off (pending → session) is an implementation accident, not a domain concept.</li>
+  <li><span class="tag bad">Hickey</span> A <code>has()</code>-true-but-no-handler entry <strong>complects</strong> "host is in the set" with "host has a live session," forcing a new null-branch into <code>snapshot</code>, <code>getHandler</code>, the WS-upgrade guard (<span class="cite">main.ts:202</span>), and overloading <code>reconnect()</code> to mean two things.</li>
+  <li><span class="tag bad">Lowy</span> Same axis, two encapsulations, now spanning <em>two repos</em> — any future retry-policy change has a blast radius across both. Violates the registry's own stated invariant ("no shadow data store; admin and registry cannot diverge by construction").</li>
+  <li><span class="tag bad">Lowy</span> A bind-first <em>placeholder drvPath</em> would mint a second pooled session under a different key when the real drv resolves — a correctness hazard, not an optimization.</li>
+</ul>
+
+<h2>Plan B — fold the probe into the session spawn</h2>
+<p>One concept, one place. The probe failure becomes an ordinary provision failure flowing through the machinery that already owns this axis.</p>
+
+<h3>kolu (<code>@kolu/surface-nix-host</code>) — ~1 file</h3>
+<pre><code><span class="cite">hostSession.ts — HostSessionOptions</span>
+- drvPath: string;
+<span class="add">+ /** Resolve the agent .drv for this host. Called at the top of every</span>
+<span class="add">+  *  spawn attempt, so an arch-probe failure is just a provision failure</span>
+<span class="add">+  *  and flows through the existing disconnected→backoff→failed path. */</span>
+<span class="add">+ resolveDrvPath: () => Promise&lt;string&gt;;</span>
+
+<span class="cite">hostSession.ts — spawn(), ~:328</span>
+  private async spawn() {
+    this.updateState({ connection: "copying", lastError: null });
+<span class="add">+   let drvPath: string;</span>
+<span class="add">+   try { drvPath = await this.opts.resolveDrvPath(); }</span>
+<span class="add">+   catch (err) {</span>
+<span class="add">+     this.updateState({ connection: "disconnected", lastError: (err as Error).message });</span>
+<span class="add">+     this.scheduleReconnect();</span>
+<span class="add">+     throw err;          // same shape as the provision-failure branch just below</span>
+<span class="add">+   }</span>
+    const provision = await provisionAgent({ host: this.opts.host, drvPath, ... });
+    ...
+
+<span class="cite">hostSession.ts — getHostSession pool key, ~:522</span>
+- const key = `${opts.host}::${opts.drvPath}::${opts.binary}`;
+<span class="add">+ const key = `${opts.host}::${opts.binary}`;</span></code></pre>
+<p class="small"><code>provisionAgent</code> / <code>nixCopy.ts</code> need <strong>zero</strong> change — they already take a resolved <code>drvPath: string</code> (<span class="cite">nixCopy.ts:35-40</span>). The probe's existing throw-on-failure (<span class="cite">arch.ts:57</span>) is caught at the new seam; if you'd rather not thread throw-as-control-flow into <code>spawn()</code>, have the thunk return kolu's existing <code>{ ok, drvPath | reason }</code> result shape to match <code>provisionAgent</code> — Hickey's only refinement, optional.</p>
+
+<h3>drishti — <code>buildEntry</code> goes synchronous</h3>
+<pre><code><span class="cite">hostRegistry.ts:98</span>
+- const buildEntry = async (host) => {
+-   const drvPath = await opts.resolveDrvPath(host);
+-   const session = getHostSession({ host, drvPath, binary: "drishti-agent", ... });
++ const buildEntry = (host) => {
++   const session = getHostSession({
++     host, binary: "drishti-agent", connectTimeoutMs: CONNECT_TIMEOUT_MS,
++     resolveDrvPath: () => opts.resolveDrvPath(host),   <span class="add">// deferred; runs inside spawn()</span>
++   });
+    const { router } = buildRouter({ session });
+    return { session, handler: new RPCHandler(router) };
+  };
+
+<span class="cite">hostRegistry.ts:116 — seeding can no longer reject</span>
+- const seeded = await Promise.all(initialHosts.map(async (h) => [h, await buildEntry(h)]));
+- for (const [host, handle] of seeded) entries.set(host, handle);
++ for (const host of opts.initialHosts) entries.set(host, buildEntry(host));</code></pre>
+
+<p><code>archMap.ts</code> is unchanged. Every host now always has a real session, so the boot-unreachable case is <em>literally identical</em> to drops-later — same <code>failed</code> state, same working Reconnect button. No bind-ordering dependency, no <code>allSettled</code>, no pending entries, no second retry loop.</p>
+
+<div class="panel">
+<h3 style="margin-top:0">What each plan costs</h3>
+<table>
+<tr><th></th><th>Plan A (drishti-only)</th><th>Plan B (kolu seam)</th></tr>
+<tr><td>"unreachable host" owned by…</td><td class="del">two places, two repos</td><td class="add">one place (the session)</td></tr>
+<tr><td>retry/backoff machines</td><td class="del">two (registry + session)</td><td class="add">one</td></tr>
+<tr><td>new null-branches in registry/WS/admin</td><td class="del">4</td><td class="add">0</td></tr>
+<tr><td><code>Promise.all</code> hazard</td><td>patched (allSettled)</td><td class="add">evaporates (sync seed)</td></tr>
+<tr><td>boot vs. runtime <code>add()</code> path</td><td class="del">divergent</td><td class="add">symmetric</td></tr>
+<tr><td>pool key</td><td><code>(host,drvPath,binary)</code></td><td class="add"><code>(host,binary)</code> — un-complects identity from drv</td></tr>
+<tr><td>cost</td><td>localized, ships now</td><td>kolu release + nix re-pin (proven by the #31 cycle)</td></tr>
+</table>
+</div>
+
+<h3>Pool-key narrowing is a correctness <em>improvement</em></h3>
+<p><code>drvPath</code> was in the key only as a defensive guard against a caller passing two drvs for one host — which drishti never does (one entry per host). Dropping it means a host whose nix-system changes is picked up automatically on the next reconnect, instead of stranding a stale session under a dead key. Both lenses confirmed no caller distinguishes two sessions to one host by drv.</p>
+
+<h2>Sequencing</h2>
+<ol>
+  <li>kolu PR: <code>resolveDrvPath</code> thunk + pool-key narrowing → cut release.</li>
+  <li>drishti: re-pin kolu in the flake; make <code>buildEntry</code> synchronous; delete the <code>Promise.all</code> seed.</li>
+  <li>Keep <code>serve()</code>-before-seed as cheap defense-in-depth in the same drishti PR (it's no longer load-bearing, but a future eager-await regression can't re-break the port).</li>
+  <li>Update <code>README.md</code> if it documents startup/host-failure behavior.</li>
+</ol>
+<p class="small">Not phased: this is a bug fix, not user-visible feature work — the kolu→drishti order is natural sequencing, not a feature split. <strong>If the kolu re-pin must be deferred</strong>, the only non-regrettable stopgap is bind-first + omit-failed-hosts (drop them from the registry entirely, no parallel backoff, no sessionless entries) — degraded (failed hosts invisible until they're re-added) but not a structural fork. Do <em>not</em> ship Plan A's registry retry loop as an interim.</p>
+
+<p class="small" style="margin-top:2rem; border-top:1px solid var(--line); padding-top:1rem">All citations opened this turn by the main agent: drishti <code>hostRegistry.ts</code>, <code>main.ts</code>, <code>archMap.ts</code>, <code>admin-router.ts</code>, <code>router.ts</code>, <code>common/admin-surface.ts</code>; kolu <code>hostSession.ts</code>, <code>arch.ts</code>, <code>host.ts</code>, <code>process.ts</code>, <code>nixCopy.ts</code> (<code>/nix/store/5rn7iidm…-kolu-surface-nix-host/src/</code>). Reviewer note: Lowy worked partly from supplied facts for kolu line refs; the main agent independently read every cited kolu line.</p>
+
+</main>
+</body>
+</html>
