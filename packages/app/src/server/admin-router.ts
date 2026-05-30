@@ -87,7 +87,18 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
           // session's copying→connecting→connected transition streams
           // back through the per-host `connection` cell on its own.
           if (!opts.registry.has(input.host)) return { ok: false };
-          opts.registry.reconnect(input.host);
+          // Mirror `remove`'s shape: a throwing re-arm must surface as a
+          // logged failure + `{ ok: false }`, not vanish behind an
+          // unconditional success — the "errors reach the user, never the
+          // void" rule this repo's .agency/code-policy.md codifies.
+          try {
+            opts.registry.reconnect(input.host);
+          } catch (err) {
+            process.stderr.write(
+              `[admin] reconnect ${input.host} failed: ${(err as Error).message}\n`,
+            );
+            return { ok: false };
+          }
           return { ok: true };
         },
       },
