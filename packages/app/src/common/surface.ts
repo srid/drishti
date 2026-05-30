@@ -158,7 +158,8 @@ const ConnectionSchema = z.object({
    *  uncapped: the parent already trims the ring to a kolu-private bound,
    *  and re-asserting that constant here would couple this contract to a
    *  value drishti doesn't own — and reject valid frames if kolu ever
-   *  raised it. The UI reads only the last line, so the length is moot. */
+   *  raised it. The UI reads only a bounded tail (the overlay's last line;
+   *  the failed-host card's last few), so the length is moot. */
   progressLines: z.array(z.string()),
 });
 
