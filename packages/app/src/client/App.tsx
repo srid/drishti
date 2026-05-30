@@ -986,8 +986,13 @@ function ConnectingOverlay(props: {
   createEffect(
     on(
       () => c().state,
-      () => {
+      (state) => {
         setElapsedSec(0);
+        // Only the in-progress states render the counter — `pending` is
+        // the canonical "is this state in-flight" flag, so consult it
+        // rather than leave the interval running in `connected`/`failed`
+        // where `elapsedSec()` is never read.
+        if (!STATE[state].pending) return;
         const startedAt = performance.now();
         const id = setInterval(
           () =>
