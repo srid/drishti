@@ -1026,19 +1026,31 @@ function ConnectingOverlay(props: {
           </>
         }
       >
-        <FailedCard lastError={c().lastError} onReconnect={props.onReconnect} />
+        <FailedCard
+          lastError={c().lastError}
+          progressLines={c().progressLines}
+          onReconnect={props.onReconnect}
+        />
       </Show>
     </div>
   );
 }
 
-// Terminal-failure card: the real error, the most common remediation, and
+// Terminal-failure card: the real error, the captured connection log, and
 // a button to re-arm the parent's session (the only recovery short of
 // restarting drishti). Shown when `connection.state === "failed"`.
 function FailedCard(props: {
   lastError: string | null;
+  progressLines: readonly string[];
   onReconnect: () => void;
 }) {
+  // The tail of the parent/agent link log — the *actual* failure output
+  // (nix-copy stderr, ssh auth errors, the give-up line). This replaces a
+  // hardcoded "maybe your user isn't in trusted-users" tip that was shown
+  // for every failure regardless of cause: a guess decoupled from the real
+  // error buries it. `lastError` is the terse headline ("exited with code
+  // 1"); the log carries the why.
+  const logTail = () => props.progressLines.slice(-8);
   return (
     <div class="mx-auto max-w-lg rounded border border-red-500/40 bg-red-500/5 p-4 text-left">
       <div class="mb-1 text-lg text-red-500">Couldn't reach this host</div>
@@ -1052,11 +1064,12 @@ function FailedCard(props: {
           </pre>
         )}
       </Show>
-      <div class="mb-3 text-xs text-gray-500">
-        💡 The remote nix-daemon likely needs your user in{" "}
-        <code>trusted-users</code> to accept unsigned closures — or your
-        ssh-agent has no usable key for this host.
-      </div>
+      <Show when={logTail().length > 0}>
+        <div class="mb-1 text-xs text-gray-500">Connection log</div>
+        <pre class="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">
+          {logTail().join("\n")}
+        </pre>
+      </Show>
       <button
         type="button"
         onClick={props.onReconnect}

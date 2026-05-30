@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reconnect no-op — diagnosis &amp; fix</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2430; --ink:#c9d1d9; --dim:#8b949e;
+    --faint:#6e7681; --red:#f85149; --amber:#d29922; --green:#3fb950; --blue:#58a6ff;
+    --border:#30363d; --code:#1f2630; --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    padding:32px 20px 80px}
+  main{max-width:880px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
+  h2{font-size:16px;margin:34px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+  h3{font-size:13px;margin:20px 0 6px;color:var(--blue);text-transform:uppercase;letter-spacing:.04em}
+  p{margin:8px 0}
+  .lede{color:var(--dim);margin:0 0 8px}
+  code{font-family:var(--mono);font-size:12.5px;background:var(--code);padding:1px 5px;border-radius:4px;color:#e6edf3}
+  pre{font-family:var(--mono);font-size:12px;line-height:1.5;background:var(--code);
+    border:1px solid var(--border);border-radius:8px;padding:12px 14px;overflow-x:auto;margin:10px 0}
+  .cite{font-family:var(--mono);font-size:11px;color:var(--faint)}
+  .tag{display:inline-block;font-family:var(--mono);font-size:10.5px;padding:1px 7px;border-radius:20px;
+    border:1px solid var(--border);color:var(--dim);vertical-align:middle}
+  .tag.bug{color:var(--red);border-color:#5d2225}
+  .tag.fix{color:var(--green);border-color:#1f4528}
+  .tag.policy{color:var(--amber);border-color:#5c4612}
+  .grid{display:grid;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin:12px 0}
+  .row{display:grid;grid-template-columns:1fr;background:var(--panel)}
+  .step{background:var(--panel);padding:11px 14px}
+  .step b{color:#e6edf3;font-weight:600}
+  .arrow{color:var(--faint);font-family:var(--mono)}
+  .callout{border:1px solid var(--border);border-left:3px solid var(--red);background:var(--panel);
+    border-radius:6px;padding:12px 14px;margin:14px 0}
+  .callout.good{border-left-color:var(--green)}
+  .callout.note{border-left-color:var(--blue)}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:4px 0}
+  .muted{color:var(--dim)}
+  .del{color:var(--red)}
+  .add{color:var(--green)}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13px}
+  th,td{border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--dim);font-weight:600;font-size:12px}
+  /* FailedCard prototype */
+  .proto-wrap{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:12px 0}
+  @media(max-width:720px){.proto-wrap{grid-template-columns:1fr}.proto-host{display:none}}
+  .proto-label{font-family:var(--mono);font-size:11px;color:var(--faint);margin-bottom:6px}
+  .fc{max-width:520px;border:1px solid rgba(248,81,73,.4);background:rgba(248,81,73,.05);
+    border-radius:6px;padding:16px;text-align:left}
+  .fc .ttl{color:var(--red);font-size:17px;margin-bottom:4px}
+  .fc .sub{color:var(--faint);font-size:12px;margin-bottom:10px}
+  .fc pre{margin:0 0 12px}
+  .fc .btn{display:inline-block;border:1px solid var(--border);background:#21262d;color:var(--ink);
+    border-radius:6px;padding:5px 12px;font-size:12px;font-family:var(--mono)}
+  .fc .tip{color:var(--faint);font-size:12px;margin-bottom:12px}
+  .strike{opacity:.45;text-decoration:line-through}
+  .small{font-size:12px}
+</style>
+</head>
+<body>
+<main>
+
+<h1>“Reconnect” does nothing — diagnosis &amp; fix</h1>
+<p class="lede">The button is a genuine silent no-op for <code>nix copy</code>-driven failures. Root cause is in the <code>@kolu/surface-nix-host</code> library, not drishti. Three deliverables below: the bug fix, the tip cleanup, and the <code>.agency/code-policy.md</code> rule.</p>
+
+<h2><span class="tag bug">BUG</span> &nbsp;Why nothing happens — and no console error</h2>
+
+<p>The click reaches the server fine. The dead end is inside the library’s <code>HostSession.reconnect()</code>.</p>
+
+<div class="grid">
+  <div class="step"><b>1.</b> Button → <code>onReconnect</code> calls the RPC; <code>.catch</code> only logs. <span class="cite">App.tsx:616–622, 1060–1066</span></div>
+  <div class="step"><b>2.</b> Admin router: <code>has()</code> check passes, then <code>registry.reconnect(host)</code>, then <code>return { ok: true }</code> — <em>unconditionally</em>. <span class="cite">admin-router.ts:85–92</span></div>
+  <div class="step"><b>3.</b> <code>registry.reconnect</code> → <code>session.reconnect()</code> (returns <code>void</code>). <span class="cite">hostRegistry.ts:171–173</span></div>
+  <div class="step"><b>4.</b> <code>HostSession.reconnect()</code> hits its guard and <span class="del">silently returns</span>. <span class="cite">kolu hostSession.ts:415–423</span></div>
+</div>
+
+<div class="callout">
+<p style="margin-top:0"><b>The guard that fires:</b></p>
+<pre>reconnect(): void {
+  if (this.destroyed || this.refCount === 0) return;
+  if (this.clientPromise !== null || this.pendingTimer !== null) return;  <span class="del">// ← returns here</span>
+  ...
+}
+<span class="muted">// doc comment claims: "The give-up gate left pendingTimer and</span>
+<span class="muted">// clientPromise null, so a genuinely-failed session always passes." ← FALSE for this path</span></pre>
+<p><code>clientPromise</code> is nulled in only two places: <code>handleChildDone</code> (the ssh child’s <code>exit</code>/<code>error</code> handler) and <code>teardown</code>. <span class="cite">kolu hostSession.ts:350–356, 460–472</span></p>
+<p>But the screenshot’s failure is <code>'nix copy --derivation' exited with code 1</code> — a <b>provision</b> failure. <code>spawn()</code> throws on that branch <em>before any ssh child is spawned</em>, so <code>handleChildDone</code> never runs and <code>clientPromise</code> keeps the last <em>rejected</em> promise. <span class="cite">kolu hostSession.ts:311–325; nixCopy.ts:76–81</span></p>
+<p>The give-up branch then sets <code>connection:"failed"</code> and returns <b>without nulling <code>clientPromise</code></b>. <span class="cite">kolu hostSession.ts:436–444</span></p>
+<p style="margin-bottom:0">So in the terminal <code>failed</code> state reached via <code>nix copy</code>: <code>clientPromise !== null</code> → <code>reconnect()</code> early-returns → no spawn, no state change, no error. The RPC still resolved <code>{ ok: true }</code>, so the client <code>.catch</code> never fires. <b>That is the “not even errors” symptom.</b></p>
+</div>
+
+<p class="small muted">Confirmed against both the pinned revision (<code>npins</code> → <code>juspay/kolu@8a2bc6d</code>) and current kolu <code>master</code> — the bug is live in both. A failure driven by <em>agent exit</em> (not provision) <em>does</em> null <code>clientPromise</code>, so Reconnect would work there; this is specific to the <code>nix copy</code> / <code>nix-store --realise</code> provision paths.</p>
+
+<h2><span class="tag fix">FIX A</span> &nbsp;One line in kolu — make <code>failed</code> honor its invariant</h2>
+
+<p>The terminal <code>failed</code> state’s documented invariant is “no spawn in flight.” Make it true. In the give-up branch of <code>scheduleReconnect</code>:</p>
+<pre><span class="cite">kolu/packages/surface-nix-host/src/hostSession.ts  (~line 443)</span>
+
+  if (this.consecutiveFailures &gt;= MAX_CONSECUTIVE_FAILURES) {
+    this.addLocalProgress(`gave up after ...`);
+<span class="add">+   this.clearClientPromise();           // failed ⇒ nothing in flight</span>
+    this.updateState({ connection: "failed" });
+    return;
+  }</pre>
+
+<p>This makes <code>reconnect()</code>’s existing guard correct <em>as already documented</em> — no guard change needed.</p>
+
+<div class="callout good">
+<p style="margin-top:0"><b>Rejected the alternative.</b> Keying the guard off <code>connection === "failed"</code> instead would treat the symptom, leave the false doc comment standing, and pass the guard even if a spawn were genuinely in flight. Both reviewers said fix the invariant, not the guard.</p>
+<p style="margin-bottom:0"><b>Verified safe:</b> nulling <code>clientPromise</code> does <em>not</em> break the bridge. <code>waitForNextClient</code> treats <code>currentClient() === null</code> as “keep waiting,” then wakes on the next state change — which <code>reconnect()→spawn()→updateState("copying")</code> delivers. <span class="cite">kolu waitForNextClient.ts:36–48</span></p>
+</div>
+
+<h3>Hardening (folded in from Hickey)</h3>
+<p><code>clientPromise = null</code> would now live in <b>three</b> non-adjacent sites, the “null it before <code>failed</code>/teardown” rule enforced only by memory. Extract a named <code>private clearClientPromise()</code> and route all three through it, so the invariant is searchable rather than conventional. Update the now-true <code>reconnect()</code> doc comment to name the give-up branch as its enforcer. <span class="cite">kolu hostSession.ts:354, 471, 443; comment 413</span></p>
+
+<p class="muted small">Boundary check (Lowy): connection-lifecycle volatility is fully encapsulated in kolu; drishti only mirrors state and calls <code>reconnect()</code>. The fix correctly lands in kolu — a drishti-side workaround (destroy+recreate, poking internals) would leak the state machine across the repo boundary. Ship kolu, then <code>npins</code>-bump drishti.</p>
+
+<h2><span class="tag fix">FIX B</span> &nbsp;The tip is a guess — show the real error instead</h2>
+
+<p>You’re right that the 💡 tip fires regardless of cause. Worse: it <em>duplicates</em> text the session already produced. The exact “trusted-users” line is emitted into <code>progressLines</code> at give-up <span class="cite">kolu hostSession.ts:438</span>, and the real <code>nix copy</code> stderr is already streamed there too — but <code>FailedCard</code> shows none of it. It shows only the terse <code>lastError</code> (“exited with code 1”) plus a hardcoded speculative <code>&lt;div&gt;</code>. <span class="cite">App.tsx:1048–1059; surface.ts:154–162</span></p>
+
+<p><b>Minimal fix:</b> pass <code>c().progressLines</code> into <code>FailedCard</code>, render the tail (the actual failure output), and delete the hardcoded tip. The real cause replaces the guess — no string-matching, no new coupling.</p>
+
+<div class="proto-wrap">
+  <div class="proto-host">
+    <div class="proto-label">BEFORE — speculative tip, unconditional</div>
+    <div class="fc">
+      <div class="ttl">Couldn't reach this host</div>
+      <div class="sub">Gave up after repeated connection failures.</div>
+      <pre>pureintent: 'nix copy --derivation' exited with code 1</pre>
+      <div class="tip">💡 The remote nix-daemon likely needs your user in <code>trusted-users</code> to accept unsigned closures — or your ssh-agent has no usable key for this host.</div>
+      <div class="btn">↻ Reconnect</div>
+    </div>
+  </div>
+  <div class="proto-host">
+    <div class="proto-label">AFTER — real captured output</div>
+    <div class="fc">
+      <div class="ttl">Couldn't reach this host</div>
+      <div class="sub">Gave up after repeated connection failures.</div>
+      <pre>pureintent: 'nix copy --derivation' exited with code 1
+
+<span class="muted">[remote] error: cannot add path '/nix/store/…-drishti-agent.drv'
+[remote]   because it lacks a signature by a trusted key
+[remote] error: a 'aarch64-linux' with feature ... required</span></pre>
+      <div class="btn">↻ Reconnect</div>
+    </div>
+  </div>
+</div>
+<p class="small muted">Tail text above is illustrative of what <code>progressLines</code> already carries; the point is it’s the host’s real words, not ours.</p>
+
+<div class="callout note">
+<p style="margin-top:0"><b>If you want differentiated remediation tips back later</b> (Lowy): don’t pattern-match kolu’s freeform strings in drishti — that couples drishti to every error-string edit upstream. The right seam is a structured discriminant on the session state, e.g. <code>failureCause?: "provision-copy" | "provision-realise" | "ssh-spawn" | "connect-timeout" | "agent-exit"</code>, set at each failure site in kolu; drishti keys the tip copy off that stable enum. Add the tag <em>before</em> any per-cause tip. Optional — the minimal fix above stands on its own.</p>
+</div>
+
+<h2><span class="tag fix">FIX</span> &nbsp;Reconnect outcome — no return contract needed</h2>
+<p>Tempting to make <code>reconnect()</code> / the RPC report “did it re-arm?”. Don’t. The <code>connection</code> cell already streams the real outcome (<code>copying → connecting → connected</code>, or back to <code>failed</code>) as the single source of truth the overlay reads. A return value would duplicate a cell transition and invite a two-sources race. Once Fix A lands, clicking Reconnect <em>visibly</em> drives the card through <code>copying…</code> — that <em>is</em> the user-visible feedback. <span class="cite">router.ts:183–189; App.tsx:1029</span></p>
+
+<h2><span class="tag policy">POLICY</span> &nbsp;<code>.agency/code-policy.md</code> — errors must be visible</h2>
+<p>New file. Draft:</p>
+<pre># Code Policy
+
+## Errors must reach the user, never the void
+
+A failure the user can act on must surface in the UI (or logs the user
+reads). Swallowing it — or replacing it with a guess — is a bug.
+
+### Banned
+- `.catch(() =&gt; {})` / empty `catch {}` that drops an actionable error.
+  Logging to the browser console is **not** user-visible; the console is
+  a developer surface, not a user one.
+- Fire-and-forget calls whose only failure mode is a silent no-op, with
+  the caller (or RPC) reporting success regardless. If an action can
+  fail to take effect, its effect — or its failure — must be observable.
+  (See: the "Reconnect" no-op — `reconnect()` returned void, the RPC
+  returned `{ ok: true }`, and a dead session looked re-armed.)
+- Speculative "tips" / remediation text shown unconditionally, decoupled
+  from the actual error. A tip that may not apply is noise that buries
+  the real cause. Show the captured error; gate any hint on a structured
+  signal that actually identifies the cause.
+
+### Required
+- Prefer surfacing the real captured failure output over a hand-written
+  guess about what went wrong.
+- When state is streamed (e.g. a connection/status cell), let the stream
+  be the single source of truth for success/failure — don't bolt on a
+  parallel return value that can disagree with it.
+- If you must catch-and-continue for control flow, the error still has to
+  land somewhere a human will see it (state cell, surfaced log, toast).</pre>
+<p class="small muted">Workflow rule reminder: this is user-facing, so <code>README.md</code> gets a touch if the Reconnect behavior is described there (it is — the “failed state … Reconnect button” paragraph).</p>
+
+<h2>Plan summary</h2>
+<table>
+<tr><th>#</th><th>Change</th><th>Where</th><th>Repo</th></tr>
+<tr><td>1</td><td>Null <code>clientPromise</code> at give-up via new <code>clearClientPromise()</code>; route all 3 sites through it; fix doc comment</td><td><code>hostSession.ts</code> ~443, 354, 471, 413</td><td>kolu</td></tr>
+<tr><td>2</td><td><code>npins</code>-bump kolu to the fixed revision</td><td><code>npins/sources.json</code></td><td>drishti</td></tr>
+<tr><td>3</td><td><code>FailedCard</code>: add <code>progressLines</code> prop, render real tail, delete hardcoded tip</td><td><code>App.tsx</code> 1029, 1038–1069</td><td>drishti</td></tr>
+<tr><td>4</td><td>New <code>.agency/code-policy.md</code></td><td>repo root</td><td>drishti</td></tr>
+<tr><td>5</td><td><em>(optional)</em> <code>failureCause</code> enum on session state → gated tips</td><td>kolu + drishti</td><td>both</td></tr>
+</table>
+
+<p class="muted small">Cross-repo: #1 must merge in kolu before #2 can pin it. #3 and #4 are drishti-local and can land independently. When ready, run <code>/do</code> — note the root fix is in the kolu worktree, not drishti.</p>
+
+</main>
+</body>
+</html>
