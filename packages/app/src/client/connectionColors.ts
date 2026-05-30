@@ -45,11 +45,24 @@ export const STATE: Record<ConnectionState, StatePresentation> = {
     message: "Copying agent to remote…",
     pending: true,
   },
+  // Transient: the link dropped and the parent is cycling through
+  // another connect attempt. Amber + pulsing says "working on it" —
+  // honest, unlike the old red "Retrying…" that also covered give-up.
   disconnected: {
+    dotBg: "bg-amber-500",
+    text: "text-amber-500",
+    label: "reconnecting…",
+    message: "Reconnecting…",
+    pending: true,
+  },
+  // Terminal: the parent's reconnect loop gave up. Solid red, no pulse —
+  // nothing is happening until the user acts. The overlay pairs this
+  // headline with `lastError` and a Reconnect button.
+  failed: {
     dotBg: "bg-red-500",
     text: "text-red-500",
-    label: "no data",
-    message: "Disconnected. Retrying…",
+    label: "failed",
+    message: "Connection failed",
     pending: false,
   },
 };

@@ -52,6 +52,12 @@ export interface HostRegistry {
    *  persist the host set. Same ordering guarantee as `add`: the admin
    *  router publishes the removal AFTER this resolves. */
   remove(host: string): Promise<void>;
+  /** Re-arm a host whose session gave up (`connection === "failed"`).
+   *  Resets the session's failure gate and respawns; the bridge picks up
+   *  the fresh client. No-op if the host isn't registered (or its add is
+   *  still in flight) — the session, not the host set, is what changes,
+   *  so callers don't await it and no persistence happens. */
+  reconnect(host: string): void;
   registerConnection(host: string, ws: WsConn): void;
   unregisterConnection(host: string, ws: WsConn): void;
 }
@@ -150,6 +156,10 @@ export async function buildHostRegistry(
       entries.delete(host);
       await saveHosts(opts.hostsFile, [...entries.keys()]);
       opts.log(`removed host: ${host} (total ${entries.size})`);
+    },
+
+    reconnect(host) {
+      entries.get(host)?.session.reconnect();
     },
 
     registerConnection(host, ws) {

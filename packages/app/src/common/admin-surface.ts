@@ -53,6 +53,15 @@ export const adminSurface = defineSurface({
         input: z.object({ host: z.string() }),
         output: z.object({ ok: z.boolean() }),
       },
+      // Re-arm a host whose parent session gave up (its `connection`
+      // cell is `failed`). Distinct from add/remove: it mutates session
+      // lifecycle, not host-set membership — the host stays configured,
+      // so this never touches the `hosts` collection. The recovery flows
+      // back through the per-host `connection` cell, not here.
+      reconnect: {
+        input: z.object({ host: z.string() }),
+        output: z.object({ ok: z.boolean() }),
+      },
     },
   },
 });

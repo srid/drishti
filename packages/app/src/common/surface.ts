@@ -133,7 +133,32 @@ const SystemSchema = z.object({
  *  attaches before `connect()` returns and still sees the initial
  *  `connecting` state. */
 const ConnectionSchema = z.object({
-  state: z.enum(["copying", "connecting", "connected", "disconnected"]),
+  /** Link phase. Mirrors `HostSession`'s `ConnectionState` 1:1 (the
+   *  parent owns this — see above). `disconnected` is the transient gap
+   *  between retry attempts; `failed` is terminal — the parent's
+   *  reconnect loop gave up and won't retry without a manual
+   *  `hosts.reconnect`. Splitting the two is the whole point: the UI can
+   *  finally tell "reconnecting…" from "gave up, here's why". */
+  state: z.enum([
+    "copying",
+    "connecting",
+    "connected",
+    "disconnected",
+    "failed",
+  ]),
+  /** The error behind a `disconnected`/`failed` state, verbatim from the
+   *  parent (`HostSession.lastError`). `null` while healthy. Free-form —
+   *  the parent owns the vocabulary; the browser only renders it. */
+  lastError: z.string().nullable(),
+  /** Tail of the parent's link-lifecycle progress log (nix-copy output,
+   *  ssh spawn, "reconnecting… (attempt N/5)"). Lets the overlay show
+   *  live retry progress without the browser parsing it for control
+   *  flow — it's display text, never a branch condition. Deliberately
+   *  uncapped: the parent already trims the ring to a kolu-private bound,
+   *  and re-asserting that constant here would couple this contract to a
+   *  value drishti doesn't own — and reject valid frames if kolu ever
+   *  raised it. The UI reads only the last line, so the length is moot. */
+  progressLines: z.array(z.string()),
 });
 
 export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
@@ -150,6 +175,8 @@ export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
 
 export const DEFAULT_CONNECTION: z.infer<typeof ConnectionSchema> = {
   state: "connecting",
+  lastError: null,
+  progressLines: [],
 };
 
 /** Snapshot-then-delta `Stream<>` shape — the bulk-friendly counterpart

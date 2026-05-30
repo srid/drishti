@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reconnect UX — design</title>
+<style>
+  :root {
+    --bg: #0b1220; --panel: #111a2b; --panel2: #0e1726; --border: #1e2a3f;
+    --fg: #e5e9f0; --muted: #8b97ad; --dim: #5d6b82;
+    --emerald: #10b981; --amber: #f59e0b; --red: #ef4444;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.6 var(--mono); padding: 32px 28px 80px;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: .3px; }
+  h2 { font-size: 15px; margin: 34px 0 10px; color: var(--fg);
+       border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 13px; margin: 20px 0 8px; color: var(--muted); font-weight: 600; }
+  p { margin: 8px 0; color: var(--fg); }
+  .muted { color: var(--muted); } .dim { color: var(--dim); }
+  code { background: var(--panel2); padding: 1px 5px; border-radius: 4px;
+         border: 1px solid var(--border); font-size: 12.5px; }
+  a.cite { color: var(--emerald); text-decoration: none; }
+  .repo { display:inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 4px;
+          border: 1px solid var(--border); color: var(--muted); margin-right: 4px; }
+  .repo.kolu { border-color:#c792ea; color:#c792ea; } .repo.dr { border-color:var(--emerald); color:var(--emerald); }
+  pre { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+        padding: 14px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+  pre .kw { color: #c792ea; } pre .str { color: #c3e88d; } pre .typ { color: #82aaff; }
+  pre .com { color: var(--dim); } pre .del { color: #ff8a8a; } pre .add { color: #a3e88d; }
+  .callout { background: var(--panel); border: 1px solid var(--border);
+             border-left: 3px solid var(--amber); border-radius: 6px; padding: 12px 16px; margin: 14px 0; }
+  .callout.red { border-left-color: var(--red); } .callout.green { border-left-color: var(--emerald); }
+  ul { margin: 8px 0; padding-left: 22px; } li { margin: 5px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 10px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--panel2); color: var(--muted); font-weight: 600; }
+
+  .proto { background: #0d1320; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 12px 0; }
+  .proto .tabs { display: flex; background: #0a0f1a; border-bottom: 1px solid var(--border); padding: 6px 8px 0; font-size: 12px; }
+  .proto .tab { display: flex; align-items: center; gap: 7px; padding: 7px 13px; color: var(--muted); border-radius: 6px 6px 0 0; }
+  .proto .tab.active { background: var(--panel); color: var(--fg); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.g { background: var(--emerald); } .dot.a { background: var(--amber); } .dot.r { background: var(--red); }
+  .pulse { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+  .hdr { display: flex; align-items: center; gap: 10px; padding: 9px 16px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+  .hdr .nm { font-weight: 600; } .hdr .sep { color: var(--dim); }
+  .ovl { padding: 46px 24px; text-align: center; }
+  .ovl .big { font-size: 17px; margin-bottom: 6px; }
+  .ovl .sub { font-size: 12px; color: var(--muted); max-width: 540px; margin: 0 auto; }
+  .errcard { max-width: 540px; margin: 0 auto; text-align: left; background: var(--panel2);
+             border: 1px solid var(--border); border-left: 3px solid var(--red); border-radius: 8px; padding: 16px 18px; }
+  .errcard .ttl { font-size: 15px; color: var(--red); margin-bottom: 4px; }
+  .errcard .err { font-size: 12px; color: var(--fg); background: #0a0f1a; border: 1px solid var(--border);
+                  border-radius: 5px; padding: 8px 10px; margin: 8px 0; white-space: pre-wrap; word-break: break-word; }
+  .errcard .hint { font-size: 12px; color: var(--muted); margin: 8px 0; }
+  .btn { display: inline-block; margin-top: 8px; font: 12px var(--mono); color: var(--fg);
+         background: #16233a; border: 1px solid #2c405f; border-radius: 6px; padding: 6px 14px; cursor: default; }
+  .lbl { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; margin: 18px 0 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Solving the reconnect UX</h1>
+<p class="muted">When a host can't be reached, the screen lies. Here's why, what's verified in the source, and the
+single coordinated fix across <span class="repo kolu">kolu</span> and <span class="repo dr">drishti</span>.</p>
+
+<h2>What the screenshot is actually showing</h2>
+<p>The <code>pureintent</code> tab is red and the pane says <strong>"Disconnected. Retrying…"</strong>. The log
+(<code>/tmp/drishti.err.log</code>) says otherwise for that exact host:</p>
+<pre class="com">[host:pureintent local] reconnecting in 16000ms… (attempt 4/5)
+[host:pureintent local] sign_and_send_pubkey: signing failed for ED25519 "id_ed25519" … agent refused operation
+[host:pureintent] lastError: pureintent: 'nix copy --derivation' exited with code 1
+[host:pureintent local] <span class="del">gave up after 5 consecutive failures</span> — fix the underlying issue
+        (often: remote nix-daemon needs your user in 'trusted-users' …) and restart the parent</pre>
+<div class="callout red">
+The parent <strong>gave up</strong> — it is not retrying. The UI says "Retrying…" anyway, and the one fact that would
+let the user fix it (the ssh-agent / <code>trusted-users</code> auth failure) never leaves the log. A dead-end wearing
+a "working on it" label.
+</div>
+
+<h2>Two retry loops, conflated into one word</h2>
+<table>
+<tr><th>Loop</th><th>Who</th><th>Behavior</th><th>Source</th></tr>
+<tr><td><strong>browser ↔ parent</strong></td><td>partysocket</td>
+  <td>Reconnects forever, 2–15 s backoff. Healthy in the shot.</td><td><a class="cite">wire.ts:26-37</a></td></tr>
+<tr><td><strong>parent ↔ agent</strong></td><td><code>HostSession</code> (kolu)</td>
+  <td>Retries the ssh / <code>nix copy</code> link 5×, then <strong>gives up permanently</strong>.</td>
+  <td><a class="cite">kolu hostSession.ts:330-335</a></td></tr>
+</table>
+<p>The browser socket is fine and faithfully reporting <code>disconnected</code>. What died terminally is the
+parent→agent link. "Retrying…" is true of the wrong loop.</p>
+
+<h2>Root cause — verified in source</h2>
+<p>I read the pinned kolu (<code>npins</code> → commit <code>625dbeba</code>). Two distinct gaps:</p>
+
+<h3>Gap 1 — drishti throws away what kolu already exposes</h3>
+<p><code>HostSessionState</code> carries three fields, and <code>onState</code> hands all three to drishti:</p>
+<pre><span class="com">// kolu hostSession.ts:43-50  — already on the wire-facing callback</span>
+<span class="kw">interface</span> <span class="typ">HostSessionState</span> {
+  connection: ConnectionState;          <span class="com">// the 4-enum</span>
+  progressLines: <span class="kw">readonly</span> string[];   <span class="com">// last 20 lines incl. "reconnecting… (attempt 4/5)"</span>
+  lastError: string | <span class="kw">null</span>;            <span class="com">// the real error — ALREADY populated</span>
+}</pre>
+<p>But drishti's mirror keeps only <code>connection</code> and discards <code>lastError</code> + <code>progressLines</code>:</p>
+<pre><span class="com">// drishti router.ts:183-184</span>
+session.onState((s) => {
+  fragment.ctx.cells.connection.set({ state: s.connection }); <span class="del">// drops s.lastError, s.progressLines</span>
+});</pre>
+<p class="muted">So the real error and the attempt-counter text are <em>already available</em> at this one line — drishti
+just isn't forwarding them. No grep for <code>lastError</code>/<code>gaveUp</code> hits anywhere in
+<code>packages/app/src/</code>.</p>
+
+<h3>Gap 2 — kolu collapses "retrying" and "gave up" into one value</h3>
+<p>On give-up, kolu logs the message and <code>return</code>s <strong>without changing <code>connection</code></strong> —
+it stays <code>"disconnected"</code>, the same value as "between retry attempts". And the attempt counter
+(<code>consecutiveFailures</code>) is <strong>private</strong>:</p>
+<pre><span class="com">// kolu hostSession.ts:330-335 — terminal give-up sets no terminal state</span>
+<span class="kw">if</span> (this.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+  this.addLocalProgress(`gave up after …`);
+  <span class="kw">return</span>; <span class="del">// connection stays "disconnected" — indistinguishable from "will retry"</span>
+}</pre>
+<div class="callout">
+This is why drishti <em>can't</em> tell the truth with a drishti-only change: "still retrying" and "gave up forever" are
+the same <code>connection</code> value, and the attempt count is unexposed. Reconstructing the distinction by
+string-matching <code>progressLines</code> for <code>"gave up after"</code> would couple drishti's wire schema to
+kolu's log-line wording — the wrong seam. The terminal state belongs <em>in</em> kolu, next to the give-up gate that
+already owns it.
+</div>
+
+<h2>The fix — one coordinated change, two repos</h2>
+
+<h3><span class="repo kolu">kolu</span> — make the give-up observable (≈10 lines, hostSession.ts)</h3>
+<pre><span class="com">// 1. add a terminal state to the enum (line 37-41)</span>
+<span class="kw">type</span> <span class="typ">ConnectionState</span> = <span class="str">"copying"</span> | <span class="str">"connecting"</span> | <span class="str">"connected"</span> | <span class="str">"disconnected"</span> | <span class="add">"failed"</span>;
+
+<span class="com">// 2. set it on give-up — lastError is already populated (line 333)</span>
+<span class="kw">if</span> (this.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+  this.addLocalProgress(`gave up after …`);
+  <span class="add">this.updateState({ connection: "failed" });</span>
+  <span class="kw">return</span>;
+}
+
+<span class="com">// 3. add a public re-arm for the Reconnect button (no such method exists today)</span>
+<span class="add">reconnect(): void {                       // reset the gate + respawn</span>
+<span class="add">  if (this.destroyed || this.refCount === 0) return;</span>
+<span class="add">  this.consecutiveFailures = 0;</span>
+<span class="add">  this.clientPromise = this.spawn();</span>
+<span class="add">}</span></pre>
+<p class="muted">Then bump the <code>npins</code> kolu pin in drishti. <code>disconnected</code> keeps its existing meaning
+("link down, cycling through copying→connecting again"); <code>failed</code> is the new terminal concept. The attempt
+text ("attempt 4/5") rides along for free in <code>progressLines</code> — no new structured field needed.</p>
+
+<h3><span class="repo dr">drishti</span> — mirror the richer state and render it</h3>
+<p>The wire cell becomes a <em>faithful projection</em> of <code>HostSessionState</code> rather than a re-modelled
+union — kolu owns the lifecycle vocabulary, so drishti stays a thin mirror with a single translation point (the seam
+both reviewers endorsed):</p>
+<pre><span class="com">// surface.ts — mirror kolu's shape; lastError/progressLines are cross-cutting, not per-variant payloads</span>
+<span class="kw">const</span> ConnectionSchema = z.object({
+  state: z.enum([<span class="str">"copying"</span>,<span class="str">"connecting"</span>,<span class="str">"connected"</span>,<span class="str">"disconnected"</span>,<span class="add">"failed"</span>]),
+  lastError: z.string().nullable(),
+  progressLines: z.array(z.string()),   <span class="com">// optional; powers the live "attempt N/5" line</span>
+});
+
+<span class="com">// router.ts:183-184 — forward, stop discarding</span>
+session.onState((s) => fragment.ctx.cells.connection.set({
+  state: s.connection, lastError: s.lastError, progressLines: s.progressLines,
+}));</pre>
+<ul>
+<li><strong>connectionColors.ts</strong> — <code>disconnected</code> flips to amber + <code>pending:true</code> +
+"Reconnecting…" (honest); add <code>failed</code> = red, solid, terminal. The <code>STATE</code> map stays a clean
+<code>Record&lt;state, visual&gt;</code> for dot/pulse; the renderer interpolates <code>lastError</code> / the progress
+tail (so no dynamic strings get baked into the static map).</li>
+<li><strong>App.tsx</strong> <code>ConnectingOverlay</code> (952-962) — widen props from a bare <code>state</code> string
+to the full connection value; render <code>failed</code> as the error card below.</li>
+<li><strong>new admin RPC</strong> <code>hosts.reconnect({ host })</code> → calls the pooled session's new
+<code>reconnect()</code>. <em>Not</em> reused <code>add</code>/<code>remove</code> — see below.</li>
+</ul>
+
+<h2>Proposed UI <span class="muted" style="font-weight:400">— you approved these</span></h2>
+
+<div class="lbl">Tab dots — distinguish "working" from "dead"</div>
+<div class="proto"><div class="tabs">
+  <div class="tab"><span class="dot g"></span>localhost</div>
+  <div class="tab"><span class="dot a pulse"></span>vanjaram <span class="dim">reconnecting</span></div>
+  <div class="tab active"><span class="dot r"></span>pureintent <span class="dim">failed</span></div>
+</div><div class="hdr"><span class="nm">drishti</span><span class="sep">·</span>
+  <span class="muted">host:</span> <span class="nm">pureintent</span> <span class="sep">·</span>
+  <span style="color:var(--red)">● failed</span></div></div>
+<p class="muted">Amber pulsing = actively retrying. Solid red = gave up, needs you. Today both are the same red dot.</p>
+
+<div class="lbl">disconnected — honest, animated, shows the live progress line</div>
+<div class="proto"><div class="hdr"><span class="muted">host:</span> <span class="nm">vanjaram</span>
+  <span class="sep">·</span> <span style="color:var(--amber)">● reconnecting</span></div>
+  <div class="ovl">
+    <div class="big" style="color:var(--amber)">Reconnecting… <span class="dim">attempt 2 of 5</span></div>
+    <div class="sub">ssh: connect to host vanjaram port 22: Operation timed out</div>
+  </div></div>
+<p class="dim">The "attempt 2 of 5" / last-error text is the tail of <code>progressLines</code> + <code>lastError</code> —
+displayed verbatim, never parsed for control flow.</p>
+
+<div class="lbl">failed — terminal: real error + remediation + an exit</div>
+<div class="proto"><div class="hdr"><span class="muted">host:</span> <span class="nm">pureintent</span>
+  <span class="sep">·</span> <span style="color:var(--red)">● failed</span></div>
+  <div class="ovl"><div class="errcard">
+    <div class="ttl">Couldn't reach pureintent</div>
+    <div class="muted" style="font-size:12px">Gave up after 5 attempts.</div>
+    <div class="err">pureintent: signing failed for ED25519 "id_ed25519" — agent refused operation
+'nix copy --derivation' exited with code 1</div>
+    <div class="hint">💡 The remote nix-daemon likely needs your user in <code>trusted-users</code> to accept unsigned
+    closures — or your ssh-agent has no usable key for this host.</div>
+    <div class="btn">↻ Reconnect</div>
+  </div></div></div>
+<p class="dim">Remediation copy is drishti-side static text keyed on <code>failed</code> (drishti owns user-facing
+wording); the raw error above it comes from <code>lastError</code>.</p>
+
+<h2>Two reviewer findings, folded in</h2>
+<div class="callout green">
+<strong>Dedicated reconnect, not remove+add.</strong> Both reviewers killed my first idea of re-arming via the existing
+<code>add</code>/<code>remove</code> RPCs (<a class="cite">App.tsx:386,397</a>). Hickey: it races
+<code>resolvedView</code>'s fallback (<a class="cite">App.tsx:351-355</a>) so the host visibly vanishes from the fleet,
+plus a double <code>saveHosts</code>. Lowy: re-arming a registered session is a different volatility from host-set
+membership. Verified in source that <code>HostSession</code> has <em>no</em> public re-arm — hence the new kolu
+<code>reconnect()</code> + a purpose-built <code>hosts.reconnect</code> verb.
+</div>
+<div class="callout">
+<strong>Single translation point.</strong> Lowy's seam: normalize at the one <code>onState</code> site
+(<a class="cite">router.ts:183-184</a>), so a future kolu error-taxonomy change touches only that line. Mirroring
+kolu's flat <code>{state, lastError, progressLines}</code> shape (rather than inventing a discriminated union) keeps
+drishti a thin projection — the union would re-model vocabulary kolu already owns. <span class="dim">Trade-off: the
+union is more precise (can't attach <code>lastError</code> to <code>connected</code>); the flat mirror is simpler and
+lower-coupling. Recommending the mirror.</span>
+</div>
+
+<h2>Single phase — the change set</h2>
+<p>You asked for one phase; it's small and coherent enough to land as one coordinated change (a kolu PR + a drishti PR
+that bumps the pin):</p>
+<table>
+<tr><th>Repo</th><th>File</th><th>Edit</th></tr>
+<tr><td><span class="repo kolu">kolu</span></td><td>hostSession.ts</td>
+  <td>add <code>"failed"</code> to enum; set it on give-up; add public <code>reconnect()</code></td></tr>
+<tr><td><span class="repo dr">drishti</span></td><td>npins/sources.json</td><td>bump kolu pin</td></tr>
+<tr><td><span class="repo dr">drishti</span></td><td>common/surface.ts</td><td>widen <code>ConnectionSchema</code> (+state, +lastError, +progressLines)</td></tr>
+<tr><td><span class="repo dr">drishti</span></td><td>server/router.ts</td><td>forward the full state at the onState mirror; add <code>hosts.reconnect</code> RPC</td></tr>
+<tr><td><span class="repo dr">drishti</span></td><td>client/connectionColors.ts</td><td><code>disconnected</code>→amber/pulse; add <code>failed</code></td></tr>
+<tr><td><span class="repo dr">drishti</span></td><td>client/App.tsx</td><td>overlay renders failed card + Reconnect button</td></tr>
+</table>
+
+<p class="dim">Ready to build? Drop out of talk mode with <code>/do</code>. Or select any part of this artifact and reply to
+refine it.</p>
+
+</div>
+</body>
+</html>

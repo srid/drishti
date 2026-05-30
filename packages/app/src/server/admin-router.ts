@@ -82,6 +82,14 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
           fragment.ctx.collections.hosts.remove(input.host);
           return { ok: true };
         },
+        reconnect: async ({ input }) => {
+          // No `hosts` collection publish: membership is unchanged. The
+          // session's copying→connecting→connected transition streams
+          // back through the per-host `connection` cell on its own.
+          if (!opts.registry.has(input.host)) return { ok: false };
+          opts.registry.reconnect(input.host);
+          return { ok: true };
+        },
       },
     },
   });
