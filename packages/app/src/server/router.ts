@@ -181,7 +181,11 @@ export function buildRouter(opts: BuildRouterOptions) {
 
   // ── Mirror session connection state → parent's `connection` cell ──
   session.onState((s) => {
-    fragment.ctx.cells.connection.set({ state: s.connection });
+    fragment.ctx.cells.connection.set({
+      state: s.connection,
+      lastError: s.lastError,
+      progressLines: [...s.progressLines],
+    });
   });
 
   // Sample the metric ring once per agent system tick. CPU% is the mean of

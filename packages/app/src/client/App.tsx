@@ -32,6 +32,7 @@ import {
 } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import {
+  type ConnectionInfo,
   type ConnectionState,
   type CoreId,
   type CpuCore,
@@ -606,6 +607,20 @@ function HostView(props: { host: string }) {
   const system = app.cells.system.use({});
   const connection = app.cells.connection.use({});
 
+  // Re-arm the parent's session after it gave up (state === "failed").
+  // Routed straight to the admin surface rather than through the root's
+  // add/remove handlers: unlike those, reconnect has no view-state side
+  // effect, so it needs nothing the root owns. Fire-and-forget — the
+  // `connection` cell streams the resulting copying→connecting→connected
+  // transition back on its own.
+  const onReconnect = () => {
+    void adminClient()
+      .rpc.surface.hosts.reconnect({ host: props.host })
+      .catch((err) =>
+        console.error(`reconnect ${props.host} failed`, err),
+      );
+  };
+
   const [processes, setProcesses] = createStore<Record<Pid, Process>>({});
 
   // Which PID is expanded into the detail panel (null = none). Ephemeral —
@@ -778,7 +793,12 @@ function HostView(props: { host: string }) {
       />
       <Show
         when={currentConnection().state === "connected"}
-        fallback={<ConnectingOverlay state={currentConnection().state} />}
+        fallback={
+          <ConnectingOverlay
+            connection={currentConnection()}
+            onReconnect={onReconnect}
+          />
+        }
       >
         <HistoryChart
           points={points()}
@@ -949,14 +969,73 @@ function FilterBar(props: {
   );
 }
 
-function ConnectingOverlay(props: { state: ConnectionState }) {
+function ConnectingOverlay(props: {
+  connection: ConnectionInfo;
+  onReconnect: () => void;
+}) {
+  const c = () => props.connection;
+  // The freshest parent progress line (e.g. "reconnecting in 4000ms…
+  // (attempt 2/5)"). Display only — never parsed for control flow.
+  const lastProgress = () => c().progressLines.at(-1) ?? null;
   return (
     <div class="px-4 py-12 text-center text-gray-600 dark:text-gray-400">
-      <div class="mb-2 text-lg">{STATE[props.state].message}</div>
-      <div class="text-xs">
-        First connect provisions the agent closure via <code>nix copy</code>.
-        Subsequent connects reuse it.
+      <Show
+        when={c().state === "failed"}
+        fallback={
+          <>
+            <div class="mb-2 text-lg">{STATE[c().state].message}</div>
+            <Show
+              when={lastProgress()}
+              fallback={
+                <div class="text-xs">
+                  First connect provisions the agent closure via{" "}
+                  <code>nix copy</code>. Subsequent connects reuse it.
+                </div>
+              }
+            >
+              {(line) => <div class="text-xs text-gray-500">{line()}</div>}
+            </Show>
+          </>
+        }
+      >
+        <FailedCard lastError={c().lastError} onReconnect={props.onReconnect} />
+      </Show>
+    </div>
+  );
+}
+
+// Terminal-failure card: the real error, the most common remediation, and
+// a button to re-arm the parent's session (the only recovery short of
+// restarting drishti). Shown when `connection.state === "failed"`.
+function FailedCard(props: {
+  lastError: string | null;
+  onReconnect: () => void;
+}) {
+  return (
+    <div class="mx-auto max-w-lg rounded border border-red-500/40 bg-red-500/5 p-4 text-left">
+      <div class="mb-1 text-lg text-red-500">Couldn't reach this host</div>
+      <div class="mb-2 text-xs text-gray-500">
+        Gave up after repeated connection failures.
       </div>
+      <Show when={props.lastError}>
+        {(err) => (
+          <pre class="mb-3 overflow-x-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+            {err()}
+          </pre>
+        )}
+      </Show>
+      <div class="mb-3 text-xs text-gray-500">
+        💡 The remote nix-daemon likely needs your user in{" "}
+        <code>trusted-users</code> to accept unsigned closures — or your
+        ssh-agent has no usable key for this host.
+      </div>
+      <button
+        type="button"
+        onClick={props.onReconnect}
+        class="rounded border border-gray-300 bg-gray-50 px-3 py-1 text-xs hover:border-emerald-500 dark:border-gray-700 dark:bg-gray-800"
+      >
+        ↻ Reconnect
+      </button>
     </div>
   );
 }
