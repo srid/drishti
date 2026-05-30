@@ -30,6 +30,15 @@ import type { surface } from "../common/surface";
 import { saveHosts } from "./hostsStore";
 import { buildRouter } from "./router";
 
+// The parent's connect-handshake watchdog budget, passed explicitly to
+// every session. Must stay well under the browser socket's own deadline
+// (`wire.ts` `connectionTimeout: 60_000`) so the parent gives up on a
+// wedged connect and cycles the ssh child *before* the browser drops the
+// user. kolu defaults `connectTimeoutMs` to this same value; we state it
+// at the call site so the budget is visible here, beside the constraint
+// it answers to, rather than buried in the library's default.
+const CONNECT_TIMEOUT_MS = 30_000;
+
 interface HostHandle {
   session: HostSession<typeof surface.contract>;
   // biome-ignore lint/suspicious/noExplicitAny: matches existing router-handler cast (see implementSurface fragment shape).
@@ -92,6 +101,7 @@ export async function buildHostRegistry(
       host,
       drvPath,
       binary: "drishti-agent",
+      connectTimeoutMs: CONNECT_TIMEOUT_MS,
     });
     const { router } = buildRouter({ session });
     // biome-ignore lint/suspicious/noExplicitAny: implementSurface's Lazy<Router> spread isn't accepted by oRPC's Router<any, T> input type; runtime shape is valid.

@@ -45,7 +45,7 @@ import {
   type Process,
   type SystemInfo,
 } from "../common/surface";
-import { STATE } from "./connectionColors";
+import { STATE, withElapsed } from "./connectionColors";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
 import {
@@ -977,13 +977,41 @@ function ConnectingOverlay(props: {
   // The freshest parent progress line (e.g. "reconnecting in 4000ms…
   // (attempt 2/5)"). Display only — never parsed for control flow.
   const lastProgress = () => c().progressLines.at(-1) ?? null;
+
+  // Seconds elapsed in the *current* connection state, reset on every
+  // state change so it counts time-in-this-phase rather than total. A
+  // connect that drags ("Connecting… 18s") reads as abnormal before the
+  // parent's connect watchdog trips it to `failed`.
+  const [elapsedSec, setElapsedSec] = createSignal(0);
+  createEffect(
+    on(
+      () => c().state,
+      (state) => {
+        setElapsedSec(0);
+        // Only the in-progress states render the counter — `pending` is
+        // the canonical "is this state in-flight" flag, so consult it
+        // rather than leave the interval running in `connected`/`failed`
+        // where `elapsedSec()` is never read.
+        if (!STATE[state].pending) return;
+        const startedAt = performance.now();
+        const id = setInterval(
+          () =>
+            setElapsedSec(Math.floor((performance.now() - startedAt) / 1000)),
+          1000,
+        );
+        onCleanup(() => clearInterval(id));
+      },
+    ),
+  );
   return (
     <div class="px-4 py-12 text-center text-gray-600 dark:text-gray-400">
       <Show
         when={c().state === "failed"}
         fallback={
           <>
-            <div class="mb-2 text-lg">{STATE[c().state].message}</div>
+            <div class="mb-2 text-lg">
+              {withElapsed(STATE[c().state].message, elapsedSec())}
+            </div>
             <Show
               when={lastProgress()}
               fallback={

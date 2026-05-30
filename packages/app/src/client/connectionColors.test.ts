@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { STATE } from "./connectionColors";
+import { STATE, withElapsed } from "./connectionColors";
 
 describe("connection STATE presentation", () => {
   it("covers every connection state", () => {
@@ -31,5 +31,19 @@ describe("connection STATE presentation", () => {
     // copying/connecting are in-flight → pending.
     expect(STATE.copying.pending).toBe(true);
     expect(STATE.connecting.pending).toBe(true);
+  });
+});
+
+describe("withElapsed", () => {
+  it("omits the suffix below 1s — no '0s' flash on a fresh state", () => {
+    expect(withElapsed("Connecting…", 0)).toBe("Connecting…");
+  });
+
+  it("appends the elapsed seconds once a second has ticked", () => {
+    expect(withElapsed("Connecting…", 1)).toBe("Connecting… 1s");
+    expect(withElapsed("Connecting…", 18)).toBe("Connecting… 18s");
+    expect(withElapsed("Copying agent to remote…", 42)).toBe(
+      "Copying agent to remote… 42s",
+    );
   });
 });
