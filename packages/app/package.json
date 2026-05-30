@@ -15,6 +15,7 @@
     "@orpc/client": "^1.13.13",
     "@orpc/contract": "^1.13.13",
     "@orpc/server": "^1.13.13",
+    "@solid-primitives/scheduled": "^1.5.3",
     "@tailwindcss/cli": "^4.1.0",
     "babel-preset-solid": "^1.9.0",
     "cleye": "^2.3.0",
