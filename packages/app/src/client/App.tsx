@@ -1050,7 +1050,7 @@ function FailedCard(props: {
   // for every failure regardless of cause: a guess decoupled from the real
   // error buries it. `lastError` is the terse headline ("exited with code
   // 1"); the log carries the why.
-  const logTail = () => props.progressLines.slice(-8);
+  const logTail = createMemo(() => props.progressLines.slice(-8));
   return (
     <div class="mx-auto max-w-lg rounded border border-red-500/40 bg-red-500/5 p-4 text-left">
       <div class="mb-1 text-lg text-red-500">Couldn't reach this host</div>
