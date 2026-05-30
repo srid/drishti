@@ -501,18 +501,33 @@ async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
 const PS_LINE_RE =
   /^(\d+)\s+(\S+)\s+([\d.]+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)\s+(.*)$/;
 
+/** The subset of `ps -axo …` fields a single ps line carries. `cwd`,
+ *  `threads`, and `startedAtMs` are deliberately absent — a ps line has none
+ *  of them — so the final `Process` is assembled in `darwinReader.readProcesses`
+ *  where the lsof-derived cwd map is in scope. Mirrors linux's
+ *  `LinuxProcRaw` → `Process` split so neither parser fabricates a field it
+ *  cannot see (no placeholder `cwd: ""` that a caller is silently obliged to
+ *  overwrite). */
+interface DarwinProcRaw {
+  pid: Pid;
+  user: string;
+  cpuPct: number;
+  /** Resident set size in bytes (ps reports KB, ×1024 here). */
+  rssBytes: number;
+  command: string;
+  ppid: Pid;
+  /** Single-char kernel state code (R/S/D/Z/T/I/…). */
+  state: string;
+  nice: number;
+}
+
 /** Parse one `ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=` line
- *  into a `Process`. `rss` is in KB on macOS, so ×1024 for `rssBytes`; the
- *  multi-char `state` token's trailing flags (`+`, `s`, …) are dropped to the
- *  leading single-char code for parity with linux. Returns null for lines that
- *  don't match (blank/garbage) so the caller skips them. Pure — no clock or
- *  platform state — to stay unit-testable.
- *
- *  `threads` and `startedAtMs` are `null` (unavailable): darwin's `ps` has no
- *  cheap per-process thread count, and the `ps` columns we read carry no start
- *  time — `null` (not 0) keeps "unavailable" distinct from a real value at the
- *  type level, mirroring the schema's `.nullable()` fields. */
-export function parsePsLine(line: string): [Pid, Process] | null {
+ *  into a `DarwinProcRaw`. `rss` is in KB on macOS, so ×1024 for `rssBytes`;
+ *  the multi-char `state` token's trailing flags (`+`, `s`, …) are dropped to
+ *  the leading single-char code for parity with linux. Returns null for lines
+ *  that don't match (blank/garbage) so the caller skips them. Pure — no clock
+ *  or platform state — to stay unit-testable. */
+export function parsePsLine(line: string): DarwinProcRaw | null {
   const m = line.trim().match(PS_LINE_RE);
   if (!m) return null;
   const [, pidStr, user, cpu, rssKb, ppid, nice, state, command] = m;
@@ -527,23 +542,38 @@ export function parsePsLine(line: string): [Pid, Process] | null {
     !command
   )
     return null;
-  return [
-    Number(pidStr),
-    {
-      user,
-      cpuPct: Number(cpu),
-      rssBytes: Number(rssKb) * 1024,
-      command: truncate(command, PROC_STRING_MAX),
-      // darwin has no cheap per-pid cwd source (`lsof -p` per pid is a
-      // fork per row); leave blank — the UI hides it when empty.
-      cwd: "",
-      ppid: Number(ppid),
-      state: state[0] ?? "",
-      nice: Number(nice),
-      threads: null,
-      startedAtMs: null,
-    },
-  ];
+  return {
+    pid: Number(pidStr),
+    user,
+    cpuPct: Number(cpu),
+    rssBytes: Number(rssKb) * 1024,
+    command: truncate(command, PROC_STRING_MAX),
+    ppid: Number(ppid),
+    state: state[0] ?? "",
+    nice: Number(nice),
+  };
+}
+
+/** Parse `lsof -nP -d cwd -Fpn` field output into a pid→cwd map — darwin's
+ *  batch equivalent of linux's per-pid `readlink(/proc/<pid>/cwd)`, in one
+ *  fork rather than one per row. lsof's `-F` mode emits one set per process: a
+ *  `p<pid>` line, then (for the single cwd descriptor `-d cwd` selects) an
+ *  `n<path>` line. We track the pid from each `p` line and attach the next `n`
+ *  path to it. A process whose cwd lsof cannot resolve — other-user pids
+ *  without root — emits no `n` line and stays absent from the map, so the
+ *  caller's `?? ""` reproduces linux's EACCES-to-blank fallback. Any other
+ *  field line (e.g. an `f` fd marker) is ignored, so the parse is robust to
+ *  lsof's exact field framing. Pure — no I/O — to stay unit-testable,
+ *  mirroring parsePsLine / parseVmStat / parseNetstatIb. */
+export function parseLsofCwd(stdout: string): Map<Pid, string> {
+  const out = new Map<Pid, string>();
+  let pid: Pid | null = null;
+  for (const line of stdout.split("\n")) {
+    if (line[0] === "p") pid = Number(line.slice(1));
+    else if (line[0] === "n" && pid !== null)
+      out.set(pid, truncate(line.slice(1), PROC_STRING_MAX));
+  }
+  return out;
 }
 
 /** Parse `vm_stat` (darwin) into a cache-aware *available* byte count, so
@@ -642,13 +672,33 @@ function darwinReader(): ProcReader {
       };
     },
     readProcesses: async () => {
-      const { stdout } = await exec(
-        "ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=",
-      );
+      // ps gives the rows; lsof gives cwd for every pid in a single fork (not
+      // a fork per row), so the two run concurrently. lsof failing or being
+      // absent degrades to blank cwds rather than dropping the snapshot —
+      // mirroring linux's per-pid EACCES-to-blank fallback.
+      const [{ stdout: psOut }, lsof] = await Promise.all([
+        exec("ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm="),
+        exec("lsof -nP -d cwd -Fpn").catch(() => ({ stdout: "" })),
+      ]);
+      const cwdByPid = parseLsofCwd(lsof.stdout);
       const out = new Map<Pid, Process>();
-      for (const line of stdout.split("\n")) {
-        const parsed = parsePsLine(line);
-        if (parsed) out.set(parsed[0], parsed[1]);
+      for (const line of psOut.split("\n")) {
+        const raw = parsePsLine(line);
+        if (!raw) continue;
+        // Single Process-construction site, like linuxReader: cwd from the
+        // lsof map; threads/startedAtMs null — darwin's ps has no cheap source.
+        out.set(raw.pid, {
+          user: raw.user,
+          cpuPct: raw.cpuPct,
+          rssBytes: raw.rssBytes,
+          command: raw.command,
+          cwd: cwdByPid.get(raw.pid) ?? "",
+          ppid: raw.ppid,
+          state: raw.state,
+          nice: raw.nice,
+          threads: null,
+          startedAtMs: null,
+        });
       }
       return out;
     },
