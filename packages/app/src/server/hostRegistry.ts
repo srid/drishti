@@ -3,7 +3,7 @@
  * "which hosts this parent server knows about". Owns:
  *
  *   - One `HostSession` per host (via the kolu pool, keyed by
- *     `(host, drvPath, binary)`).
+ *     `(host, binary)`).
  *   - One `RPCHandler` per host (built from `buildRouter({session})`).
  *   - The set of open browser WebSockets per host (for eviction on
  *     remove — partysocket auto-reconnects, so we close on the server
@@ -63,9 +63,9 @@ export interface HostRegistry {
   remove(host: string): Promise<void>;
   /** Re-arm a host whose session gave up (`connection === "failed"`).
    *  Resets the session's failure gate and respawns; the bridge picks up
-   *  the fresh client. No-op if the host isn't registered (or its add is
-   *  still in flight) — the session, not the host set, is what changes,
-   *  so callers don't await it and no persistence happens. */
+   *  the fresh client. No-op if the host isn't registered — the session,
+   *  not the host set, is what changes, so callers don't await it and no
+   *  persistence happens. */
   reconnect(host: string): void;
   registerConnection(host: string, ws: WsConn): void;
   unregisterConnection(host: string, ws: WsConn): void;
@@ -86,20 +86,19 @@ export async function buildHostRegistry(
   opts: HostRegistryOptions,
 ): Promise<HostRegistry> {
   const entries = new Map<string, HostHandle>();
-  // In-flight `add()` calls. With async arch-probing, two concurrent
-  // adds for the same host both pass the `entries.has` guard and the
-  // second `entries.set` orphans the first session. Tracking the
-  // in-flight set separately (instead of a null sentinel inside the
-  // entries map) keeps `remove`/`getHandler`/`snapshot` from having to
-  // know that a "host exists" can mean "session being spawned".
-  const adding = new Set<string>();
   const wsConnectionsByHost = new Map<string, Set<WsConn>>();
 
-  const buildEntry = async (host: string): Promise<HostHandle> => {
-    const drvPath = await opts.resolveDrvPath(host);
+  const buildEntry = (host: string): HostHandle => {
     const session = getHostSession<typeof surface.contract>({
       host,
-      drvPath,
+      // Resolve the agent .drv lazily, inside the session's spawn cycle,
+      // rather than awaiting the arch probe here. A host that's
+      // unreachable at probe time makes the resolver reject, which the
+      // session treats as an ordinary connection failure (disconnected →
+      // backoff → failed, re-armable via Reconnect) — so it can't throw
+      // out of here before the session exists. That's what keeps one
+      // unreachable initial host from crashing the whole server at boot.
+      resolveDrvPath: () => opts.resolveDrvPath(host),
       binary: "drishti-agent",
       connectTimeoutMs: CONNECT_TIMEOUT_MS,
     });
@@ -109,22 +108,18 @@ export async function buildHostRegistry(
     return { session, handler };
   };
 
-  // Parallel initial seeding — per-host arch probes are independent, so
-  // a single user dialing into five hosts shouldn't pay the round-trip
-  // serially. `Promise.all` propagates the first failure (Bun's default);
-  // a failing probe at boot is a misconfiguration we want loud and early.
-  const seeded = await Promise.all(
-    opts.initialHosts.map(
-      async (host): Promise<readonly [string, HostHandle]> => [
-        host,
-        await buildEntry(host),
-      ],
-    ),
-  );
-  for (const [host, handle] of seeded) entries.set(host, handle);
+  // Seed every configured host synchronously. `buildEntry` no longer
+  // awaits anything — the per-host arch probe it used to run up front now
+  // lives inside the session's spawn cycle — so seeding can't reject, and
+  // a host that's unreachable at boot surfaces as a per-host `failed`
+  // connection state instead of taking the whole registry (and with it
+  // the parent's HTTP port, never bound until this resolves) down. The
+  // old code awaited `Promise.all`, whose first rejection propagated to
+  // `main()`'s top-level catch and exited the process before `serve()`.
+  for (const host of opts.initialHosts) entries.set(host, buildEntry(host));
 
   return {
-    has: (host) => entries.has(host) || adding.has(host),
+    has: (host) => entries.has(host),
     snapshot: () => {
       const out = new Map<string, HostEntry>();
       for (const host of entries.keys()) out.set(host, { host });
@@ -133,22 +128,15 @@ export async function buildHostRegistry(
     getHandler: (host) => entries.get(host)?.handler,
 
     async add(host) {
-      if (entries.has(host) || adding.has(host)) {
+      if (entries.has(host)) {
         throw new Error("host already exists");
       }
-      adding.add(host);
-      const handle = await buildEntry(host).finally(() => adding.delete(host));
-      entries.set(host, handle);
+      entries.set(host, buildEntry(host));
       await saveHosts(opts.hostsFile, [...entries.keys()]);
       opts.log(`added host: ${host} (total ${entries.size})`);
     },
 
     async remove(host) {
-      // If add() is in-flight for this host, remove() would be a no-op
-      // (entry not yet in `entries`) — but add() would complete after,
-      // leaving a live session that the user already removed. Throw
-      // instead so the caller can surface a "try again" error.
-      if (adding.has(host)) throw new Error("host add in progress, try again");
       const entry = entries.get(host);
       if (entry === undefined) return;
       const sockets = wsConnectionsByHost.get(host);
