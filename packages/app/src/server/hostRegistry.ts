@@ -95,11 +95,17 @@ export async function buildHostRegistry(
   const adding = new Set<string>();
   const wsConnectionsByHost = new Map<string, Set<WsConn>>();
 
-  const buildEntry = async (host: string): Promise<HostHandle> => {
-    const drvPath = await opts.resolveDrvPath(host);
+  const buildEntry = (host: string): HostHandle => {
     const session = getHostSession<typeof surface.contract>({
       host,
-      drvPath,
+      // Resolve the agent .drv lazily, inside the session's spawn cycle,
+      // rather than awaiting the arch probe here. A host that's
+      // unreachable at probe time makes the resolver reject, which the
+      // session treats as an ordinary connection failure (disconnected →
+      // backoff → failed, re-armable via Reconnect) — so it can't throw
+      // out of here before the session exists. That's what keeps one
+      // unreachable initial host from crashing the whole server at boot.
+      resolveDrvPath: () => opts.resolveDrvPath(host),
       binary: "drishti-agent",
       connectTimeoutMs: CONNECT_TIMEOUT_MS,
     });
@@ -109,19 +115,15 @@ export async function buildHostRegistry(
     return { session, handler };
   };
 
-  // Parallel initial seeding — per-host arch probes are independent, so
-  // a single user dialing into five hosts shouldn't pay the round-trip
-  // serially. `Promise.all` propagates the first failure (Bun's default);
-  // a failing probe at boot is a misconfiguration we want loud and early.
-  const seeded = await Promise.all(
-    opts.initialHosts.map(
-      async (host): Promise<readonly [string, HostHandle]> => [
-        host,
-        await buildEntry(host),
-      ],
-    ),
-  );
-  for (const [host, handle] of seeded) entries.set(host, handle);
+  // Seed every configured host synchronously. `buildEntry` no longer
+  // awaits anything — the per-host arch probe it used to run up front now
+  // lives inside the session's spawn cycle — so seeding can't reject, and
+  // a host that's unreachable at boot surfaces as a per-host `failed`
+  // connection state instead of taking the whole registry (and with it
+  // the parent's HTTP port, never bound until this resolves) down. The
+  // old code awaited `Promise.all`, whose first rejection propagated to
+  // `main()`'s top-level catch and exited the process before `serve()`.
+  for (const host of opts.initialHosts) entries.set(host, buildEntry(host));
 
   return {
     has: (host) => entries.has(host) || adding.has(host),
@@ -137,8 +139,11 @@ export async function buildHostRegistry(
         throw new Error("host already exists");
       }
       adding.add(host);
-      const handle = await buildEntry(host).finally(() => adding.delete(host));
-      entries.set(host, handle);
+      try {
+        entries.set(host, buildEntry(host));
+      } finally {
+        adding.delete(host);
+      }
       await saveHosts(opts.hostsFile, [...entries.keys()]);
       opts.log(`added host: ${host} (total ${entries.size})`);
     },
