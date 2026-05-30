@@ -27,9 +27,10 @@ const ProcessSchema = z.object({
    *  view can derive `rssBytes / system.memTotal` at the call site. */
   rssBytes: z.number(),
   command: z.string(),
-  /** Current working directory. Empty string when unknown — kernel
-   *  threads have no cwd, other-user pids hit EACCES on `/proc/<pid>/cwd`,
-   *  and darwin has no cheap per-pid cwd source so it's blank there. */
+  /** Current working directory. From `/proc/<pid>/cwd` on linux and a single
+   *  batched `lsof -d cwd` on darwin. Empty string when unknown — kernel
+   *  threads have no cwd, and other-user pids without root can't be resolved
+   *  (EACCES on `/proc/<pid>/cwd` on linux; no `lsof` cwd line on darwin). */
   cwd: z.string(),
   /** Parent process id — `/proc/<pid>/stat` field 4 on linux, `ps -o
    *  ppid=` on darwin. 0 for pid 1 / the rare orphan whose parent has

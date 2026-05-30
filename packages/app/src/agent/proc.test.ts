@@ -3,6 +3,7 @@ import {
   computeNetThroughput,
   diskBytesFromStatfs,
   type NetCounters,
+  parseLsofCwd,
   parseMeminfo,
   parseNetstatIb,
   parseProcNetDev,
@@ -68,34 +69,31 @@ describe("parsePsLine", () => {
   // `ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=` — rss is in KB
   // on macOS, comm is last/greedy (may contain spaces), and ppid/nice/state
   // sit between rss and comm.
-  it("parses rss (KB) into absolute resident bytes and the new ppid/nice/state fields", () => {
-    const parsed = parsePsLine("  501 alice 12.5 348160 1 0 S /usr/bin/foo");
-    expect(parsed).not.toBeNull();
-    const [pid, proc] = parsed!;
-    expect(pid).toBe(501);
-    expect(proc.user).toBe("alice");
-    expect(proc.cpuPct).toBe(12.5);
+  // parsePsLine returns a DarwinProcRaw — the fields a ps line carries. cwd
+  // (lsof), threads, and startedAtMs are not on the raw; they're filled at the
+  // Process-construction site in darwinReader.readProcesses.
+  it("parses rss (KB) into absolute resident bytes and the ppid/nice/state fields", () => {
+    const raw = parsePsLine("  501 alice 12.5 348160 1 0 S /usr/bin/foo");
+    expect(raw).not.toBeNull();
+    expect(raw!.pid).toBe(501);
+    expect(raw!.user).toBe("alice");
+    expect(raw!.cpuPct).toBe(12.5);
     // 348160 KB × 1024 = absolute bytes (≈ 356 MB).
-    expect(proc.rssBytes).toBe(348160 * 1024);
-    expect(proc.command).toBe("/usr/bin/foo");
-    expect(proc.cwd).toBe("");
-    expect(proc.ppid).toBe(1);
-    expect(proc.nice).toBe(0);
-    expect(proc.state).toBe("S");
-    // darwin's ps carries neither cheaply — both report unknown (null,
-    // distinct from a real 0/count at the type level).
-    expect(proc.threads).toBeNull();
-    expect(proc.startedAtMs).toBeNull();
+    expect(raw!.rssBytes).toBe(348160 * 1024);
+    expect(raw!.command).toBe("/usr/bin/foo");
+    expect(raw!.ppid).toBe(1);
+    expect(raw!.nice).toBe(0);
+    expect(raw!.state).toBe("S");
   });
 
   it("keeps a command with embedded spaces intact (comm is the trailing field)", () => {
-    const [, proc] = parsePsLine("99 root 0.0 2048 1 -5 Ss com.apple.Some Helper")!;
-    expect(proc.command).toBe("com.apple.Some Helper");
-    expect(proc.rssBytes).toBe(2048 * 1024);
+    const raw = parsePsLine("99 root 0.0 2048 1 -5 Ss com.apple.Some Helper")!;
+    expect(raw.command).toBe("com.apple.Some Helper");
+    expect(raw.rssBytes).toBe(2048 * 1024);
     // negative nice survives; the multi-char state token collapses to its
     // leading code (`Ss` → `S`) for parity with linux's single-char state.
-    expect(proc.nice).toBe(-5);
-    expect(proc.state).toBe("S");
+    expect(raw.nice).toBe(-5);
+    expect(raw.state).toBe("S");
   });
 
   it("returns null for blank or malformed lines", () => {
@@ -105,6 +103,47 @@ describe("parsePsLine", () => {
     // The pre-extension 5-column shape no longer matches (missing
     // ppid/nice/state before comm).
     expect(parsePsLine("501 alice 12.5 348160 /usr/bin/foo")).toBeNull();
+  });
+});
+
+describe("parseLsofCwd", () => {
+  // `lsof -nP -d cwd -Fpn` field output: one `p<pid>` line per process, then
+  // an `n<path>` line for the cwd descriptor. lsof prepends an `f cwd` marker
+  // for the fd in real output — the parser must ignore it.
+  const sample = [
+    "p501",
+    "fcwd",
+    "n/Users/alice/code/drishti",
+    "p502",
+    "fcwd",
+    "n/tmp",
+    "",
+  ].join("\n");
+
+  it("maps each pid to the cwd path on its following n line", () => {
+    const m = parseLsofCwd(sample);
+    expect(m.get(501)).toBe("/Users/alice/code/drishti");
+    expect(m.get(502)).toBe("/tmp");
+    expect([...m.keys()].sort()).toEqual([501, 502]);
+  });
+
+  it("omits pids whose cwd lsof could not resolve (no n line)", () => {
+    // pid 777 is denied (other user, no root) — lsof emits the p line but no
+    // n line, so it stays absent and the reader falls back to "" via `?? ""`.
+    const denied = ["p777", "p778", "fcwd", "n/var/run", ""].join("\n");
+    const m = parseLsofCwd(denied);
+    expect(m.has(777)).toBe(false);
+    expect(m.get(778)).toBe("/var/run");
+  });
+
+  it("truncates an over-long cwd to PROC_STRING_MAX (parity with linux)", () => {
+    const long = "/" + "a".repeat(300);
+    const m = parseLsofCwd(["p1", `n${long}`, ""].join("\n"));
+    expect(m.get(1)!.length).toBe(200);
+  });
+
+  it("returns an empty map for blank output (lsof absent or failed)", () => {
+    expect(parseLsofCwd("").size).toBe(0);
   });
 });
 
