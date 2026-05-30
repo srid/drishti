@@ -86,12 +86,14 @@ export async function buildHostRegistry(
   opts: HostRegistryOptions,
 ): Promise<HostRegistry> {
   const entries = new Map<string, HostHandle>();
-  // In-flight `add()` calls. With async arch-probing, two concurrent
-  // adds for the same host both pass the `entries.has` guard and the
-  // second `entries.set` orphans the first session. Tracking the
-  // in-flight set separately (instead of a null sentinel inside the
-  // entries map) keeps `remove`/`getHandler`/`snapshot` from having to
-  // know that a "host exists" can mean "session being spawned".
+  // Hosts whose `add()` has created a session but not yet persisted. The
+  // window is now narrow — `buildEntry` is synchronous, so the only await
+  // inside `add()` is the `saveHosts` write that follows `entries.set` —
+  // but during it the host is live (a session is spawning) yet not on
+  // disk. Tracking the in-flight set separately (instead of a null
+  // sentinel inside the entries map) lets `has` count the host as present
+  // and `remove` reject it as "add in progress" without `getHandler` /
+  // `snapshot` having to learn that an entry can be mid-persist.
   const adding = new Set<string>();
   const wsConnectionsByHost = new Map<string, Set<WsConn>>();
 
