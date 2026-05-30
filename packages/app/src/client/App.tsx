@@ -1115,14 +1115,25 @@ function ProcessRow(props: {
           : "hover:bg-gray-50 dark:hover:bg-gray-800/40"
       }`}
     >
-      <td class="px-3 py-0.5 text-right tabular-nums">{props.pid}</td>
-      <td class="px-3 py-0.5 text-left">{proc()?.user ?? ""}</td>
+      {/* The four leading columns shrink to their content via `w-px` +
+          `whitespace-nowrap`: `w-px` makes each column's preferred width
+          tiny so the auto-layout table collapses it to its (nowrap) content
+          width, leaving COMMAND's `w-full` as the sole absorber of the row's
+          slack. Without this, COMMAND's `max-w-0` caps its growth and the
+          leftover width inflates USER instead; and an un-nowrapped MEM cell
+          wraps "817.5 MB" onto two lines in the narrowed column. */}
+      <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums">
+        {props.pid}
+      </td>
+      <td class="w-px whitespace-nowrap px-3 py-0.5 text-left">
+        {proc()?.user ?? ""}
+      </td>
       <td
-        class={`px-3 py-0.5 text-right tabular-nums ${processPctColor(cpu())}`}
+        class={`w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums ${processPctColor(cpu())}`}
       >
         {cpu().toFixed(1)}
       </td>
-      <td class="px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
+      <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
         {formatBytes(rssBytes())}
       </td>
       {/* COMMAND absorbs the row's residual width and ellipsizes at the cell
