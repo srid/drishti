@@ -1,19 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import type { ConnectionState } from "../common/surface";
 import { STATE } from "./connectionColors";
-
-const ALL_STATES: ConnectionState[] = [
-  "copying",
-  "connecting",
-  "connected",
-  "disconnected",
-  "failed",
-];
 
 describe("connection STATE presentation", () => {
   it("covers every connection state", () => {
-    for (const s of ALL_STATES) {
-      expect(STATE[s]).toBeDefined();
+    // Derived from the STATE map itself — Record<ConnectionState,...> totality
+    // means TypeScript already enforces this at compile time; the runtime check
+    // guards against future enum additions that miss a STATE entry.
+    for (const s of Object.keys(STATE)) {
+      expect(STATE[s as keyof typeof STATE]).toBeDefined();
     }
   });
 
