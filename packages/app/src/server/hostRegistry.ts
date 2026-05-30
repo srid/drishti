@@ -3,7 +3,7 @@
  * "which hosts this parent server knows about". Owns:
  *
  *   - One `HostSession` per host (via the kolu pool, keyed by
- *     `(host, drvPath, binary)`).
+ *     `(host, binary)`).
  *   - One `RPCHandler` per host (built from `buildRouter({session})`).
  *   - The set of open browser WebSockets per host (for eviction on
  *     remove — partysocket auto-reconnects, so we close on the server
@@ -63,9 +63,9 @@ export interface HostRegistry {
   remove(host: string): Promise<void>;
   /** Re-arm a host whose session gave up (`connection === "failed"`).
    *  Resets the session's failure gate and respawns; the bridge picks up
-   *  the fresh client. No-op if the host isn't registered (or its add is
-   *  still in flight) — the session, not the host set, is what changes,
-   *  so callers don't await it and no persistence happens. */
+   *  the fresh client. No-op if the host isn't registered — the session,
+   *  not the host set, is what changes, so callers don't await it and no
+   *  persistence happens. */
   reconnect(host: string): void;
   registerConnection(host: string, ws: WsConn): void;
   unregisterConnection(host: string, ws: WsConn): void;
@@ -86,15 +86,6 @@ export async function buildHostRegistry(
   opts: HostRegistryOptions,
 ): Promise<HostRegistry> {
   const entries = new Map<string, HostHandle>();
-  // Hosts whose `add()` has created a session but not yet persisted. The
-  // window is now narrow — `buildEntry` is synchronous, so the only await
-  // inside `add()` is the `saveHosts` write that follows `entries.set` —
-  // but during it the host is live (a session is spawning) yet not on
-  // disk. Tracking the in-flight set separately (instead of a null
-  // sentinel inside the entries map) lets `has` count the host as present
-  // and `remove` reject it as "add in progress" without `getHandler` /
-  // `snapshot` having to learn that an entry can be mid-persist.
-  const adding = new Set<string>();
   const wsConnectionsByHost = new Map<string, Set<WsConn>>();
 
   const buildEntry = (host: string): HostHandle => {
@@ -128,7 +119,7 @@ export async function buildHostRegistry(
   for (const host of opts.initialHosts) entries.set(host, buildEntry(host));
 
   return {
-    has: (host) => entries.has(host) || adding.has(host),
+    has: (host) => entries.has(host),
     snapshot: () => {
       const out = new Map<string, HostEntry>();
       for (const host of entries.keys()) out.set(host, { host });
@@ -137,25 +128,15 @@ export async function buildHostRegistry(
     getHandler: (host) => entries.get(host)?.handler,
 
     async add(host) {
-      if (entries.has(host) || adding.has(host)) {
+      if (entries.has(host)) {
         throw new Error("host already exists");
       }
-      adding.add(host);
-      try {
-        entries.set(host, buildEntry(host));
-      } finally {
-        adding.delete(host);
-      }
+      entries.set(host, buildEntry(host));
       await saveHosts(opts.hostsFile, [...entries.keys()]);
       opts.log(`added host: ${host} (total ${entries.size})`);
     },
 
     async remove(host) {
-      // If add() is in-flight for this host, remove() would be a no-op
-      // (entry not yet in `entries`) — but add() would complete after,
-      // leaving a live session that the user already removed. Throw
-      // instead so the caller can surface a "try again" error.
-      if (adding.has(host)) throw new Error("host add in progress, try again");
       const entry = entries.get(host);
       if (entry === undefined) return;
       const sockets = wsConnectionsByHost.get(host);
