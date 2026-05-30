@@ -153,7 +153,11 @@ const ConnectionSchema = z.object({
   /** Tail of the parent's link-lifecycle progress log (nix-copy output,
    *  ssh spawn, "reconnecting… (attempt N/5)"). Lets the overlay show
    *  live retry progress without the browser parsing it for control
-   *  flow — it's display text, never a branch condition. */
+   *  flow — it's display text, never a branch condition. Deliberately
+   *  uncapped: the parent already trims the ring to a kolu-private bound,
+   *  and re-asserting that constant here would couple this contract to a
+   *  value drishti doesn't own — and reject valid frames if kolu ever
+   *  raised it. The UI reads only the last line, so the length is moot. */
   progressLines: z.array(z.string()),
 });
 
