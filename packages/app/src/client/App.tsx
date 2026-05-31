@@ -825,6 +825,11 @@ function HostView(props: { host: string }) {
               process={s().proc}
               memTotal={currentSystem().memTotal}
               onClose={() => setSelectedPid(null)}
+              onSelectParent={
+                processes[s().proc.ppid] !== undefined
+                  ? () => setSelectedPid(s().proc.ppid)
+                  : null
+              }
             />
           )}
         </Show>
@@ -1229,6 +1234,16 @@ function ProcessDetail(props: {
   process: Process;
   memTotal: number;
   onClose: () => void;
+  // Non-null when the parent process is still in the live set. Clicking the
+  // ppid calls this to re-point the selection to the parent (highlighting its
+  // row and swapping the panel). Null when the parent has left the set, or for
+  // pid 1 / orphans (ppid 0) — the ppid renders as plain text in that case.
+  //
+  // Wired to an *unconditional* setSelectedPid, NOT the `toggle` that
+  // `ProcessRow` uses — navigating to a parent must always re-point, never
+  // close. It's a prop (not SelectionContext) because `ProcessDetail` is a
+  // sibling of the table, rendered before the context provider in the tree.
+  onSelectParent: (() => void) | null;
 }) {
   const p = () => props.process;
   // Resident memory as a share of host RAM — the same guarded "part of a
@@ -1279,7 +1294,21 @@ function ProcessDetail(props: {
         </DetailRow>
         <DetailRow label="state">{stateLabel()}</DetailRow>
         <DetailRow label="parent">
-          <span class="tabular-nums">{p().ppid}</span>
+          <Show
+            when={props.onSelectParent}
+            fallback={<span class="tabular-nums">{p().ppid}</span>}
+          >
+            {(onSelect) => (
+              <button
+                type="button"
+                onClick={onSelect()}
+                class="cursor-pointer tabular-nums text-emerald-700 hover:underline dark:text-emerald-400"
+                title="Select parent process"
+              >
+                {p().ppid}
+              </button>
+            )}
+          </Show>
         </DetailRow>
         <DetailRow label="nice">
           <span class="tabular-nums">{p().nice}</span>
