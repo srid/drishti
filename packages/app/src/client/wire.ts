@@ -11,8 +11,7 @@
  * from the admin collection so the cache doesn't leak.
  */
 
-import type { ClientRetryPluginContext } from "@orpc/client/plugins";
-import type { ContractRouterClient } from "@orpc/contract";
+import { websocketLink } from "@kolu/surface/links/websocket";
 import { surfaceClient } from "@kolu/surface/solid";
 import { WebSocket as PartySocket } from "partysocket";
 import { ADMIN_HOST_SENTINEL, adminSurface } from "../common/admin-surface";
@@ -41,19 +40,19 @@ type AdminClient = ReturnType<typeof buildAdminSurface>;
 
 function buildHostSurface(host: string) {
   const ws = makeSocket(host);
-  const client = surfaceClient<
-    typeof surface.spec,
-    ContractRouterClient<typeof surface.contract, ClientRetryPluginContext>
-  >(surface, { websocket: ws as unknown as WebSocket });
+  const client = surfaceClient(
+    surface,
+    websocketLink<typeof surface.contract>(ws as unknown as WebSocket),
+  );
   return { ws, client };
 }
 
 function buildAdminSurface() {
   const ws = makeSocket(ADMIN_HOST_SENTINEL);
-  const client = surfaceClient<
-    typeof adminSurface.spec,
-    ContractRouterClient<typeof adminSurface.contract, ClientRetryPluginContext>
-  >(adminSurface, { websocket: ws as unknown as WebSocket });
+  const client = surfaceClient(
+    adminSurface,
+    websocketLink<typeof adminSurface.contract>(ws as unknown as WebSocket),
+  );
   return { ws, client };
 }
 
