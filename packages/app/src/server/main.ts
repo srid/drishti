@@ -100,7 +100,6 @@ async function main(): Promise<void> {
     initialHosts,
     resolveDrvPath,
     hostsFile,
-    log,
   });
 
   const admin = buildAdminRouter({ registry });
