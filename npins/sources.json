@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "master",
+      "branch": "fix-reconnect-busy-spin",
       "submodules": false,
-      "revision": "82d3a0f9c35d5ac27231d4d174fe0a234c4d53f2",
-      "url": "https://github.com/juspay/kolu/archive/82d3a0f9c35d5ac27231d4d174fe0a234c4d53f2.tar.gz",
-      "hash": "sha256-o9rTR7wLXvDJIGD/9DhAxmSVIn7dDU3I5zk2bWHyK1A="
+      "revision": "5516571b686f25ea3a110546829729149071cd74",
+      "url": "https://github.com/juspay/kolu/archive/5516571b686f25ea3a110546829729149071cd74.tar.gz",
+      "hash": "sha256-Vtwkp/v6VScR0YnRZSueEca4ORQXO9utNNAQWvRQ0pE="
     },
     "nixpkgs": {
       "type": "Git",
