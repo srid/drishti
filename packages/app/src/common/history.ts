@@ -15,7 +15,7 @@
  * zero-config posture); restarting the parent starts fresh.
  */
 
-import type { MetricSample, SystemInfo } from "./surface";
+import type { MetricSample, SystemInfo } from "drishti-common";
 import { averageCoreUsage, diskPct, memPct } from "./metrics";
 
 /** The series the chart draws. */

@@ -44,7 +44,7 @@ import {
   type Pid,
   type Process,
   type SystemInfo,
-} from "../common/surface";
+} from "drishti-common";
 import { STATE, withElapsed } from "./connectionColors";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";

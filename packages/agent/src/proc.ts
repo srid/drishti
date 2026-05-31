@@ -34,7 +34,7 @@ import type {
   Pid,
   Process,
   SystemInfo,
-} from "../common/surface";
+} from "drishti-common";
 
 const exec = promisify(execCb);
 

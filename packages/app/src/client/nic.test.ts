@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { NetInterface } from "../common/surface";
+import type { NetInterface } from "drishti-common";
 import { isActiveNic } from "./nic";
 
 describe("isActiveNic", () => {

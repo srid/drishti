@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { MetricSample, SystemInfo } from "./surface";
+import type { MetricSample, SystemInfo } from "drishti-common";
 import {
   captureSample,
   HISTORY_RETENTION_MS,

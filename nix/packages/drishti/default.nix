@@ -25,6 +25,14 @@ let
       ../../../tsconfig.base.json
       ../../../bun.nix
       ../../../packages/app
+      # packages/app now imports the wire contract from `drishti-common`, and
+      # `bun install` resolves the whole workspace — so every member must be
+      # present for the install to succeed. Including packages/agent here too
+      # keeps the monitor's workspace complete (the monitor rebuilds on any
+      # edit regardless, so the agent source riding along costs nothing); the
+      # AGENT's drv stays scoped via its own derivation, which excludes app.
+      ../../../packages/common
+      ../../../packages/agent
       # @kolu/* hydration script — invoked from postBunNodeModulesInstallPhase
       # below. Source path must be inside the fileset for the build to see it.
       ../../../scripts
@@ -94,7 +102,6 @@ stdenv.mkDerivation {
     # paths. Fail the build (not runtime) if either moves.
     for entry in \
       "$out/lib/drishti/packages/app/src/server/main.ts" \
-      "$out/lib/drishti/packages/app/src/agent/main.ts" \
       "$out/lib/drishti/packages/app/dist/index.html"
     do
       test -e "$entry" || {

@@ -1,0 +1,10 @@
+{
+  // Per-package `tsc --noEmit` anchor — intentionally identical to
+  // packages/{app,common}/tsconfig.json. Shared options live in
+  // ../../tsconfig.base.json; each member only points tsc at its own src.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}

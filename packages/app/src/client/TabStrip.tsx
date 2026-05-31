@@ -14,7 +14,7 @@
  */
 
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { type ConnectionState, DEFAULT_CONNECTION } from "../common/surface";
+import { type ConnectionState, DEFAULT_CONNECTION } from "drishti-common";
 import type { View } from "./view";
 import { STATE } from "./connectionColors";
 import { otherTheme, type Theme } from "./theme";

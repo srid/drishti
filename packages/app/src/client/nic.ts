@@ -5,7 +5,7 @@
  * of Solid/DOM so it stays unit testable in isolation.
  */
 
-import type { NetInterface } from "../common/surface";
+import type { NetInterface } from "drishti-common";
 
 /** A NIC counts as "active" only when it moved bytes in the last poll window
  *  — cumulative lifetime totals don't matter. Idle interfaces (both rates 0)

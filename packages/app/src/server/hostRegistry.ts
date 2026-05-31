@@ -26,7 +26,7 @@ import {
 } from "@kolu/surface-nix-host";
 import type { WebSocket as WsConn } from "ws";
 import type { HostEntry } from "../common/admin-surface";
-import type { surface } from "../common/surface";
+import type { surface } from "drishti-common";
 import { saveHosts } from "./hostsStore";
 import { makeLogger } from "./log";
 import { buildRouter } from "./router";

@@ -3,11 +3,16 @@
 # The dev shell consumes `kolu-surface` + `kolu-surface-nix-host` (via
 # `nix/env.nix`); the wrappers below feed `nix run` / `nix build`.
 #
-# Three user-facing derivations, all backed by the same `drishtiBuilt`:
+# User-facing derivations. The monitor + client are backed by `drishtiBuilt`
+# (the full app tree + client bundle); the agent is backed by its own minimal
+# `drishtiAgentBuilt` so client/server edits don't churn its `.drv` (issue #38).
 #
 #   drishti-agent  — the remote-side binary. `nix copy --derivation` ships
 #                     this .drv to the SSH target host, which realises it
-#                     locally. Wraps bun → packages/app/src/agent/main.ts.
+#                     locally. Wraps bun → packages/agent/src/main.ts, built by
+#                     `drishtiAgentBuilt` (NOT the full `drishtiBuilt` tree — see
+#                     nix/packages/drishti-agent/default.nix for why scoping the
+#                     agent's inputs is the fix for the reconnect re-provision).
 #
 #   drishti-client — the static client bundle ($out is the dist dir).
 #                     The monitor wrapper bakes DRISHTI_DIST_DIR to this.
@@ -45,6 +50,14 @@ let
     then resolvedPkgs.callPackage ./nix/packages/drishti { bun2nix = b2n; }
     else throw "drishti build derivation needs `b2n` (lib.mkBun2nix output) — invoke via flake.nix";
 
+  # The agent's own minimal build tree. Scoped to packages/agent + the wire
+  # contract so its `.drv` is invariant to client/server edits — the keystone
+  # of issue #38. See nix/packages/drishti-agent/default.nix.
+  drishtiAgentBuilt =
+    if b2n != null
+    then resolvedPkgs.callPackage ./nix/packages/drishti-agent { bun2nix = b2n; }
+    else throw "drishti agent build derivation needs `b2n` (lib.mkBun2nix output) — invoke via flake.nix";
+
   drishti-agent = resolvedPkgs.runCommand "drishti-agent"
     {
       nativeBuildInputs = [ resolvedPkgs.makeWrapper ];
@@ -52,7 +65,7 @@ let
     } ''
     mkdir -p $out/bin
     makeWrapper ${resolvedPkgs.bun}/bin/bun $out/bin/drishti-agent \
-      --add-flags "${drishtiBuilt}/lib/drishti/packages/app/src/agent/main.ts"
+      --add-flags "${drishtiAgentBuilt}/lib/drishti/packages/agent/src/main.ts"
   '';
 
   drishti-client = resolvedPkgs.runCommand "drishti-client"
@@ -87,6 +100,6 @@ let
       '';
 in
 {
-  inherit drishti drishti-agent drishti-client drishtiBuilt;
+  inherit drishti drishti-agent drishti-client drishtiBuilt drishtiAgentBuilt;
   inherit (resolvedPkgs) kolu-surface kolu-surface-nix-host;
 }
