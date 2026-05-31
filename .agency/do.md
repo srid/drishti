@@ -10,10 +10,11 @@ just fmt
 bun test
 
 ## CI command
-nix run github:juspay/justci -- run
+Use the `/ci` skill.
 
 <!-- Host routing comes from `~/.config/justci/hosts.json`
-(x86_64-linux → vanjaram, aarch64-darwin → rasam); no `--host` override. -->
+(aarch64-darwin → rasam). For the x86_64-linux lane, provision a fresh Linux
+box with `pu create <NAME>` and route the platform to it. -->
 
 
 ## Documentation
