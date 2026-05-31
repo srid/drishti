@@ -1,8 +1,9 @@
 # The reconnect that wedged, then spun: a debugging story
 
-*How a "3 hosts won't connect" bug report turned into two upstream fixes, one
-near-miss whole-server outage, a thenable-proxy footgun, and a side-quest into
-a physically degraded CPU — and what each dead-end taught us.*
+*How a "3 hosts won't connect" bug report turned into three upstream fixes, one
+near-miss whole-server outage, a thenable-proxy footgun, a side-quest into a
+physically degraded CPU, and a sequel when a host finally died for real — and
+what each dead-end taught us.*
 
 ---
 
@@ -268,10 +269,74 @@ flushed into the open by the very fix for that hang, and finally pinned by
 refusing to trust anything we hadn't reproduced. Three PRs later, a dropped
 host just… reconnects.
 
+## Epilogue: the same disease, one layer up
+
+That closing line held — for *transient* drops. Then a host went genuinely
+dead, and a card froze on *"Copying agent to remote…"* This time for hours,
+not seconds.
+
+The logs, now a feature, made triage quick. `vanjaram` answered ICMP at a
+steady 218 ms but refused every new TCP/22 connection. The copy had finished;
+what hung was the next step — the remote *realise*:
+
+```
+15:59:51  realising '…-drishti-agent.drv' on remote…   ← last line, then an hour of silence
+```
+
+One `ssh … nix-store --realise` sat parked on a half-open socket — 0.03s of CPU
+across eleven minutes. The connect cell never left `copying`, and — the tell —
+nothing reaped it. The 30-second watchdog from the original saga guards the
+*handshake*, which happens *after* the agent spawns. This hang was *before* the
+spawn, in provisioning: a different code path, no watchdog, the same shape.
+
+And the shape was Lesson #1, verbatim — **a dead link hung instead of failing
+fast.** We'd fixed exactly this for the stdio RPC link (kolu #1060). But the
+*provisioning* ssh — the `nix copy` and `nix-store --realise` that ship and
+build the agent on the far end — was wrapped in a bare `ssh -o BatchMode=yes`,
+with a comment explaining that probes are "one-shot" and *deliberately* omit
+the keepalive the long-lived session gets. That comment was the bug. A
+`nix-store --realise` over ssh isn't a quick probe; it's a remote *build*, idle
+for minutes while the far end compiles. A one-shot command blocks on a dead
+peer just as hard as a long-lived one — it just took a genuinely dead host to
+prove it.
+
+[kolu #1071](https://github.com/juspay/kolu/pull/1071) folds the ssh policy
+into a single source of truth and gives *every* ssh the same dead-peer
+detection — `ServerAliveInterval=10 ServerAliveCountMax=3 ConnectTimeout=10` —
+including, via `NIX_SSHOPTS`, the ssh that `nix copy` forks out of our argv's
+reach. A dead peer now trips in ~30s and exits non-zero; the reconnect loop
+retries instead of wedging. Crucially it does *not* cap a healthy-but-slow
+build: answered keepalives ride the protocol layer independent of channel data,
+so a quiet ten-minute compile stays alive — only an *unresponsive* peer trips
+the limit.
+
+The verdict, again in production: after the bump
+([drishti #39](https://github.com/srid/drishti/pull/39)), `vanjaram` stopped
+wedging and settled into a clean ~30s fail-fast-and-retry cadence — server
+flat, every other host unaffected — poised to reconnect the instant its sshd
+returns. Which it didn't, on its own: `vanjaram` was simply dead (Lesson #7,
+right on cue — *ICMP-up, TCP-down* is a host fault, not our diff). The fix
+didn't revive it. It made one dead host a non-event instead of a frozen card
+and an hour of confusion.
+
+Two things to carry forward:
+
+- **Fast-fail is a property of every layer, not just the one that bit you.** We
+  hardened the RPC link and called the hang class closed. It wasn't — the
+  identical gap sat in the sibling provisioning path, invisible until a
+  *different* failure walked into it. When you fix "X must time out," go grep
+  for every other X.
+- The deeper cost — each drishti rebuild changes the agent `.drv`, so the first
+  reconnect to every host pays a full cross-arch rebuild-and-copy — is its own
+  problem, tracked in [drishti #38](https://github.com/srid/drishti/issues/38).
+  kolu #1071 stops the *hang*; it doesn't shorten the *window*.
+
 ---
 
 *Fixes: [kolu #1060](https://github.com/juspay/kolu/pull/1060) (fail-fast stdio
 link) · [kolu #1064](https://github.com/juspay/kolu/pull/1064) (cursor /
-busy-spin) · [drishti #34](https://github.com/srid/drishti/pull/34) (enriched
-logging) · [drishti #35](https://github.com/srid/drishti/pull/35) (the bump
-that proved it).*
+busy-spin) · [kolu #1071](https://github.com/juspay/kolu/pull/1071) (keepalive
+on the provisioning ssh) · [drishti #34](https://github.com/srid/drishti/pull/34)
+(enriched logging) · [drishti #35](https://github.com/srid/drishti/pull/35) (the
+bump that proved it) · [drishti #39](https://github.com/srid/drishti/pull/39)
+(the bump that closed the sequel).*
