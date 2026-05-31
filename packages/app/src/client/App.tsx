@@ -825,6 +825,8 @@ function HostView(props: { host: string }) {
               process={s().proc}
               memTotal={currentSystem().memTotal}
               onClose={() => setSelectedPid(null)}
+              parentPresent={processes[s().proc.ppid] !== undefined}
+              onSelectPid={setSelectedPid}
             />
           )}
         </Show>
@@ -1229,6 +1231,13 @@ function ProcessDetail(props: {
   process: Process;
   memTotal: number;
   onClose: () => void;
+  // Selecting the parent re-points the same selection signal that drives this
+  // panel, so clicking the linked ppid swaps the panel to the parent and
+  // highlights its row. `parentPresent` is false when the parent has left the
+  // live set (or for pid 1 / orphans whose ppid is 0) — then the ppid renders
+  // as plain text, since selecting an absent pid would just close the panel.
+  parentPresent: boolean;
+  onSelectPid: (pid: Pid) => void;
 }) {
   const p = () => props.process;
   // Resident memory as a share of host RAM — the same guarded "part of a
@@ -1279,7 +1288,19 @@ function ProcessDetail(props: {
         </DetailRow>
         <DetailRow label="state">{stateLabel()}</DetailRow>
         <DetailRow label="parent">
-          <span class="tabular-nums">{p().ppid}</span>
+          <Show
+            when={props.parentPresent}
+            fallback={<span class="tabular-nums">{p().ppid}</span>}
+          >
+            <button
+              type="button"
+              onClick={() => props.onSelectPid(p().ppid)}
+              class="cursor-pointer tabular-nums text-emerald-700 hover:underline dark:text-emerald-400"
+              title="Select parent process"
+            >
+              {p().ppid}
+            </button>
+          </Show>
         </DetailRow>
         <DetailRow label="nice">
           <span class="tabular-nums">{p().nice}</span>
