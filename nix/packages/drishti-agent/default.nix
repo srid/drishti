@@ -67,6 +67,13 @@ stdenv.mkDerivation {
   bunDeps = bun2nix.fetchBunDeps {
     bunNix =
       { copyPathToStore, fetchFromGitHub, fetchgit, fetchurl, ... }@bunNixArgs:
+      # Exclude-list of workspace-member FODs the agent does NOT depend on.
+      # MAINTENANCE INVARIANT: every non-agent `packages/*` member must appear
+      # here, or its source silently re-enters the cache and reintroduces the
+      # drv churn this build exists to prevent. Today that's just drishti-app
+      # (client + server); a future member the agent doesn't use must be added.
+      # `just drv-stability` guards the client-edit case but can't see a member
+      # that didn't exist when it was written.
       builtins.removeAttrs (import ../../../bun.nix bunNixArgs) [ "drishti-app" ];
   };
 
