@@ -9,9 +9,9 @@
       },
       "branch": "fix-reconnect-busy-spin",
       "submodules": false,
-      "revision": "5516571b686f25ea3a110546829729149071cd74",
-      "url": "https://github.com/juspay/kolu/archive/5516571b686f25ea3a110546829729149071cd74.tar.gz",
-      "hash": "sha256-Vtwkp/v6VScR0YnRZSueEca4ORQXO9utNNAQWvRQ0pE="
+      "revision": "0c762b8c99f3e7c656bc7bd8eaa7092eb26ff442",
+      "url": "https://github.com/juspay/kolu/archive/0c762b8c99f3e7c656bc7bd8eaa7092eb26ff442.tar.gz",
+      "hash": "sha256-O83tCnpJrZRIq3oXI+Xbef6bYH451UA2YaV6yn5a8xQ="
     },
     "nixpkgs": {
       "type": "Git",

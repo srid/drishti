@@ -30,9 +30,8 @@ import {
 import {
   type AgentClient,
   type HostSession,
+  makeClientCursor,
   mirrorRemoteCollection,
-  type NextClient,
-  waitForNextClient,
 } from "@kolu/surface-nix-host";
 import {
   type ConnectionInfo,
@@ -300,21 +299,16 @@ async function bridgeAgentToParent(
     /* logged via state cell; loop handles recovery */
   });
 
-  // Thread the *clientPromise* (not the awaited client) back in — the
-  // client proxy is thenable, so comparing it by identity makes
-  // waitForNextClient resolve every iteration and busy-spin once a link
-  // fails fast. See @kolu/surface-nix-host's waitForNextClient.
-  let lastClientPromise: Promise<DrishtiAgent> | null = null;
+  // A cursor over the session's spawn lifecycle — `next()` blocks until a
+  // genuinely new spawn appears and resolves with its live client (it owns
+  // the stable-clientPromise comparison that keeps the loop from busy-
+  // spinning once a dead link fails fast).
+  const cursor = makeClientCursor(session);
   let clientSeq = 0;
   while (!session.isDestroyed()) {
     let client: DrishtiAgent;
     try {
-      const next: NextClient<typeof surface.contract> = await waitForNextClient(
-        session,
-        lastClientPromise,
-      );
-      client = next.client;
-      lastClientPromise = next.clientPromise;
+      client = await cursor.next();
     } catch (err) {
       log(`bridge: waiting for next client failed: ${(err as Error).message}`);
       break;
