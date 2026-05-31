@@ -8,6 +8,13 @@ Browser (SolidJS) ↔ local parent server (Bun) ↔ remote agent over `ssh` stdi
 
 ▶ **[Watch drishti in action](https://x.com/sridca/status/2060333167463088637)** — a short screencast demoing the multi-host fleet view and live htop drill-down.
 
+Screenshots:
+
+<img width="1081" height="774" alt="image" src="https://github.com/user-attachments/assets/77c83113-7b13-4387-99b4-a4e60777d638" />
+
+<img width="1081" height="774" alt="image" src="https://github.com/user-attachments/assets/b5b11751-2bc8-4866-aa8c-16068124e2fe" />
+
+
 ## Why drishti
 
 - **Zero install on the remote.** The agent closure is shipped over SSH (`nix copy --derivation` then realise) on first connect and reused after. The remote needs only passwordless `ssh` + a `nix-daemon` that trusts your user — no agent binary to install, no inbound port, no config file to drop.
