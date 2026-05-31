@@ -194,6 +194,7 @@ export function buildRouter(opts: BuildRouterOptions) {
     fragment.ctx.cells.connection.set({
       state: s.connection,
       lastError: s.lastError,
+      failureCause: s.failureCause,
       progressLines: [...s.progressLines],
     });
   });

@@ -151,6 +151,13 @@ const ConnectionSchema = z.object({
    *  parent (`HostSession.lastError`). `null` while healthy. Free-form —
    *  the parent owns the vocabulary; the browser only renders it. */
   lastError: z.string().nullable(),
+  /** Why the link is down, mirroring `HostSession.failureCause` — a stable
+   *  discriminant the browser keys messaging off of (vs parsing the
+   *  free-form `lastError`). `"network"` = host unreachable, so the parent
+   *  retries forever; `"remote"` = the host rejected the closure, which
+   *  goes terminal (`failed`). `null` while `copying`/`connecting`/
+   *  `connected`. */
+  failureCause: z.enum(["network", "remote"]).nullable(),
   /** Tail of the parent's link-lifecycle progress log (nix-copy output,
    *  ssh spawn, "reconnecting… (attempt N/5)"). Lets the overlay show
    *  live retry progress without the browser parsing it for control
@@ -178,6 +185,7 @@ export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
 export const DEFAULT_CONNECTION: z.infer<typeof ConnectionSchema> = {
   state: "connecting",
   lastError: null,
+  failureCause: null,
   progressLines: [],
 };
 
@@ -291,6 +299,7 @@ export type NetInterface = SF["collections"]["networkInterfaces"]["Value"];
 export type SystemInfo = SF["cells"]["system"]["Value"];
 export type ConnectionInfo = SF["cells"]["connection"]["Value"];
 export type ConnectionState = ConnectionInfo["state"];
+export type FailureCause = NonNullable<ConnectionInfo["failureCause"]>;
 export type ProcessesSnapshotMsg = SF["streams"]["processesSnapshot"]["Output"];
 export type MetricSample = z.infer<typeof MetricSampleSchema>;
 export type MetricHistoryMsg = SF["streams"]["metricHistory"]["Output"];

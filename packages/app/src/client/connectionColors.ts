@@ -8,7 +8,7 @@
  * single row, not five edits.
  */
 
-import type { ConnectionState } from "drishti-common";
+import type { ConnectionState, FailureCause } from "drishti-common";
 
 type StatePresentation = {
   /** Status-dot background colour. */
@@ -31,6 +31,19 @@ type StatePresentation = {
  *  change), so the suffix is omitted. */
 export function withElapsed(message: string, elapsedSec: number): string {
   return elapsedSec >= 1 ? `${message} ${elapsedSec}s` : message;
+}
+
+/** Refine the `disconnected` status line by *why* the link is down. A
+ *  `"network"` fault means the host is unreachable and the parent retries
+ *  indefinitely — "Reconnecting…" undersells a host that's simply asleep
+ *  or out of network range, so name it. Any other cause (or none yet) keeps
+ *  the base message. Mirrors `withElapsed`: the static `STATE` map stays
+ *  cause-agnostic and the renderer interpolates, so no dynamic copy is
+ *  baked into the map. */
+export function disconnectedMessage(failureCause: FailureCause | null): string {
+  return failureCause === "network"
+    ? "Host unreachable — retrying…"
+    : STATE.disconnected.message;
 }
 
 export const STATE: Record<ConnectionState, StatePresentation> = {
