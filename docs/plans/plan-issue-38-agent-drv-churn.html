@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stop the agent drv churning on every rebuild — plan (#38)</title>
+<style>
+  :root {
+    --bg: #0b1220; --panel: #111a2b; --panel2: #0e1726; --border: #1e2a3f;
+    --fg: #e5e9f0; --muted: #8b97ad; --dim: #5d6b82;
+    --emerald: #10b981; --amber: #f59e0b; --red: #ef4444;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.6 var(--mono); padding: 32px 28px 80px; }
+  .wrap { max-width: 920px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: .3px; }
+  .sub1 { color: var(--muted); margin: 0 0 8px; font-size: 12.5px; }
+  h2 { font-size: 15px; margin: 34px 0 10px; color: var(--fg);
+       border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 13px; margin: 20px 0 8px; color: var(--muted); font-weight: 600; }
+  p { margin: 8px 0; color: var(--fg); }
+  .muted { color: var(--muted); } .dim { color: var(--dim); }
+  code { background: var(--panel2); padding: 1px 5px; border-radius: 4px;
+         border: 1px solid var(--border); font-size: 12.5px; }
+  .repo { display:inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 4px;
+          border: 1px solid var(--border); color: var(--muted); margin-right: 4px; }
+  .repo.kolu { border-color:#c792ea; color:#c792ea; } .repo.dr { border-color:var(--emerald); color:var(--emerald); }
+  pre { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+        padding: 14px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+  pre .kw { color: #c792ea; } pre .str { color: #c3e88d; } pre .typ { color: #82aaff; }
+  pre .com { color: var(--dim); } pre .del { color: #ff8a8a; } pre .add { color: #a3e88d; }
+  .callout { background: var(--panel); border: 1px solid var(--border);
+             border-left: 3px solid var(--amber); border-radius: 6px; padding: 12px 16px; margin: 14px 0; }
+  .callout.red { border-left-color: var(--red); } .callout.green { border-left-color: var(--emerald); }
+  .callout .lbl { font-weight: 600; }
+  ul { margin: 8px 0; padding-left: 22px; } li { margin: 5px 0; }
+  ol { margin: 8px 0; padding-left: 22px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 10px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--panel2); color: var(--muted); font-weight: 600; }
+  .yes { color: var(--emerald); } .no { color: var(--red); }
+  .tag { font-size: 10.5px; color: var(--dim); }
+  .step { color: var(--emerald); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Stop the agent drv churning on every rebuild</h1>
+<p class="sub1">
+  <a class="repo dr" style="text-decoration:none">drishti #38</a>
+  Every reconnect after a drishti rebuild re-copies + rebuilds the full agent closure on each
+  remote. Root cause: the agent <code>.drv</code> is fused to the whole app build. Fix: give the
+  agent its own workspace package so client/server edits stop rotating its hash.
+</p>
+
+<h2>1. Root cause — the agent drv is the whole app build</h2>
+<p>
+  <code>drishti-agent</code> (root <code>default.nix:48-56</code>) is just a <code>makeWrapper</code>
+  that bakes the <em>literal store path</em>
+  <code>${drishtiBuilt}/lib/drishti/packages/app/src/agent/main.ts</code> as bun’s launch arg. That
+  <code>${drishtiBuilt}</code> interpolation is a real closure edge — confirmed at the
+  <code>.drv</code> level: <code>nix-store --query --references</code> on
+  <code>drishti-agent.drv</code> lists <code>drishti-built-0.1.0.drv</code> (and <code>bun</code>)
+  as its direct build inputs. So the agent’s entire build + runtime closure <strong>is</strong>
+  <code>drishtiBuilt</code>.
+</p>
+<p>
+  And <code>drishtiBuilt</code> (<code>nix/packages/drishti/default.nix</code>) is a single
+  <code>stdenv.mkDerivation</code> whose <code>src</code> fileset is the whole app tree — all of
+  <code>packages/app</code> (client + server + common + agent, including every <code>*.test.ts</code>)
+  plus <code>package.json</code> / <code>bun.lock</code> / <code>bunfig.toml</code> /
+  <code>tsconfig.base.json</code> / <code>bun.nix</code> / <code>scripts</code> — and whose
+  <code>buildPhase</code> emits the client <code>dist</code> bundle. Any edit anywhere in that tree
+  rehashes <code>src</code> → new <code>drishtiBuilt.drv</code> → new <code>drishti-agent.drv</code>
+  → new <code>agentDrvBySystem</code> JSON (<code>flake.nix:43-47</code>). The monitor then hands
+  every remote a never-realised drv and the first reconnect pays a full cross-arch
+  <code>nix copy --derivation</code> + <code>nix-store --realise</code> (observed ~10&nbsp;min, 5
+  paths).
+</p>
+
+<div class="callout green">
+  <span class="lbl">Proven, not just argued.</span> Append a comment to
+  <code>packages/app/src/client/theme.ts</code> — a file the agent <em>never</em> imports —
+  and <code>nix eval .#drishti-agent.drvPath</code> flips
+  (<code>8xhfzhld…</code> → <code>9m01szcb…</code>); <code>git checkout</code> restores it
+  byte-for-byte. The agent’s <em>true</em> source closure is <strong>3 files</strong>:
+  <code>agent/main.ts</code>, <code>agent/proc.ts</code>, <code>common/surface.ts</code>
+  (<code>surface.ts</code> has no internal imports; <code>metrics.ts</code>/<code>history.ts</code>
+  are <em>not</em> in the agent graph). Everything else is accidental coupling.
+</div>
+
+<p>
+  This is a textbook volatility leak: the <strong>agent</strong> (must stay byte-stable on remotes,
+  changes rarely) is structurally fused to the <strong>client + server</strong> (churns on every
+  dev edit). The fix is a decomposition, not a tweak.
+</p>
+
+<h2>2. The trap — narrowing the fileset is <span class="no">not</span> enough</h2>
+<p>
+  The obvious move — “give the agent a scoped derivation with a 3-file <code>src</code> fileset” —
+  <strong>does not work</strong>, and was empirically falsified by every adversarial check. There is
+  a <em>second</em> churn edge hiding in the dep cache:
+</p>
+<pre><span class="com"># bun.nix:415</span>
+<span class="str">"drishti-app"</span> = copyPathToStore ./packages/app;</pre>
+<div class="callout red">
+  <span class="lbl">The load-bearing detail:</span> <code>bun2nix</code> bakes the <em>entire</em>
+  <code>packages/app</code> tree into a fixed-output derivation (<code>bun-pkg-drishti-app</code>)
+  inside the shared bun cache that <code>fetchBunDeps</code> returns. So even with a 3-file
+  <code>src</code>, a client edit still rotates that FOD → still churns the agent drv. Verified on a
+  committed tree with <code>--no-eval-cache</code>: a client-only <em>and</em> a server-only edit both
+  still moved the agent drvPath, with the sole differing input being
+  <code>bun-pkg-drishti-app</code>. Narrowing <code>src</code> is necessary but inert while this edge
+  is uncut.
+</div>
+<p class="muted">
+  (An early “nondeterminism” scare during analysis was a busy eval-cache SQLite artifact — a red
+  herring. The real defect is this bunDeps FOD. Always verify through the flake, on a committed tree,
+  with <code>--no-eval-cache</code>.)
+</p>
+
+<h2>3. The fix — make the agent its own workspace package</h2>
+<p>
+  The workspace glob is <code>packages/*</code> with exactly one member today
+  (<code>packages/app</code>). Add members so the agent’s <code>copyPathToStore</code> is
+  <em>naturally</em> agent-only — then bun2nix emits a second local FOD whose source doesn’t move
+  when client/server files change.
+</p>
+<table>
+  <tr><th>New member</th><th>Contents</th><th>Why</th></tr>
+  <tr>
+    <td><code>packages/common</code></td>
+    <td><code>src/surface.ts</code> + a tiny <code>package.json</code> (deps: <code>@kolu/surface</code>, <code>zod</code>)</td>
+    <td>The one shared wire contract, single-owned, consumed by both <code>app</code> and <code>agent</code>. Keeps the 3-tier contract DRY and gives it its own minimal FOD.</td>
+  </tr>
+  <tr>
+    <td><code>packages/agent</code></td>
+    <td><code>src/main.ts</code>, <code>src/proc.ts</code>, <code>package.json</code> (deps: common + <code>@orpc/server</code> + <code>zod</code> + <code>@kolu/surface</code>)</td>
+    <td>Agent-only source. Its <code>copyPathToStore</code> FOD is invariant to client/server edits.</td>
+  </tr>
+</table>
+<div class="callout red">
+  <span class="lbl">Must not:</span> leave <code>surface.ts</code> in <code>packages/app</code>. If the
+  agent member depends back on the app member, the FOD re-fuses and the split is defeated. Extract
+  <code>packages/common</code> first.
+</div>
+
+<h3>The concrete edits</h3>
+<ol>
+  <li><span class="step">Extract <code>packages/common</code></span> — move <code>surface.ts</code> there with its own <code>package.json</code>; update <code>packages/app</code> imports to point at it.</li>
+  <li><span class="step">Add <code>packages/agent</code></span> — move <code>main.ts</code> + <code>proc.ts</code> there with a narrow <code>package.json</code>.</li>
+  <li><span class="step">Regenerate <code>bun.nix</code></span> — <code>nix run .#bun2nix</code>. Now there is a second, agent-only local FOD.</li>
+  <li><span class="step">New <code>nix/packages/drishti-agent/default.nix</code></span> — an <code>stdenv.mkDerivation</code> over the agent member:
+    <ul>
+      <li><strong>No <code>buildPhase</code> / dist</strong> (<code>dontBuild</code> + <code>dontUseBunBuild</code>) — dropping the dist bundle is the single cleanest churn-severing move; the agent never reads it.</li>
+      <li>Keep <code>bun2nix.hook</code> + <code>fetchBunDeps</code>, <code>--linker=hoisted</code>, and the <code>@kolu/surface</code> hydration in <code>postBunNodeModulesInstallPhase</code>.</li>
+      <li>Install-guard <strong>only</strong> <code>agent/main.ts</code>; drop the <code>server/main.ts</code> + <code>dist/index.html</code> guards.</li>
+    </ul>
+  </li>
+  <li><span class="step">Repoint the wrapper</span> in root <code>default.nix:54-55</code>:
+<pre>makeWrapper ${bun}/bin/bun $out/bin/drishti-agent \
+  --add-flags <span class="del">"${drishtiBuilt}/lib/drishti/packages/app/src/agent/main.ts"</span>
+  --add-flags <span class="add">"${drishtiAgentBuilt}/lib/drishti/packages/agent/src/main.ts"</span></pre>
+    <code>drishtiBuilt</code>, <code>drishti-client</code>, and the monitor are <strong>untouched</strong> — they still need the full tree + dist.
+  </li>
+  <li><span class="step">Keep <code>flake.nix</code> shape</span> — <code>agentDrvBySystem</code> still reads <code>.drishti-agent.drvPath</code> via <code>unsafeDiscardStringContext</code>. Fileset stays a static <code>lib.fileset.unions</code> of literal paths (<strong>no IFD / <code>readDir</code> / build-output reads</strong>) so cross-arch pure eval still emits the linux drv from a macOS evaluator.</li>
+</ol>
+
+<h3>node_modules — the unavoidable floor</h3>
+<p>
+  The agent build still needs <code>@kolu/surface</code>’s <em>full</em> transitive closure hoisted,
+  because <code>bunfig.toml</code> forces <code>linker="hoisted"</code> and the kolu hydration is
+  <code>cp -rL</code> (not a symlink). <code>@kolu/surface</code>’s own <code>package.json</code>
+  hard-depends on <code>solid-js</code> + <code>@solid-primitives/scheduled</code>, so those land in
+  the agent’s <code>node_modules</code> even though the agent executes zero Solid. You <em>do</em>
+  still drop babel, <code>@tailwindcss/cli</code> (+ its native <code>oxide</code>/<code>watcher</code>
+  blobs across 12 platform variants), hono, partysocket, cleye — a real size win on the rare cold
+  copy. The minimum is “the agent’s <code>@orpc</code>/<code>zod</code> set <em>plus</em>
+  <code>@kolu/surface</code>’s dependency closure,” not the agent’s own imports alone.
+</p>
+
+<h2>4. The acceptance test</h2>
+<p>
+  This is the headline criterion. It must run <strong>through the flake</strong>, on a
+  <strong>committed tree</strong>, with <code>--no-eval-cache</code> (a filesystem-only fileset probe
+  falsely passes):
+</p>
+<pre>BASE=$(nix eval --raw --no-eval-cache .#packages.x86_64-linux.drishti-agent.drvPath)
+printf <span class="str">'\n// churn-test\n'</span> &gt;&gt; packages/app/src/client/theme.ts &amp;&amp; git add -A &amp;&amp; git commit -q -m churn-test
+AFTER=$(nix eval --raw --no-eval-cache .#packages.x86_64-linux.drishti-agent.drvPath)
+git reset --hard -q HEAD~1
+[ <span class="str">"$BASE"</span> = <span class="str">"$AFTER"</span> ] &amp;&amp; echo PASS || echo <span class="str">"FAIL: $BASE -&gt; $AFTER"</span></pre>
+<p>
+  <code class="yes">PASS</code> (byte-identical drvPath across a committed client edit) is the goal.
+  The naive fileset-only approach prints <code class="no">FAIL</code>. Land this one-liner as a CI
+  regression guard.
+</p>
+
+<h2>5. The other three directions</h2>
+<table>
+  <tr><th>Direction</th><th>Verdict</th><th>Why</th></tr>
+  <tr>
+    <td><strong>2 — scope the agent derivation</strong></td>
+    <td class="yes">DO FIRST (keystone)</td>
+    <td>The only root-cause fix: cuts cold-provision <em>frequency</em> (client/server edits stop churning the drv) <em>and</em> shrinks closure size. Self-contained; no upstream dep.</td>
+  </tr>
+  <tr>
+    <td><strong>3 — skip-if-present / survive redeploy</strong></td>
+    <td class="no">DROP</td>
+    <td>There is no skip-if-present guard in kolu — <code>HostSession.spawn()</code> re-runs <code>provisionAgent</code> on every connect; the warm case is cheap purely via Nix store idempotency (copy ships nothing, realise is instant). The GC-root pin (#37) already handles the only expensive <em>unchanged</em>-drv case (surviving remote GC). Fully dominated by #2.</td>
+  </tr>
+  <tr>
+    <td><strong>1 — pre-warm on startup</strong></td>
+    <td class="muted">DEFER (optional)</td>
+    <td>High payoff today, but it <em>collapses</em> once #2 ships — cold provisions drop from “every rebuild” to “only dep/toolchain bumps.” Keep as a thin best-effort warm-on-restart for the residual. Needs no upstream change (<code>provisionAgent</code> is exported), but must be sequenced before the session’s own spawn-time provision and be non-blocking so a down host doesn’t delay <code>serve()</code>.</td>
+  </tr>
+  <tr>
+    <td><strong>4 — UI honesty</strong></td>
+    <td class="muted">FOLLOW-UP (Tier A)</td>
+    <td>~80% already exists (<code>copying</code> is its own state with a live elapsed counter + streamed <code>building …drv</code> lines). Tier A = a few lines in <code>connectionColors.ts</code> + <code>App.tsx</code> + one test to escalate <code>copying</code> past ~20s (“Building agent on remote — first build after a rebuild can take several minutes”). Do it <em>after</em> #2 so messaging matches the new, rarer cold reality. Skip Tier B (predictive badge — needs an upstream signal for cosmetic gain).</td>
+  </tr>
+</table>
+
+<h2>6. Residual cold cases (correct, by design)</h2>
+<p>After #2, the agent drv legitimately still changes — and should — when:</p>
+<ul>
+  <li>An edit to <code>agent/main.ts</code>, <code>agent/proc.ts</code>, or <code>common/surface.ts</code> (the wire contract genuinely changed).</li>
+  <li>A <code>bun</code> toolchain bump or a <code>@kolu/surface</code> bump.</li>
+  <li><strong>Any</strong> <code>bun.lock</code> / <code>bun.nix</code> change — including a client-only dep bump (e.g. tailwind) that rotates the shared lockfile. The agent member’s <code>package.json</code> is narrow, but the shared lockfile is still an input. Eliminating this entirely would need a fully independent agent lockfile; the rot/maintenance cost isn’t worth it.</li>
+</ul>
+<p class="muted">
+  These residuals are exactly where direction&nbsp;1 (pre-warm) and direction&nbsp;4 (Tier A “may
+  take minutes” framing) earn their keep. The GC-root pin (#37) is orthogonal and stays — it can’t
+  help a <em>changed</em> drv, but it keeps the <em>unchanged</em>-drv path warm across remote GC.
+</p>
+
+<h2>7. Smallest shippable first PR</h2>
+<div class="callout green">
+  <ol style="margin:4px 0;">
+    <li>Extract <code>packages/common</code> (<code>surface.ts</code> + <code>package.json</code>) and <code>packages/agent</code> (<code>main.ts</code>, <code>proc.ts</code>, <code>package.json</code>).</li>
+    <li>Update <code>packages/app</code> to import the wire contract from <code>packages/common</code>.</li>
+    <li>Regenerate <code>bun.nix</code> (<code>nix run .#bun2nix</code>).</li>
+    <li>Add <code>nix/packages/drishti-agent/default.nix</code> (no buildPhase, agent-only guard, @kolu hydration).</li>
+    <li>Repoint the <code>drishti-agent</code> wrapper in root <code>default.nix</code> (+ new <code>drishtiAgentBuilt</code> binding; optionally expose it in <code>flake.nix</code> packages for CI).</li>
+    <li>Land the §4 verification one-liner as a CI regression guard.</li>
+    <li>Sync <code>README.md</code> only if user-facing wording changes (this is mostly an internal build refactor — likely a no-op or one-line note).</li>
+  </ol>
+  This PR alone fixes #38’s frequency term <em>and</em> shrinks the closure. Optional follow-ups
+  (#4&nbsp;Tier&nbsp;A, then maybe #1) ship separately; #3 is dropped.
+</div>
+
+<h3>Files touched (first PR)</h3>
+<ul>
+  <li><code>packages/common/{package.json, src/surface.ts}</code> <span class="dim">(new)</span></li>
+  <li><code>packages/agent/{package.json, src/main.ts, src/proc.ts}</code> <span class="dim">(new / moved)</span></li>
+  <li><code>packages/app/**</code> <span class="dim">(import paths → @drishti/common)</span></li>
+  <li><code>bun.nix</code> <span class="dim">(regenerated — now carries an agent-only local FOD)</span></li>
+  <li><code>nix/packages/drishti-agent/default.nix</code> <span class="dim">(new)</span></li>
+  <li><code>default.nix</code> <span class="dim">(wrapper repoint + <code>drishtiAgentBuilt</code> binding)</span></li>
+  <li><code>flake.nix</code> <span class="dim">(optional — expose <code>drishtiAgentBuilt</code> for CI)</span></li>
+  <li>CI <span class="dim">(the §4 churn-test guard)</span></li>
+</ul>
+
+<h2>8. Implementation caveats</h2>
+<ul>
+  <li><strong>Single-own the wire contract.</strong> <code>surface.ts</code> lives in <code>packages/common</code>; the agent must not depend back on <code>packages/app</code> (re-fuses the FOD).</li>
+  <li><strong>Preserve hoisted resolution.</strong> Carry <code>bunfig.toml</code> (<code>linker=hoisted</code>) into the agent build and keep the @kolu hydration, or the import graph won’t load at runtime on the remote.</li>
+  <li><strong>Pure eval, no IFD.</strong> The fileset must be static literal paths; <code>drvPath</code> stays a pure string interpolation so <code>agentDrvBySystem</code> cross-arch eval survives.</li>
+  <li><strong>Drop the extra install guards</strong> (<code>server/main.ts</code>, <code>dist/index.html</code>) in the scoped derivation; keep only <code>agent/main.ts</code>.</li>
+  <li><strong>CI fan-out.</strong> If <code>drishtiAgentBuilt</code> is exposed in flake <code>packages</code>, devour-flake builds it on all 3 systems — confirm intended and that the agent-only guard holds on darwin.</li>
+  <li><strong>Verify with <code>--no-eval-cache</code> on a committed tree</strong> — see §2.</li>
+</ul>
+
+<h2>Related</h2>
+<ul>
+  <li><span class="repo dr">drishti #38</span> — this issue.</li>
+  <li><code>docs/plans/talk-pin-agent-gcroot.html</code> — the GC-root pin (#37), orthogonal: keeps an <em>unchanged</em> drv warm across remote GC; does nothing for a <em>changed</em> drv.</li>
+  <li><code>docs/blog/the-reconnect-that-wedged-then-spun.md</code> — the reconnect saga that motivated all of this.</li>
+  <li><span class="repo kolu">kolu #1071</span> — keepalive so a degraded host can’t wedge the realise forever (fixes the <em>hang</em>; this plan is about the <em>cost/frequency</em> of the realise).</li>
+</ul>
+
+<p class="tag" style="margin-top:24px;">
+  Plan derived from a multi-agent design + adversarial-verification pass (root-cause confirmation,
+  per-direction trade-off scoring, a volatility-boundary lens, and three independent stress-test
+  lenses that empirically falsified the naive “narrow the fileset” design and surfaced the
+  <code>bun.nix:415</code> FOD edge).
+</p>
+
+</div>
+</body>
+</html>
