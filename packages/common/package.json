@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "//": "Deps are what the wire contract needs at runtime: surface.ts uses zod and @kolu/surface/define (which pulls @orpc/contract). @kolu/surface is hydrated from the Nix store, not bun.lock, so its support deps must be declared by consumers — here for the contract, and in drishti-agent for the server/peer-server it serves.",
   "main": "./src/surface.ts",
   "types": "./src/surface.ts",
   "exports": {
@@ -12,11 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@orpc/client": "^1.13.13",
     "@orpc/contract": "^1.13.13",
-    "@orpc/server": "^1.13.13",
-    "@solid-primitives/scheduled": "^1.5.3",
-    "solid-js": "^1.9.0",
     "zod": "^4.3.6"
   }
 }

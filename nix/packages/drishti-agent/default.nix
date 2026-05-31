@@ -26,9 +26,14 @@
 # edit must leave `drishti-agent.drvPath` unchanged.
 #
 # `@kolu/surface` is hydrated post-install exactly as in the monitor build
-# (it is a Nix-store source, not a bun.lock entry). Its transitive runtime
-# deps (@orpc/*, solid-js, zod) are declared on `drishti-common` so the
-# hoisted node_modules resolves them — see packages/common/package.json.
+# (it is a Nix-store source, not a bun.lock entry). Because it's hydrated, its
+# support deps must be declared by consumers so the hoisted node_modules
+# resolves them — and this build excludes packages/app, so it can't lean on the
+# monitor's declarations. The split mirrors the import graph: the wire
+# contract's needs (@orpc/contract, zod) live on drishti-common; the
+# server/peer-server deps the agent serves (@orpc/server, @orpc/client — the
+# latter pulled by peer-server's stdio-codec) live on drishti-agent. No agent-
+# reachable @kolu/surface entrypoint imports solid-js, so it is not declared.
 { stdenv, lib, bun, bun2nix, kolu-surface }:
 let
   src = lib.fileset.toSource {
