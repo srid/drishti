@@ -1236,6 +1236,17 @@ function ProcessDetail(props: {
   // highlights its row. `parentPresent` is false when the parent has left the
   // live set (or for pid 1 / orphans whose ppid is 0) — then the ppid renders
   // as plain text, since selecting an absent pid would just close the panel.
+  //
+  // `onSelectPid` is wired to the bare `setSelectedPid` (an *unconditional*
+  // set), NOT the `toggle` that `ProcessRow` uses for its click — navigating to
+  // a parent must always re-point, never close. The two coincide only while the
+  // clicked ppid differs from the currently-selected pid; once selection has
+  // moved, a parent link can point back at the open pid, where `toggle` would
+  // close the panel instead of staying on it. Don't "unify" this onto `toggle`.
+  // It stays a prop (rather than reaching into `SelectionContext`) because
+  // `ProcessDetail` is a sibling of the table, not buried in its subtree — the
+  // context exists to avoid prop-drilling *through* `ProcessTable`, a depth this
+  // component doesn't have.
   parentPresent: boolean;
   onSelectPid: (pid: Pid) => void;
 }) {
