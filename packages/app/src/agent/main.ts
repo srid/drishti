@@ -286,11 +286,26 @@ async function main(): Promise<void> {
   const router = implement(surface.contract).router({ ...fragment.router });
 
   log("serving surface over stdio (read=stdin, write=stdout)");
+  // Heartbeat while blocked on the first request. A healthy connect
+  // roundtrips sub-second; if this keeps ticking up to ~30s the parent's
+  // connect watchdog is about to kill us — and these lines (forwarded to
+  // the parent's log) show the agent was alive and waiting the whole time,
+  // pinning the stall on the parent→agent handshake rather than the remote.
+  const servingSince = Date.now();
+  const waitingHeartbeat = setInterval(() => {
+    log(
+      `waiting for first RPC (${Math.round((Date.now() - servingSince) / 1000)}s)…`,
+    );
+  }, 5000);
   await serveOverStdio({
     // biome-ignore lint/suspicious/noExplicitAny: implementSurface's Lazy<Router> spread isn't accepted by oRPC's Router<any, T> input type; runtime shape is valid.
     router: router as any,
-    onFirstRequest: () => log("first RPC received — link is live"),
+    onFirstRequest: () => {
+      clearInterval(waitingHeartbeat);
+      log(`first RPC received — link is live (pid=${process.pid})`);
+    },
   });
+  clearInterval(waitingHeartbeat);
   clearInterval(interval);
   log("stdin closed — agent exiting");
 }

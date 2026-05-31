@@ -102,7 +102,7 @@ export async function buildHostRegistry(
       binary: "drishti-agent",
       connectTimeoutMs: CONNECT_TIMEOUT_MS,
     });
-    const { router } = buildRouter({ session });
+    const { router } = buildRouter({ host, session });
     // biome-ignore lint/suspicious/noExplicitAny: implementSurface's Lazy<Router> spread isn't accepted by oRPC's Router<any, T> input type; runtime shape is valid.
     const handler = new RPCHandler(router as any);
     return { session, handler };

@@ -117,7 +117,7 @@ The monitor binds `0.0.0.0` on `port`. `hosts` are passed as positional argument
 
 See [`nix/home/example/`](nix/home/example/) for a full configuration — a NixOS VM test exercises the systemd path on Linux, and a standalone home-manager activation build exercises the launchd path on Darwin.
 
-On macOS, the LaunchAgent writes stdout to `~/Library/Logs/drishti.out.log` and stderr to `~/Library/Logs/drishti.err.log`, so crashes and startup failures leave logs alongside other user logs.
+On macOS, the LaunchAgent writes stdout to `~/Library/Logs/drishti.out.log` and stderr to `~/Library/Logs/drishti.err.log`, so crashes and startup failures leave logs alongside other user logs. Every stderr line is timestamped (ISO-8601) and tagged by subsystem — `[server]`, `[hosts]`, `[admin]`, and one `[bridge:<host>]` per monitored host — so a connection problem can be traced to a specific host on a timeline (on Linux/systemd, `journalctl --user -u drishti` adds its own timestamps).
 
 ## Project layout
 
