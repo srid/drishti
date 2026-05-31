@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pinning the realised agent against GC — design note</title>
+<style>
+  :root {
+    --bg: #0b1220; --panel: #111a2b; --panel2: #0e1726; --border: #1e2a3f;
+    --fg: #e5e9f0; --muted: #8b97ad; --dim: #5d6b82;
+    --emerald: #10b981; --amber: #f59e0b; --red: #ef4444;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.6 var(--mono); padding: 32px 28px 80px; }
+  .wrap { max-width: 920px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: .3px; }
+  .sub1 { color: var(--muted); margin: 0 0 8px; font-size: 12.5px; }
+  h2 { font-size: 15px; margin: 34px 0 10px; color: var(--fg);
+       border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 13px; margin: 20px 0 8px; color: var(--muted); font-weight: 600; }
+  p { margin: 8px 0; color: var(--fg); }
+  .muted { color: var(--muted); } .dim { color: var(--dim); }
+  code { background: var(--panel2); padding: 1px 5px; border-radius: 4px;
+         border: 1px solid var(--border); font-size: 12.5px; }
+  .repo { display:inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 4px;
+          border: 1px solid var(--border); color: var(--muted); margin-right: 4px; }
+  .repo.kolu { border-color:#c792ea; color:#c792ea; } .repo.dr { border-color:var(--emerald); color:var(--emerald); }
+  pre { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+        padding: 14px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+  pre .kw { color: #c792ea; } pre .str { color: #c3e88d; } pre .typ { color: #82aaff; }
+  pre .com { color: var(--dim); } pre .del { color: #ff8a8a; } pre .add { color: #a3e88d; }
+  .callout { background: var(--panel); border: 1px solid var(--border);
+             border-left: 3px solid var(--amber); border-radius: 6px; padding: 12px 16px; margin: 14px 0; }
+  .callout.red { border-left-color: var(--red); } .callout.green { border-left-color: var(--emerald); }
+  .callout .lbl { font-weight: 600; }
+  ul { margin: 8px 0; padding-left: 22px; } li { margin: 5px 0; }
+  ol { margin: 8px 0; padding-left: 22px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 10px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--panel2); color: var(--muted); font-weight: 600; }
+  .yes { color: var(--emerald); } .no { color: var(--red); }
+  .tag { font-size: 10.5px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Pinning the realised agent against GC</h1>
+<p class="sub1">Should the remote keep a GC root on the realised agent? And should that root be a moving “latest” link? — short answer: <span class="yes">yes to both</span>.</p>
+
+<h2>1. You’re right — there is a real gap</h2>
+<p>
+  The provisioning path lives in
+  <span class="repo kolu">@kolu/surface-nix-host</span><code>src/nixCopy.ts</code>,
+  and the realise step is:
+</p>
+<pre><span class="com">// step 2 — realise the .drv on the target</span>
+ssh $host nix-store --realise $drvPath</pre>
+<p>
+  No <code>--add-root</code>. That matters because <code>nix-store --realise</code> only
+  creates a <em>temporary</em> root under <code>/nix/var/nix/temproots/&lt;pid&gt;</code> that
+  is held <strong>for the lifetime of that ssh process and no longer</strong>. The instant
+  the realise ssh exits, <span class="no">nothing on the remote roots the agent’s output
+  closure.</span> A <code>nix-collect-garbage</code> / <code>nix store gc</code> on the
+  remote — cron, a teammate, <code>nh clean</code>, a NixOS GC timer — is free to delete it.
+</p>
+
+<div class="callout green">
+  <span class="lbl">What softens this today (but doesn’t fix it):</span> the
+  <span class="repo kolu">surface-nix-host</span> session lifecycle is
+  <code>disconnected → copying → connecting</code>, and the <code>copying</code> edge re-runs
+  <code>provisionAgent()</code>. So a GC’d path gets <em>re-realised</em> on the next reconnect —
+  the agent isn’t permanently broken. But that’s a rebuild (or re-substitute) on every reconnect
+  after a GC, and during a <em>live</em> connected session nothing protects the closure. The
+  running process keeps its inodes open so it survives mid-flight, but the store path is deletable
+  and the next spawn pays to rebuild. The pin turns “rebuild-on-reconnect-after-GC” into
+  “realise once, reuse forever.”
+</div>
+
+<h2>2. The fix is one flag — and it gives you “latest” for free</h2>
+<p>Add an <strong>indirect GC root</strong> at realise time:</p>
+<pre>ssh $host nix-store --realise <span class="add">--add-root $rootPath --indirect</span> $drvPath</pre>
+<table>
+  <tr><th>Flag</th><th>What it does</th></tr>
+  <tr><td><code>--add-root P</code></td><td>Creates symlink <code>P → /nix/store/…-agent</code> and registers it as a GC root.</td></tr>
+  <tr><td><code>--indirect</code></td><td>Registers <em>the symlink itself</em> via <code>/nix/var/nix/gcroots/auto/&lt;hash&gt; → P</code>. This is what lets <code>P</code> live in <code>$HOME</code> (user-writable) instead of needing root to write under <code>/nix/var/nix/gcroots</code>. <strong>The ssh user is almost never root, so <code>--indirect</code> is mandatory here, not optional.</strong></td></tr>
+</table>
+
+<h3>The “latest link” semantics you described fall out automatically</h3>
+<p>
+  Because the root is a single, <strong>fixed-name symlink</strong>, each new realise
+  <em>overwrites</em> it to point at the new output. The previous output is no longer referenced
+  by that root, so it becomes GC-eligible — exactly “pin the latest, unpin older hashes,” with no
+  generation accumulation and nothing to prune. This is precisely how <code>nix build --out-link
+  result</code> behaves; you’re just relocating that <code>result</code> link onto the remote.
+</p>
+<p class="muted">I verified the mechanics locally before writing this:</p>
+<pre><span class="com"># realise drv A with a named root</span>
+$ nix-store --realise --add-root /tmp/pintest/agent --indirect $drvA
+/tmp/pintest/agent
+$ ls -l /nix/var/nix/gcroots/auto/
+…xhrm4… -&gt; /tmp/pintest/agent            <span class="com"># auto-root registered</span>
+
+<span class="com"># realise a DIFFERENT drv B to the SAME link</span>
+$ nix-store --realise --add-root /tmp/pintest/agent --indirect $drvB
+/tmp/pintest/agent
+$ readlink /tmp/pintest/agent
+/nix/store/…-pin-test2                    <span class="com"># link moved to B; A now unrooted → GC-eligible</span></pre>
+
+<div class="callout red">
+  <span class="lbl">Gotcha that bites the integration:</span> with <code>--add-root</code>,
+  <code>nix-store --realise</code> prints <strong>the root link path</strong> (<code>/tmp/pintest/agent</code>),
+  <em>not</em> the store path. Today <code>nixCopy.ts</code> does
+  <code>realiseRes.stdout.trim()</code> and feeds it straight into
+  <code>${agentPath}/bin/${binary}</code>. Two ways to handle it:
+  <ul>
+    <li><span class="yes">Resolve it</span> — <code>readlink -f</code> / <code>realpath</code> the
+      printed link to recover the immutable store path, and spawn against that. Cleanest: a running
+      agent stays pinned to its exact closure even after the “latest” link moves under it on a
+      later deploy.</li>
+    <li><span class="muted">Spawn through the link</span> — <code>${linkPath}/bin/${binary}</code>
+      works too (the symlink resolves at exec time). Simpler, but a redeploy repoints the link, so
+      <em>new</em> spawns follow the new agent while the old process keeps running. Coherent, just
+      be deliberate about it.</li>
+  </ul>
+</div>
+
+<h2>3. Where the root path should live</h2>
+<table>
+  <tr><th>Constraint</th><th>Choice</th></tr>
+  <tr><td>Whose store?</td><td><strong>The remote’s.</strong> The path being protected is on the target host, so the root must be created there — i.e. inside the <code>ssh $host …</code> realise, which it already is. (Localhost: same code, roots the local store. No special-case.)</td></tr>
+  <tr><td>Writable by?</td><td>The ssh user → under <code>$HOME</code>. With <code>--indirect</code> that’s fine. e.g. <code>~/.local/state/drishti/gcroots/&lt;binary&gt;</code>. Prefer <code>state</code> over <code>cache</code> — a GC root is durable state, and <code>~/.cache</code> is exactly the thing cleaners wipe.</td></tr>
+  <tr><td>Keyed on what?</td><td>The <code>binary</code> name (or the drv’s name component). One logical agent → one moving link → “latest of <em>this</em> agent.” Different remotes have independent stores and independent roots, so no cross-host coordination needed.</td></tr>
+  <tr><td>Pre-create dir?</td><td>Yes — <code>nix-store --add-root</code> writes the symlink but <strong>not</strong> its parent dirs. Prefix with <code>mkdir -p</code>.</td></tr>
+</table>
+
+<h3>Concretely, the realise step becomes roughly</h3>
+<pre>ssh $host sh -c '
+  mkdir -p ~/.local/state/drishti/gcroots &amp;&amp;
+  nix-store --realise \
+    --add-root ~/.local/state/drishti/gcroots/$binary --indirect \
+    $drvPath
+'</pre>
+<p class="muted">
+  Wrapping in <code>sh -c</code> (or resolving <code>$HOME</code> via a probe first) keeps the
+  <code>~</code> expansion and the <code>mkdir</code> on the remote. Note this means
+  <code>buildSshProbeCommand</code> needs to carry a small shell snippet rather than a bare argv —
+  a minor shape change to the realise call.
+</p>
+
+<h2>4. What you do <span class="muted">not</span> need to pin</h2>
+<ul>
+  <li><strong>The <code>.drv</code> and its build inputs/sources.</strong> They aren’t in the
+    output’s <em>runtime</em> closure, so rooting the output doesn’t hold them — and that’s correct.
+    You don’t need the .drv after realise; a redeploy re-copies it. Rooting only the output is the
+    right minimal pin.</li>
+  <li><strong>Anything on the sender.</strong> The local .drv is re-evaluated from
+    <code>nix eval …drvPath</code> each deploy; let it be GC’d.</li>
+</ul>
+
+<h2>Recommendation</h2>
+<div class="callout green">
+  <ol style="margin:4px 0;">
+    <li>In <span class="repo kolu">surface-nix-host</span> <code>nixCopy.ts</code>, add
+      <code>--add-root &lt;remote $HOME state path keyed on binary&gt; --indirect</code> to the
+      realise, with a preceding <code>mkdir -p</code>.</li>
+    <li>Account for <code>--add-root</code> printing the <em>link</em> path: <code>realpath</code> it
+      back to the store path for the spawn (recommended), or spawn through the link.</li>
+    <li>One fixed link per agent = automatic “latest”: new deploy pins the new closure, drops the
+      old. No pruning logic.</li>
+  </ol>
+  Net: the agent survives remote GC, reconnects stop rebuilding, and stale versions get collected
+  on their own — all from a single flag at the seam you already have.
+</div>
+
+<p class="tag" style="margin-top:24px;">
+  Note: the change is in the <code>@kolu/surface-nix-host</code> dependency (see
+  <code>/tmp/kolu-fork/packages/surface-nix-host/src/nixCopy.ts</code>), not in this repo’s own
+  source. Drishti consumes <code>provisionAgent()</code> via <code>HostSession</code>; the spawn
+  path in <code>buildAgentCommand</code> would pick up whichever <code>agentPath</code> the realise
+  returns, so adopting the fix is a dependency-side edit + version bump here.
+</p>
+
+</div>
+</body>
+</html>
