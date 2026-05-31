@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>drishti — why 3 hosts fail to connect</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#161b22; --panel2:#1c232c; --ink:#d7dee6; --dim:#8b97a5;
+    --line:#272f3a; --amber:#e0a23b; --red:#e0564b; --green:#3fb950; --blue:#58a6ff;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:32px 22px 80px;max-width:1180px;margin-inline:auto}
+  h1{font-size:23px;margin:0 0 4px}
+  h2{font-size:17px;margin:34px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:14px;margin:20px 0 6px;color:var(--blue)}
+  p{margin:9px 0}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel2);padding:1px 5px;border-radius:4px;color:#c8d3df}
+  .sub{color:var(--dim)}
+  .verdict{background:linear-gradient(180deg,#1a2330,#161b22);border:1px solid #2b3645;
+    border-left:3px solid var(--red);border-radius:9px;padding:16px 18px;margin:14px 0}
+  .verdict strong{color:#fff}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:14px 16px;margin:12px 0}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--dim);font-weight:600}
+  td.n{font-family:var(--mono);text-align:right;white-space:nowrap}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .mono{font-family:var(--mono)}
+  pre{background:#0b0f14;border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+    overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.5;color:#b7c3d0;margin:8px 0}
+  pre .t{color:#5b6775}.pre .h{color:var(--blue)}
+  .cite{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  ol,ul{margin:8px 0 8px 4px;padding-left:20px}
+  li{margin:5px 0}
+  .seq td:first-child{font-family:var(--mono);white-space:nowrap;color:var(--dim)}
+  .tag{display:inline-block;font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid var(--line)}
+  .tagdrishti{color:var(--green);border-color:#234} .tagkolu{color:var(--amber);border-color:#432}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:760px){.two{grid-template-columns:1fr}}
+  .kbd{font-family:var(--mono);background:#222b35;border:1px solid #313c48;border-bottom-width:2px;border-radius:5px;padding:1px 6px;font-size:12px}
+</style>
+</head>
+<body>
+
+<h1>Why the 3 hosts fail to connect</h1>
+<p class="sub">Production drishti (launchd, home-manager) on this machine · log <code>~/Library/Logs/drishti.err.log</code> · server pid 75024, up 3h, <span class="mono">LastExitStatus=0</span> (not crash-looping).</p>
+
+<div class="verdict">
+<strong>It is not ssh, not <code>trusted-users</code>, not the agent copy.</strong> ssh works, the closure copies, the agent re-realises and runs perfectly on <em>every</em> attempt. The failure is entirely in the <strong>parent server's per-host reconnect bridge</strong>: after the first ssh link drops, the parent <strong>stops issuing the <code>system.get</code> subscription</strong> to the freshly-respawned agent. The agent boots, prints <code>serving surface over stdio</code>, and waits for a first RPC that never arrives — so kolu's 30 s connect-watchdog kills it, 5&nbsp;strikes &rarr; <span class="bad mono">failed</span>. The "Copying agent to remote…" you saw is just one frame of that retry spin.
+</div>
+
+<h2>The evidence (current 3-hour process only)</h2>
+<p>The log spans many server generations (older ones had 3 hosts; rasam/vanjaram were added later). Sliced to the live process — from the last <code>[server] hosts from CLI (5)</code> banner — the per-host counts are unambiguous:</p>
+
+<table>
+<tr><th>host</th><th class="n">agent booted¹</th><th class="n">first RPC received²</th><th class="n">handshake timeouts</th><th>terminal state</th></tr>
+<tr><td class="mono">localhost</td><td class="n">1</td><td class="n ok">1</td><td class="n">0</td><td class="ok">connected ✓</td></tr>
+<tr><td class="mono">pureintent</td><td class="n">5</td><td class="n bad">1</td><td class="n">8</td><td class="bad">failed</td></tr>
+<tr><td class="mono">sincereintent</td><td class="n">20</td><td class="n bad">1</td><td class="n">38</td><td class="bad">failed</td></tr>
+<tr><td class="mono">vanjaram.…ts.net</td><td class="n">~20</td><td class="n bad">1</td><td class="n">20</td><td class="bad">failed</td></tr>
+<tr><td class="mono">nix-infra@rasam.…</td><td class="n">~7</td><td class="n bad">1</td><td class="n">20</td><td class="bad">failed</td></tr>
+</table>
+<p class="sub">¹ agent printed <code>drishti-agent: os=…</code> + <code>serving surface over stdio</code> (counted on the bare-name hosts where the grep is exact). ² <code>first RPC received — link is live</code>. Bridge-wide: <span class="mono">5</span> <code>marking connected</code> total, <span class="mono">16</span> stream-errors (one death-wave of 4 remotes × 4 pumps), then <strong>silence</strong> for ~3h while agents kept respawning.</p>
+
+<p><strong>Read that table again:</strong> sincereintent booted a fresh agent <strong>20 times</strong> and got the first RPC across exactly <strong>once</strong>. The remote side is healthy on every single attempt. Only the parent's first attempt ever completes the handshake. <code>localhost</code> survives purely because its local-stdio link never drops, so it never needs a reconnect.</p>
+
+<h2>The mechanism</h2>
+<table class="seq">
+<tr><th>step</th><th>what happens</th><th>where</th></tr>
+<tr><td>1</td><td>First connect succeeds — bridge issues <code>system.get</code>, agent answers, <code>markConnected()</code>.</td><td class="cite">router.ts <code>pumpSystemCell</code></td></tr>
+<tr><td>2</td><td>ssh link drops (<code class="bad">agent exited code=255</code> — ssh's connection-lost code; <span class="mono">8</span>× in this process, consistent with <code>ServerAliveInterval=10</code> × default CountMax 3 ≈ 30 s tolerance on a laggy tailscale path).</td><td class="cite">host.ts <code>buildAgentCommand</code></td></tr>
+<tr><td>3</td><td>The <em>session's</em> reconnect loop re-provisions and respawns the agent on backoff — <strong>this part works</strong>, every time (copy→realise→<code>serving surface over stdio</code>).</td><td class="cite">hostSession.ts <code>scheduleReconnect</code>/<code>spawn</code></td></tr>
+<tr><td>4</td><td><span class="bad">BUG:</span> the <em>bridge's</em> pumps never re-subscribe against the respawned agent. No new <code>marking connected</code>, no new stream-error — the bridge goes silent. The new agent sits idle on stdin.</td><td class="cite">router.ts <code>bridgeAgentToParent</code> + kolu <code>waitForNextClient</code></td></tr>
+<tr><td>5</td><td>kolu's 30 s connect-watchdog finds the child alive but no first RPC → <code>SIGTERM</code> → <code>connect handshake timed out … (transport up, no first RPC)</code>.</td><td class="cite">hostSession.ts <code>spawn</code> watchdog</td></tr>
+<tr><td>6</td><td>5 consecutive strikes → terminal <span class="bad mono">failed</span> (with the generic <em>"often: trusted-users…"</em> hint — a <strong>red herring</strong> here).</td><td class="cite">hostSession.ts <code>MAX_CONSECUTIVE_FAILURES</code></td></tr>
+</table>
+
+<p>So "I can ssh fine" is fully consistent with the symptom: ssh, the closure, and the agent are all healthy. What's broken is the parent's in-process handoff from "the agent respawned" to "re-issue the subscription on the new client." <code>CONNECT_TIMEOUT_MS = 30_000</code> (<span class="cite">hostRegistry.ts ~:40</span>) is doing its job — raising it would only delay each kill, not deliver the missing RPC.</p>
+
+<h2>What the logs can't tell us yet — and why we need richer logging</h2>
+<p>Two things blind the diagnosis from here, both fixable:</p>
+<ul>
+<li><strong>The <code>[bridge]</code> prefix carries no host tag.</strong> All five hosts' bridge loops write a flat <code>[bridge] …</code> (<span class="cite">router.ts <code>log()</code> ~:264</span>), so their lines interleave indistinguishably. kolu already tags its own lines <code>[host:X local|remote]</code> — drishti's bridge breaks that symmetry.</li>
+<li><strong>No timestamps anywhere.</strong> Can't measure the 30 s boundary, can't tell a <em>slow first-snapshot</em> apart from a <em>never-sent subscription</em>, can't correlate the ssh drop with the respawn.</li>
+</ul>
+<p>With those two gaps closed, the next production log will say outright which of the two handoff failure modes is biting (bridge latches a stale/dead client vs. <code>system.get</code> on the new client hangs without erroring).</p>
+
+<div class="panel" style="border-left:3px solid var(--green)">
+<p style="margin-top:0"><strong>Merge note (PR #33, kolu <span class="mono">9f2a9e6 → 9b0128d</span>):</strong> the diagnosis is unchanged. <code>waitForNextClient.ts</code> is byte-identical across the bump, and <code>hostSession.ts</code>'s spawn / reconnect / 30 s-watchdog logic is untouched — the only diff defers <code>.drv</code> resolution into the spawn cycle (the pool key dropped from <code>(host, drvPath, binary)</code> to <code>(host, binary)</code>, <code>buildEntry</code> is now sync). The reconnect-handoff gap stands.</p>
+</div>
+
+<h2>"Isn't it time for a real logging library?" — No.</h2>
+<p>I came into this leaning toward <code>pino</code> (child loggers for per-host context, free timestamps/levels/JSON). Both reviewers pushed back, independently and convincingly, and I've reversed. Here's the honest reasoning, because the instinct is reasonable but wrong <em>for this codebase</em>:</p>
+<ul>
+<li><strong>The problem is fragmentation, not feature-poverty.</strong> There aren't "no features" — there are <strong>five</strong> hand-rolled one-line writers, each with its own ad-hoc bracket prefix: <code>[server]</code> (<span class="cite">main.ts:39</span>), <code>[hosts]</code> (<span class="cite">hostsStore.ts:41</span>), <code>[bridge]</code> (<span class="cite">router.ts:265</span>), <code>[admin]</code> (<span class="cite">admin-router.ts:77</span>), and an unprefixed one in the agent (<span class="cite">agent/main.ts:53</span>). That's <em>one</em> concept split five ways. The fix is to stop splitting it — a 3-line factory — not to import a framework.</li>
+<li><strong>pino's structure answers no consumer drishti has.</strong> Logs are read in a journal / tmux pane, not an aggregation pipeline. JSON-in-a-terminal would itself need a prettifier (another dep) to be readable. The project's whole ethos is zero-runtime-dep, npins, "zero config" — a logging dependency is a poor trade when the only structurally-useful pino feature (<code>child({host})</code> context) is reproducible in one closure.</li>
+<li><strong>A library wouldn't even cover the lines that matter.</strong> kolu writes its <code>[host:X local|remote]</code> lines straight to <code>process.stderr</code>; no logger you add to drishti restructures those. Timestamps — the one thing you genuinely lack — have to come from the <em>sink</em>, not the writer (below). A logger in drishti would produce a JSON/plaintext <em>mixed</em> stream, strictly worse to read than uniform plaintext.</li>
+</ul>
+<p><strong>Verdict:</strong> a tiny <code>makeLogger(tag)</code> factory + per-host context + sink-level timestamps gets everything a library would give that drishti can actually use, at zero dependency cost. The plan below is the post-review shape.</p>
+
+<h2>The actual plan to deploy <span class="sub">(reviewed — Lowy + Hickey)</span></h2>
+<p>All drishti-side; <strong>no edits to the pinned kolu library.</strong></p>
+
+<h3>1 · One <code>makeLogger(tag)</code> factory, host-scoped at the bridge</h3>
+<p>New <code>server/log.ts</code>: <code>makeLogger(tag) =&gt; (line) =&gt; process.stderr.write(`[${tag}] ${line}\n`)</code>. Replace all five writers — including the two <em>inline</em> <code>process.stderr.write</code> sites a naive swap would miss: <span class="cite">hostsStore.ts:41/:48</span> and <span class="cite">admin-router.ts:77</span> (both load-bearing error paths — corrupt hosts-file, failed host-removal). Then the load-bearing fix: <code>buildRouter</code> builds <code>makeLogger(`bridge:${host}`)</code> and threads the <em>logger</em> (not the raw host) into <code>bridgeAgentToParent</code> + the four pumps — which already accept a <code>log</code> param (<span class="cite">router.ts ~:322/:339</span>), so internals don't change. <code>host</code> is already at the call site (<span class="cite">hostRegistry.ts buildEntry</span>). This is the same per-host attribution <code>child({host})</code> would give, minus the dependency — and it fixes the real <code>[bridge]</code>-interleaving bug, not just cosmetics.</p>
+
+<h3>2 · Timestamps at the sink — covers kolu too</h3>
+<p>A timestamp is a property of <em>when a line hits the sink</em>, so the factory deliberately does <strong>not</strong> stamp (that would miss kolu's own <code>[host:X]</code> writes and the forwarded agent lines). Time the unified stream once:</p>
+<ul>
+<li><strong>linux:</strong> free — journald already stamps (<code>journalctl --user -u drishti</code>).</li>
+<li><strong>darwin (your prod):</strong> pipe stderr through <code>moreutils ts '%FT%T.'</code> in <span class="cite">nix/home/module.nix:99</span> (<code>StandardErrorPath</code>). No code, no global monkeypatch, covers drishti + kolu + forwarded-agent lines uniformly.</li>
+</ul>
+<p class="sub">Reviewers split on whether to also re-emit kolu's structured <code>onState</code> data (connection/lastError/progressLines, already consumed at <span class="cite">router.ts:183</span>) through drishti's logger. Resolution: <strong>don't</strong> — kolu's stderr already carries that content; re-logging it would double every line and invent a "cell and stderr must agree" invariant. Consume the cell for the UI (as today); leave logging to kolu's own stderr + the sink timestamp. No kolu <code>onLog</code> upstream needed.</p>
+
+<h3>3 · Instrument the reconnect handoff — in drishti's pump (the real point)</h3>
+<p>The blind spot is the gap between "pumps started" and "first snapshot" inside <code>pumpSystemCell</code> (<span class="cite">router.ts</span>): if the subscription never fires, nothing logs. On the now-host-tagged bridge logger, add:</p>
+<ul>
+<li>a per-spawn <strong>client sequence id</strong> at <code>agent client ready; starting pumps</code>;</li>
+<li><code>issuing system.get subscription (client #N)</code> immediately before the <code>for await … client.surface.system.get({})</code>;</li>
+<li>elapsed-ms-to-first-yield in the existing <code>n === 1</code> branch.</li>
+</ul>
+<p>If <code>#N</code> climbs but "issuing" never reaches a yield → the subscription hangs on the new client; if "issuing" never logs for <code>#N&gt;1</code> → the bridge never got the new client. Either way the next log pins which line to fix.</p>
+
+<h3>4 · Agent-side liveness <span class="sub">(optional, confirms the idle-wait)</span></h3>
+<p>In <span class="cite">agent/main.ts</span>: pid in <code>first RPC received</code>, and a <code>waiting for first RPC (Ns)…</code> heartbeat while <code>serveOverStdio</code> blocks on stdin. A respawned agent ticking to ~30 s with no RPC <em>is</em> the proof from the remote end.</p>
+
+<h3>What the enriched log will look like</h3>
+<div class="two">
+<div class="panel"><div class="sub" style="margin-bottom:6px">today <span class="tag tagdrishti">drishti</span> <span class="tag tagkolu">kolu</span></div>
+<pre><span class="t"></span><span class="h">[bridge]</span> agent client ready; starting pumps
+<span class="h">[bridge]</span> pumps ended (link likely died)
+<span class="h">[bridge]</span> agent client ready; starting pumps
+[host:sincereintent remote] serving surface over stdio
+[host:sincereintent local] connect handshake
+  timed out after 30000ms</pre>
+<p class="sub" style="margin:6px 0 0">5 hosts interleaved, untaggable, untimed — can't tell which bridge stalled or for how long.</p>
+</div>
+<div class="panel"><div class="sub" style="margin-bottom:6px">enriched</div>
+<pre><span class="t">19:01:42.118</span> [bridge:sincereintent]
+  agent client ready (client #7); starting pumps
+<span class="t">19:01:42.119</span> [bridge:sincereintent]
+  issuing system.get subscription (client #7)
+<span class="t">19:01:44.301</span> [host:sincereintent remote]
+  serving surface over stdio (pid=12118)
+<span class="t">19:01:54.300</span> [host:sincereintent remote]
+  waiting for first RPC (10s)…
+<span class="t">19:02:12.120</span> [bridge:sincereintent]
+  ⚠ system.get for client #7 never yielded (30000ms)</pre>
+<p class="sub" style="margin:6px 0 0">Now the stalled bridge, its client id, and the agent's idle wait are all visible and correlated.</p>
+</div>
+</div>
+
+<h2>Bottom line</h2>
+<p>The three hosts aren't failing to <em>connect</em> — they connect once, then the parent's reconnect bridge fails to re-subscribe after the first ssh blip, and the watchdog reaps the idle agents. The fix lives in <code>bridgeAgentToParent</code>/<code>pumpSystemCell</code> (and possibly kolu's <code>waitForNextClient</code> handoff), but ship the <strong>logging enrichment first</strong> — items 1–3 are ~an hour, touch only drishti, and the next production log tells us exactly which handoff line to fix instead of guessing.</p>
+<p class="sub">When you want this implemented, run <span class="kbd">/do</span> — this is talk mode, so nothing here has been changed.</p>
+
+</body>
+</html>

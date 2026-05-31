@@ -54,10 +54,15 @@ import {
   HISTORY_RETENTION_MS,
   pushSample,
 } from "../common/history";
+import { type Logger, makeLogger } from "./log";
 
 type DrishtiAgent = AgentClient<typeof surface.contract>;
 
 export interface BuildRouterOptions {
+  /** The host this router bridges — used only to tag the bridge's log
+   *  lines (`bridge:${host}`). `HostSession` keeps its `host` private,
+   *  so the registry (which has it) passes it in explicitly. */
+  host: string;
   session: HostSession<typeof surface.contract>;
 }
 
@@ -66,6 +71,11 @@ export interface BuildRouterOptions {
  *  flows through once the link is live. */
 export function buildRouter(opts: BuildRouterOptions) {
   const session = opts.session;
+  // Per-host bridge logger. One `buildRouter` runs per host, so a tag
+  // built from `host` here gives every bridge line a host discriminator —
+  // without it, the N concurrent per-host bridge loops all wrote a flat
+  // `[bridge]` and interleaved into one unattributable stream.
+  const log = makeLogger(`bridge:${opts.host}`);
   const systemStore: CellStore<SystemInfo> = inMemoryStore({
     ...DEFAULT_SYSTEM,
   });
@@ -214,6 +224,7 @@ export function buildRouter(opts: BuildRouterOptions) {
   // *new* client. The outer loop is what implements "reconnect → state
   // reconciles, no ghosts".
   void bridgeAgentToParent(
+    log,
     session,
     fragment,
     processCache,
@@ -261,15 +272,19 @@ type FragmentCtx = {
   };
 };
 
-function log(line: string): void {
-  process.stderr.write(`[bridge] ${line}\n`);
-}
-
 /** Pin the session, then loop: fetch the current AgentClient, run all
  *  pumps against it concurrently, wait for them to end (which happens
  *  when the link errors — stdio process death), then wait for the
- *  session to provide a fresh client (post-reconnect) and repeat. */
+ *  session to provide a fresh client (post-reconnect) and repeat.
+ *
+ *  Each loop iteration owns one client — a fresh ssh subprocess. The
+ *  `clientSeq` counter labels them (`#1`, `#2`, …) so the otherwise
+ *  identical per-reconnect log lines can be traced to a specific spawn:
+ *  if `system.get` against `#2` never yields while the agent on the far
+ *  end logged `serving surface over stdio`, the handoff — not the remote
+ *  — is where a stuck reconnect lives. */
 async function bridgeAgentToParent(
+  log: Logger,
   session: HostSession<typeof surface.contract>,
   fragment: FragmentCtx,
   processCache: Map<Pid, Process>,
@@ -285,6 +300,7 @@ async function bridgeAgentToParent(
   });
 
   let lastClient: DrishtiAgent | null = null;
+  let clientSeq = 0;
   while (!session.isDestroyed()) {
     let client: DrishtiAgent;
     try {
@@ -294,14 +310,23 @@ async function bridgeAgentToParent(
       break;
     }
     lastClient = client;
-    log("agent client ready; starting pumps");
+    clientSeq += 1;
+    log(`agent client ready (client #${clientSeq}); starting pumps`);
     await Promise.allSettled([
-      pumpSystemCell(client, session, fragment, recordSample),
-      pumpProcessesSnapshot(client, fragment, processCache, browserSnapshotBus),
-      pumpCpuCores(client, fragment),
-      pumpNetworkInterfaces(client, fragment),
+      pumpSystemCell(log, clientSeq, client, session, fragment, recordSample),
+      pumpProcessesSnapshot(
+        log,
+        client,
+        fragment,
+        processCache,
+        browserSnapshotBus,
+      ),
+      pumpCpuCores(log, client, fragment),
+      pumpNetworkInterfaces(log, client, fragment),
     ]);
-    log("bridge: pumps ended (link likely died) — awaiting next client");
+    log(
+      `bridge: pumps ended for client #${clientSeq} (link likely died) — awaiting next client`,
+    );
   }
   log("bridge: session destroyed — exiting reconnect loop");
 }
@@ -309,6 +334,7 @@ async function bridgeAgentToParent(
 /** Mirror the agent's `cpuCores` collection — small-N showcase of
  *  `mirrorRemoteCollection`. */
 function pumpCpuCores(
+  log: Logger,
   client: DrishtiAgent,
   fragment: FragmentCtx,
 ): Promise<void> {
@@ -331,6 +357,7 @@ function pumpCpuCores(
 /** Mirror the agent's `networkInterfaces` collection — same
  *  `mirrorRemoteCollection` shape as cpuCores, keyed by NIC name. */
 function pumpNetworkInterfaces(
+  log: Logger,
   client: DrishtiAgent,
   fragment: FragmentCtx,
 ): Promise<void> {
@@ -350,27 +377,44 @@ function pumpNetworkInterfaces(
   });
 }
 
-/** Mirror the agent's system cell into the parent's local cell. */
+/** Mirror the agent's system cell into the parent's local cell. The
+ *  `system.get` subscription is also the connection handshake: its first
+ *  yield is what flips the session to `connected`. So the two log lines
+ *  bracketing the `for await` — "issuing" before, elapsed-to-first-yield
+ *  on `n === 1` — are the parent-side view of the handshake. A reconnect
+ *  that logs "issuing … (client #N)" but never reaches the first yield is
+ *  a subscription that never roundtripped on the new client, distinct
+ *  from one where the bridge never got a new client to issue against. */
 async function pumpSystemCell(
+  log: Logger,
+  clientSeq: number,
   client: DrishtiAgent,
   session: HostSession<typeof surface.contract>,
   fragment: FragmentCtx,
   recordSample: (system: SystemInfo) => void,
 ): Promise<void> {
   let n = 0;
+  const issuedAt = Date.now();
+  log(`system: issuing system.get subscription (client #${clientSeq})`);
   try {
     for await (const remoteSystem of await client.surface.system.get({})) {
       n += 1;
-      if (n === 1) log("system: first snapshot → marking connected");
+      if (n === 1) {
+        log(
+          `system: first snapshot → marking connected (client #${clientSeq}, ${Date.now() - issuedAt}ms to first RPC)`,
+        );
+      }
       session.markConnected();
       fragment.ctx.cells.system.set(remoteSystem);
       // One history sample per system tick — the parent's authoritative
       // sampling point (it sees every tick, browser or not).
       recordSample(remoteSystem);
     }
-    log(`system: stream closed cleanly after ${n} yields`);
+    log(`system: stream closed cleanly after ${n} yields (client #${clientSeq})`);
   } catch (err) {
-    log(`system: stream error after ${n} yields: ${(err as Error).message}`);
+    log(
+      `system: stream error after ${n} yields (client #${clientSeq}): ${(err as Error).message}`,
+    );
   }
 }
 
@@ -386,6 +430,7 @@ async function pumpSystemCell(
  *  one-row-at-a-time fill). With the bulk stream, cold-start is O(1)
  *  RPCs regardless of process count. */
 async function pumpProcessesSnapshot(
+  log: Logger,
   client: DrishtiAgent,
   fragment: FragmentCtx,
   processCache: Map<Pid, Process>,
@@ -395,7 +440,7 @@ async function pumpProcessesSnapshot(
   try {
     for await (const msg of await client.surface.processesSnapshot.get({})) {
       frames += 1;
-      applySnapshotMessage(msg, processCache, fragment, frames);
+      applySnapshotMessage(log, msg, processCache, fragment, frames);
       // Independent activity: re-publish to browser subscribers via
       // the parent's local bus. Verbatim forward — no inspection of
       // frame contents here; the mirror logic above is the only
@@ -415,6 +460,7 @@ async function pumpProcessesSnapshot(
  *  channels in lockstep, so there's no separate shadow set to
  *  maintain here. */
 function applySnapshotMessage(
+  log: Logger,
   msg: ProcessesSnapshotMsg,
   processCache: Map<Pid, Process>,
   fragment: FragmentCtx,

@@ -20,6 +20,9 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { makeLogger } from "./log";
+
+const log = makeLogger("hosts");
 
 export function resolveHostsFile(): string {
   const override = process.env.DRISHTI_HOSTS_FILE;
@@ -38,16 +41,14 @@ export async function loadHosts(file: string): Promise<string[]> {
     text = await readFile(file, "utf-8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-    process.stderr.write(`[hosts] read failed: ${(err as Error).message}\n`);
+    log(`read failed: ${(err as Error).message}`);
     return [];
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch (err) {
-    process.stderr.write(
-      `[hosts] malformed JSON in ${file}: ${(err as Error).message}\n`,
-    );
+    log(`malformed JSON in ${file}: ${(err as Error).message}`);
     return [];
   }
   if (

@@ -20,6 +20,9 @@ import babelTypeScript from "@babel/preset-typescript";
 // @ts-expect-error - babel preset types are loose
 import babelSolid from "babel-preset-solid";
 import type { BunPlugin } from "bun";
+import { makeLogger } from "./log";
+
+const log = makeLogger("build");
 
 // Solid JSX transform. babel-preset-solid emits the compiled-template
 // runtime (template/insert/createComponent) so signals drive DOM updates;
@@ -62,7 +65,7 @@ export async function buildClient(distDir: string): Promise<void> {
     plugins: [solidJsxPlugin],
   });
   if (!jsResult.success) {
-    for (const m of jsResult.logs) console.error(m);
+    for (const m of jsResult.logs) log(m.message);
     throw new Error("Bun.build failed for client");
   }
 
@@ -121,7 +124,7 @@ export async function buildClient(distDir: string): Promise<void> {
 if (import.meta.main) {
   const distDir = process.argv[2];
   if (!distDir) {
-    console.error("usage: bun src/server/build.ts <distDir>");
+    log("usage: bun src/server/build.ts <distDir>");
     process.exit(1);
   }
   await buildClient(resolve(distDir));

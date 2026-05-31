@@ -21,6 +21,9 @@ import {
 } from "@kolu/surface/server";
 import { adminSurface } from "../common/admin-surface";
 import type { HostRegistry } from "./hostRegistry";
+import { makeLogger } from "./log";
+
+const log = makeLogger("admin");
 
 export interface AdminRouterOptions {
   registry: HostRegistry;
@@ -74,9 +77,7 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
             // then is the subscriber notified the host has gone.
             await opts.registry.remove(input.host);
           } catch (err) {
-            process.stderr.write(
-              `[admin] remove ${input.host} failed: ${(err as Error).message}\n`,
-            );
+            log(`remove ${input.host} failed: ${(err as Error).message}`);
             return { ok: false };
           }
           fragment.ctx.collections.hosts.remove(input.host);

@@ -28,7 +28,13 @@ import type { WebSocket as WsConn } from "ws";
 import type { HostEntry } from "../common/admin-surface";
 import type { surface } from "../common/surface";
 import { saveHosts } from "./hostsStore";
+import { makeLogger } from "./log";
 import { buildRouter } from "./router";
+
+// Registry lifecycle events (host added/removed) get their own tag, like
+// every other subsystem — so they can be filtered out of the combined
+// stderr stream without the caller threading a logger in.
+const log = makeLogger("registry");
 
 // The parent's connect-handshake watchdog budget, passed explicitly to
 // every session. Must stay well under the browser socket's own deadline
@@ -79,7 +85,6 @@ export interface HostRegistryOptions {
    *  the resolved path per host. */
   resolveDrvPath: (host: string) => Promise<string>;
   hostsFile: string;
-  log: (line: string) => void;
 }
 
 export async function buildHostRegistry(
@@ -102,7 +107,7 @@ export async function buildHostRegistry(
       binary: "drishti-agent",
       connectTimeoutMs: CONNECT_TIMEOUT_MS,
     });
-    const { router } = buildRouter({ session });
+    const { router } = buildRouter({ host, session });
     // biome-ignore lint/suspicious/noExplicitAny: implementSurface's Lazy<Router> spread isn't accepted by oRPC's Router<any, T> input type; runtime shape is valid.
     const handler = new RPCHandler(router as any);
     return { session, handler };
@@ -133,7 +138,7 @@ export async function buildHostRegistry(
       }
       entries.set(host, buildEntry(host));
       await saveHosts(opts.hostsFile, [...entries.keys()]);
-      opts.log(`added host: ${host} (total ${entries.size})`);
+      log(`added host: ${host} (total ${entries.size})`);
     },
 
     async remove(host) {
@@ -153,7 +158,7 @@ export async function buildHostRegistry(
       entry.session.destroy();
       entries.delete(host);
       await saveHosts(opts.hostsFile, [...entries.keys()]);
-      opts.log(`removed host: ${host} (total ${entries.size})`);
+      log(`removed host: ${host} (total ${entries.size})`);
     },
 
     reconnect(host) {

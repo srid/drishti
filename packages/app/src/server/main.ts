@@ -34,10 +34,14 @@ import { resolveDrvForHost } from "./archMap";
 import { buildClient } from "./build";
 import { buildHostRegistry } from "./hostRegistry";
 import { loadHosts, resolveHostsFile, saveHosts } from "./hostsStore";
+import { installStderrTimestamps, makeLogger } from "./log";
 
-function log(line: string): void {
-  process.stderr.write(`[server] ${line}\n`);
-}
+// Stamp every stderr line (drishti's, kolu's, and the forwarded remote
+// agent's) with a timestamp before anything logs — the connection
+// diagnostics are unreadable without a timeline.
+installStderrTimestamps();
+
+const log = makeLogger("server");
 
 const argv = cli({
   name: "drishti",
@@ -96,7 +100,6 @@ async function main(): Promise<void> {
     initialHosts,
     resolveDrvPath,
     hostsFile,
-    log,
   });
 
   const admin = buildAdminRouter({ registry });
@@ -246,6 +249,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`[server] fatal: ${(err as Error).message}\n`);
+  log(`fatal: ${(err as Error).message}`);
   process.exit(1);
 });
