@@ -15,7 +15,7 @@ import { websocketLink } from "@kolu/surface/links/websocket";
 import { surfaceClient } from "@kolu/surface/solid";
 import { WebSocket as PartySocket } from "partysocket";
 import { ADMIN_HOST_SENTINEL, adminSurface } from "../common/admin-surface";
-import { surface } from "../common/surface";
+import { surface } from "drishti-common";
 
 function wsUrlFor(host: string): string {
   const params = new URLSearchParams({ host });

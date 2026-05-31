@@ -9,7 +9,7 @@
  * against one module.
  */
 
-import type { SystemInfo } from "../common/surface";
+import type { SystemInfo } from "drishti-common";
 
 export { averageCoreUsage, diskPct, memPct, pctOf } from "../common/metrics";
 

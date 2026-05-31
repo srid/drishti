@@ -8,7 +8,7 @@
  * single row, not five edits.
  */
 
-import type { ConnectionState } from "../common/surface";
+import type { ConnectionState } from "drishti-common";
 
 type StatePresentation = {
   /** Status-dot background colour. */

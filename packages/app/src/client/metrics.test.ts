@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { SystemInfo } from "../common/surface";
+import type { SystemInfo } from "drishti-common";
 import {
   averageCoreUsage,
   diskGb,

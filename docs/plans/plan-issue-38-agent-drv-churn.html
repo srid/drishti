@@ -56,6 +56,22 @@
   agent its own workspace package so client/server edits stop rotating its hash.
 </p>
 
+<div class="callout green">
+  <span class="lbl">Status — implemented (PR for #38).</span> The split landed as
+  <code>packages/common</code> (<code>drishti-common</code>, the wire contract) +
+  <code>packages/agent</code> (<code>drishti-agent</code>), with
+  <code>nix/packages/drishti-agent/default.nix</code> as the scoped build and a
+  <code>just drv-stability</code> CI guard. <strong>One refinement to the plan below:</strong> the
+  workspace split alone is <em>not</em> sufficient. <code>fetchBunDeps</code> is a
+  <code>symlinkJoin</code> over every <code>bun.nix</code> entry, <em>including</em>
+  <code>"drishti-app" = copyPathToStore ./packages/app</code> — so the agent's dep cache still took
+  the app's source as a direct input. The fix pairs the split with a <strong>filtered cache</strong>:
+  the agent derivation passes a <code>bun.nix</code> with the <code>drishti-app</code> entry removed
+  (<code>removeAttrs</code>) to <code>fetchBunDeps</code>. Both edges (narrow <code>src</code> +
+  filtered cache) are required; either alone leaves the churn intact. The single
+  <code>bun.lock</code> is preserved.
+</div>
+
 <h2>1. Root cause — the agent drv is the whole app build</h2>
 <p>
   <code>drishti-agent</code> (root <code>default.nix:48-56</code>) is just a <code>makeWrapper</code>

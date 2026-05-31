@@ -52,7 +52,7 @@
         in {
           # `nix run github:srid/drishti -- user@host` → the monitor.
           default = drvs.drishti;
-          inherit (drvs) drishti drishti-agent drishti-client drishtiBuilt;
+          inherit (drvs) drishti drishti-agent drishti-client drishtiBuilt drishtiAgentBuilt;
           # @kolu/* source paths — exposed so `nix build .#kolu-surface`
           # realizes the store path used by the dev shell's hydrate hook.
           kolu-surface = pkgs.kolu-surface;

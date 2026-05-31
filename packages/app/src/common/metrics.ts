@@ -10,7 +10,7 @@
  * imports keep resolving against one module.
  */
 
-import type { SystemInfo } from "./surface";
+import type { SystemInfo } from "drishti-common";
 
 /** `part` as a percentage of `whole`, guarded: 0 when `whole` is 0 (or
  *  negative) so callers never divide by zero — e.g. a freshly-connected host

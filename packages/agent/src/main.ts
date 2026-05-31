@@ -44,7 +44,7 @@ import {
   type Process,
   type ProcessesSnapshotMsg,
   surface,
-} from "../common/surface";
+} from "drishti-common";
 import { createProcReader } from "./proc";
 
 const POLL_INTERVAL_MS = 2000;

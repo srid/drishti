@@ -17,7 +17,7 @@ Screenshots:
 
 ## Why drishti
 
-- **Zero install on the remote.** The agent closure is shipped over SSH (`nix copy --derivation` then realise) on first connect and reused after. The remote needs only passwordless `ssh` + a `nix-daemon` that trusts your user — no agent binary to install, no inbound port, no config file to drop.
+- **Zero install on the remote.** The agent closure is shipped over SSH (`nix copy --derivation` then realise) on first connect and reused after. The agent is built from its own minimal derivation, so editing the UI or parent server doesn't change its hash — a drishti upgrade doesn't force a fresh closure copy on the next reconnect. The remote needs only passwordless `ssh` + a `nix-daemon` that trusts your user — no agent binary to install, no inbound port, no config file to drop.
 - **Zero config locally.** No database, no persisted metrics, no setup. History lives in memory for the life of the process. `nix run` and you're watching.
 - **One pane, many hosts, mixed arch.** A macOS laptop can drive Linux *and* macOS remotes from a single `nix run` — drishti probes each host's Nix system and ships the matching build.
 - **Cross-OS, same numbers.** Linux (`/proc`) and macOS (`sysctl` / `vm_stat` / `netstat`) report the same metrics the same way — memory "used" is cache-aware on both.
@@ -143,29 +143,32 @@ drishti/
 │  ├─ overlay.nix             # kolu-surface, kolu-surface-nix-host
 │  ├─ env.nix                 # DRISHTI_KOLU_SURFACE{,_NIX_HOST}
 │  ├─ packages/
-│  │  ├─ kolu-package.nix     # mkKoluPackage factory
-│  │  └─ drishti/default.nix  # bun2nix build derivation
+│  │  ├─ kolu-package.nix          # mkKoluPackage factory
+│  │  ├─ drishti/default.nix       # monitor + client build (full app tree)
+│  │  └─ drishti-agent/default.nix # scoped agent build — minimal inputs (issue #38)
 │  └─ home/
 │     ├─ module.nix           # home-manager module (systemd / launchd)
 │     └─ example/             # example config — CI-built (VM + launchd checks)
 ├─ scripts/
 │  └─ hydrate-kolu-packages.sh
-└─ packages/app/
-   └─ src/
-      ├─ agent/{main.ts, proc.ts}              # remote-side agent
-      ├─ common/{surface.ts, admin-surface.ts} # per-host + admin surfaces
-      ├─ server/                                # parent server
-      │  ├─ main.ts                             #   multi-host WS dispatch
-      │  ├─ router.ts                           #   per-host router fragment
-      │  ├─ admin-router.ts                     #   host-set router fragment
-      │  ├─ hostRegistry.ts                     #   per-host session pool
-      │  ├─ archMap.ts                          #   compose kolu's resolveSystem with the drv map
-      │  ├─ hostsStore.ts                       #   $XDG_STATE_HOME/drishti/hosts.json
-      │  └─ build.ts                            #   client bundler
-      └─ client/                                # SolidJS UI
-         ├─ App.tsx                             #   MultiHostApp + TabStrip + HostView
-         ├─ wire.ts                             #   surfaceForHost(host) + adminClient()
-         └─ {main.tsx, index.html, styles.css}
+└─ packages/                  # bun workspace members ["packages/*"]
+   ├─ common/src/surface.ts                     # per-host wire contract — agent + monitor share it
+   ├─ agent/src/{main.ts, proc.ts}              # remote-side agent (its own scoped build)
+   └─ app/
+      └─ src/
+         ├─ common/{metrics.ts, history.ts, admin-surface.ts}  # monitor-internal shared (admin surface + metric math)
+         ├─ server/                             # parent server
+         │  ├─ main.ts                          #   multi-host WS dispatch
+         │  ├─ router.ts                        #   per-host router fragment
+         │  ├─ admin-router.ts                  #   host-set router fragment
+         │  ├─ hostRegistry.ts                  #   per-host session pool
+         │  ├─ archMap.ts                       #   compose kolu's resolveSystem with the drv map
+         │  ├─ hostsStore.ts                    #   $XDG_STATE_HOME/drishti/hosts.json
+         │  └─ build.ts                         #   client bundler
+         └─ client/                             # SolidJS UI
+            ├─ App.tsx                          #   MultiHostApp + TabStrip + HostView
+            ├─ wire.ts                          #   surfaceForHost(host) + adminClient()
+            └─ {main.tsx, index.html, styles.css}
 ```
 
 ### How `@kolu/surface` is wired

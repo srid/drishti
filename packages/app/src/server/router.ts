@@ -48,7 +48,7 @@ import {
   type ProcessesSnapshotMsg,
   type SystemInfo,
   surface,
-} from "../common/surface";
+} from "drishti-common";
 import {
   captureSample,
   HISTORY_RETENTION_MS,

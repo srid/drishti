@@ -32,9 +32,9 @@ dev host='localhost' *args: install
     DRISHTI_AGENT_DRVS_JSON="$drvs_json" \
     {{ nix_shell }} bun --cwd packages/app dev {{ host }} {{ args }}
 
-# TypeScript type checking
+# TypeScript type checking (every workspace member: common, agent, app)
 typecheck: install
-    {{ nix_shell }} bun --cwd packages/app typecheck
+    {{ nix_shell }} bun run typecheck
 
 # Format all *.nix files (and any future biome target — drishti doesn't
 # bring biome in by default; add when JS formatting becomes a chore).

@@ -9,6 +9,14 @@
         "typescript": "^5.8.0",
       },
     },
+    "packages/agent": {
+      "name": "drishti-agent",
+      "version": "0.1.0",
+      "dependencies": {
+        "@orpc/server": "^1.13.13",
+        "drishti-common": "workspace:*",
+      },
+    },
     "packages/app": {
       "name": "drishti-app",
       "version": "0.1.0",
@@ -23,6 +31,7 @@
         "@tailwindcss/cli": "^4.1.0",
         "babel-preset-solid": "^1.9.0",
         "cleye": "^2.3.0",
+        "drishti-common": "workspace:*",
         "hono": "^4.12.16",
         "partysocket": "^1.1.16",
         "solid-js": "^1.9.0",
@@ -35,6 +44,18 @@
         "@types/node": "^22.0.0",
         "@types/ws": "^8.18.1",
         "typescript": "^5.8.0",
+      },
+    },
+    "packages/common": {
+      "name": "drishti-common",
+      "version": "0.1.0",
+      "dependencies": {
+        "@orpc/client": "^1.13.13",
+        "@orpc/contract": "^1.13.13",
+        "@orpc/server": "^1.13.13",
+        "@solid-primitives/scheduled": "^1.5.3",
+        "solid-js": "^1.9.0",
+        "zod": "^4.3.6",
       },
     },
   },
@@ -232,7 +253,11 @@
 
     "detect-libc": ["detect-libc@2.1.2", "", {}, "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="],
 
+    "drishti-agent": ["drishti-agent@workspace:packages/agent"],
+
     "drishti-app": ["drishti-app@workspace:packages/app"],
+
+    "drishti-common": ["drishti-common@workspace:packages/common"],
 
     "electron-to-chromium": ["electron-to-chromium@1.5.363", "", {}, "sha512-VjUKPyWzGnT1fujlkEGC/BvN70Hh70KXtAqcmniXviYlJC/ivcT+BWGPyxWVbJZLfvtKR6dqg1L7T7pgAMBtWA=="],
 

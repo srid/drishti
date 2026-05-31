@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "typecheck": "bun --cwd packages/app typecheck",
+    "typecheck": "bun --cwd packages/common typecheck && bun --cwd packages/agent typecheck && bun --cwd packages/app typecheck",
     "dev": "bun --cwd packages/app dev"
   },
   "devDependencies": {

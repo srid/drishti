@@ -1,0 +1,22 @@
+{
+  "name": "drishti-common",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/surface.ts",
+  "types": "./src/surface.ts",
+  "exports": {
+    ".": "./src/surface.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@orpc/client": "^1.13.13",
+    "@orpc/contract": "^1.13.13",
+    "@orpc/server": "^1.13.13",
+    "@solid-primitives/scheduled": "^1.5.3",
+    "solid-js": "^1.9.0",
+    "zod": "^4.3.6"
+  }
+}
