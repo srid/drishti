@@ -825,8 +825,11 @@ function HostView(props: { host: string }) {
               process={s().proc}
               memTotal={currentSystem().memTotal}
               onClose={() => setSelectedPid(null)}
-              parentPresent={processes[s().proc.ppid] !== undefined}
-              onSelectPid={setSelectedPid}
+              onSelectParent={
+                processes[s().proc.ppid] !== undefined
+                  ? () => setSelectedPid(s().proc.ppid)
+                  : null
+              }
             />
           )}
         </Show>
@@ -1231,24 +1234,16 @@ function ProcessDetail(props: {
   process: Process;
   memTotal: number;
   onClose: () => void;
-  // Selecting the parent re-points the same selection signal that drives this
-  // panel, so clicking the linked ppid swaps the panel to the parent and
-  // highlights its row. `parentPresent` is false when the parent has left the
-  // live set (or for pid 1 / orphans whose ppid is 0) — then the ppid renders
-  // as plain text, since selecting an absent pid would just close the panel.
+  // Non-null when the parent process is still in the live set. Clicking the
+  // ppid calls this to re-point the selection to the parent (highlighting its
+  // row and swapping the panel). Null when the parent has left the set, or for
+  // pid 1 / orphans (ppid 0) — the ppid renders as plain text in that case.
   //
-  // `onSelectPid` is wired to the bare `setSelectedPid` (an *unconditional*
-  // set), NOT the `toggle` that `ProcessRow` uses for its click — navigating to
-  // a parent must always re-point, never close. The two coincide only while the
-  // clicked ppid differs from the currently-selected pid; once selection has
-  // moved, a parent link can point back at the open pid, where `toggle` would
-  // close the panel instead of staying on it. Don't "unify" this onto `toggle`.
-  // It stays a prop (rather than reaching into `SelectionContext`) because
-  // `ProcessDetail` is a sibling of the table, not buried in its subtree — the
-  // context exists to avoid prop-drilling *through* `ProcessTable`, a depth this
-  // component doesn't have.
-  parentPresent: boolean;
-  onSelectPid: (pid: Pid) => void;
+  // Wired to an *unconditional* setSelectedPid, NOT the `toggle` that
+  // `ProcessRow` uses — navigating to a parent must always re-point, never
+  // close. It's a prop (not SelectionContext) because `ProcessDetail` is a
+  // sibling of the table, rendered before the context provider in the tree.
+  onSelectParent: (() => void) | null;
 }) {
   const p = () => props.process;
   // Resident memory as a share of host RAM — the same guarded "part of a
@@ -1300,17 +1295,19 @@ function ProcessDetail(props: {
         <DetailRow label="state">{stateLabel()}</DetailRow>
         <DetailRow label="parent">
           <Show
-            when={props.parentPresent}
+            when={props.onSelectParent}
             fallback={<span class="tabular-nums">{p().ppid}</span>}
           >
-            <button
-              type="button"
-              onClick={() => props.onSelectPid(p().ppid)}
-              class="cursor-pointer tabular-nums text-emerald-700 hover:underline dark:text-emerald-400"
-              title="Select parent process"
-            >
-              {p().ppid}
-            </button>
+            {(onSelect) => (
+              <button
+                type="button"
+                onClick={onSelect()}
+                class="cursor-pointer tabular-nums text-emerald-700 hover:underline dark:text-emerald-400"
+                title="Select parent process"
+              >
+                {p().ppid}
+              </button>
+            )}
           </Show>
         </DetailRow>
         <DetailRow label="nice">
