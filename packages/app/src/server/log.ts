@@ -38,12 +38,22 @@ export function makeLogger(tag: string): Logger {
  *  Every writer in this process emits one complete `\n`-terminated line
  *  per call, so stamping at each line start within the chunk is exact;
  *  the `(?=.)` guard skips the empty segment after a trailing newline so
- *  a lone `\n` isn't given a stray timestamp. Idempotent in effect only
- *  if called once — call it before any other logging. */
+ *  a lone `\n` isn't given a stray timestamp.
+ *
+ *  Idempotent by construction: the marker below is stamped onto the
+ *  installed wrapper, so a second call (or a re-imported module) returns
+ *  early instead of wrapping the already-wrapped `write` — which would
+ *  nest a second stamping pass and double-prefix every line. */
+const STDERR_TIMESTAMPED = Symbol("drishti.stderr.timestamped");
+type MarkedWrite = typeof process.stderr.write & {
+  [STDERR_TIMESTAMPED]?: true;
+};
+
 export function installStderrTimestamps(): void {
+  if ((process.stderr.write as MarkedWrite)[STDERR_TIMESTAMPED]) return;
   const original = process.stderr.write.bind(process.stderr);
   // biome-ignore lint/suspicious/noExplicitAny: matching Node's overloaded write() signature, which we forward verbatim.
-  process.stderr.write = ((chunk: any, ...rest: any[]): boolean => {
+  const wrapper = ((chunk: any, ...rest: any[]): boolean => {
     if (typeof chunk === "string") {
       const stamped = chunk.replace(/^(?=.)/gm, `${new Date().toISOString()} `);
       // biome-ignore lint/suspicious/noExplicitAny: forwarding the original variadic (encoding?, cb?) tail unchanged.
@@ -51,5 +61,7 @@ export function installStderrTimestamps(): void {
     }
     // biome-ignore lint/suspicious/noExplicitAny: non-string (Buffer) chunks pass through unstamped — no writer uses them.
     return original(chunk, ...(rest as [any]));
-  }) as typeof process.stderr.write;
+  }) as MarkedWrite;
+  wrapper[STDERR_TIMESTAMPED] = true;
+  process.stderr.write = wrapper;
 }

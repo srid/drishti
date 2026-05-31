@@ -61,6 +61,18 @@ describe("installStderrTimestamps", () => {
     expect(lines[2]).toBe("");
   });
 
+  it("is idempotent — a second install does not double-stamp", () => {
+    const out = captureStderr(() => {
+      installStderrTimestamps();
+      installStderrTimestamps();
+      process.stderr.write("[server] once\n");
+    });
+    const line = out[0] as string;
+    // Exactly one ISO timestamp at the start, not two nested ones.
+    expect(line).toMatch(ISO);
+    expect(line.replace(ISO, "")).toBe("[server] once\n");
+  });
+
   it("passes non-string (Buffer) chunks through untouched", () => {
     const buf = Buffer.from("raw\n");
     const out = captureStderr(() => {
