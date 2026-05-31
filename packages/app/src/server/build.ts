@@ -65,7 +65,7 @@ export async function buildClient(distDir: string): Promise<void> {
     plugins: [solidJsxPlugin],
   });
   if (!jsResult.success) {
-    for (const m of jsResult.logs) log(String(m));
+    for (const m of jsResult.logs) log(m.message);
     throw new Error("Bun.build failed for client");
   }
 
