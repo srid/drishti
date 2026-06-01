@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { type ServeOverStdio, serveAgent } from "./main";
+import { serveAgent } from "./main";
 import type { ProcReader } from "./proc";
 
 // A reader whose process enumeration is the expensive part — the darwin
@@ -39,19 +39,17 @@ describe("serveAgent", () => {
 
     let served = false;
     let firstRequestFired = false;
-    // Fake transport: resolves immediately (as if stdin closed at once),
-    // standing in for serveOverStdio. Were `serveAgent` to gate serving on
-    // the process scan — the pre-fix behaviour — this would never be called
-    // and the `await` below would hang the test out (timeout). That hang is
-    // exactly the connect-handshake stall this reorder fixes, so a green run
-    // here is the regression guard.
-    const serve: ServeOverStdio = async ({ onFirstRequest }) => {
+    // Fake transport passed inline so it's contextually typed by serveAgent's
+    // `serve` parameter (no exported type needed). It resolves immediately, as
+    // if stdin closed at once. Were `serveAgent` to gate serving on the process
+    // scan — the pre-fix behaviour — this fake would never be called and the
+    // `await` below would hang the test out (timeout). That hang is exactly the
+    // connect-handshake stall this reorder fixes, so a green run is the guard.
+    await serveAgent(reader, async ({ onFirstRequest }) => {
       served = true;
       onFirstRequest();
       firstRequestFired = true;
-    };
-
-    await serveAgent(reader, serve);
+    });
 
     expect(served).toBe(true);
     expect(firstRequestFired).toBe(true);

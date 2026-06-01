@@ -94,11 +94,12 @@ function processChanged(a: Process, b: Process): boolean {
   return MUTABLE_PROCESS_FIELDS.some((f) => a[f] !== b[f]);
 }
 
-/** The slice of `serveOverStdio` that `serveAgent` depends on — narrowed to
- *  the one call shape it uses, so a test can inject a fake transport (no real
- *  stdio) and prove the first RPC is answered without waiting on the process
- *  scan. The real `serveOverStdio` is assignable to this. */
-export type ServeOverStdio = (opts: {
+/** The serve operation `serveAgent` calls — narrowed to the one shape it
+ *  uses, so a test can inject a fake (the default is the real stdio
+ *  transport, which is assignable to this). Module-private and named for the
+ *  *role*, not the `serveOverStdio` implementation: nothing outside this file
+ *  consumes it, and the test passes an inline, contextually-typed fake. */
+type Serve = (opts: {
   // biome-ignore lint/suspicious/noExplicitAny: the kolu handler's router type; the real serveOverStdio is invoked with the same `as any` cast at the call site below.
   router: any;
   onFirstRequest: () => void;
@@ -121,7 +122,7 @@ export type ServeOverStdio = (opts: {
  */
 export async function serveAgent(
   reader: ProcReader,
-  serve: ServeOverStdio = serveOverStdio,
+  serve: Serve = serveOverStdio,
 ): Promise<void> {
   // Seed the `system` cell synchronously — the cheap read (vm_stat + statfs
   // on darwin, a couple of /proc reads on linux) the handshake actually
