@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>“localhost” timed out — the host that needs no connection</title>
+<style>
+  :root {
+    --bg: #0b1020; --panel: #121a2e; --panel2: #0e1526; --line: #1f2a44;
+    --ink: #d7deec; --dim: #8a96b0; --faint: #5d6886;
+    --amber: #f59e0b; --emerald: #10b981; --red: #ef4444; --blue: #6366f1;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2.2rem clamp(1rem, 4vw, 3.5rem); background: var(--bg);
+    color: var(--ink); font: 15px/1.6 system-ui, -apple-system, sans-serif;
+  }
+  main { max-width: 920px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 .2rem; }
+  h2 { font-size: 1.05rem; margin: 2.2rem 0 .6rem; color: #fff;
+       border-bottom: 1px solid var(--line); padding-bottom: .35rem; }
+  h3 { font-size: .92rem; margin: 1.3rem 0 .4rem; color: var(--ink); }
+  p { margin: .55rem 0; }
+  code { font-family: var(--mono); font-size: .85em; color: #e6c07b;
+         background: #1a2238; padding: .08em .35em; border-radius: 4px; }
+  .sub { color: var(--dim); margin-top: .1rem; }
+  .cite { font-family: var(--mono); font-size: .8em; color: var(--faint); }
+  .pill { display: inline-block; font-size: .72rem; font-family: var(--mono);
+          padding: .1em .5em; border-radius: 999px; border: 1px solid var(--line);
+          color: var(--dim); }
+  .key { background: #161f38; border: 1px solid var(--line); border-radius: 10px;
+         padding: 1rem 1.2rem; margin: 1rem 0; }
+  .key strong { color: #fff; }
+  .log { background: #07060b; border: 1px solid var(--line); border-radius: 8px;
+         padding: .9rem 1rem; font-family: var(--mono); font-size: .76rem;
+         line-height: 1.55; overflow-x: auto; white-space: pre; color: #aeb6c8; }
+  .log .l { color: var(--dim); }
+  .log .r { color: #7f8aa6; }
+  .log .ok { color: var(--emerald); }
+  .log .warn { color: var(--amber); }
+  .log .stuck { color: var(--red); font-weight: 600; }
+  ul { margin: .5rem 0; padding-left: 1.2rem; }
+  li { margin: .3rem 0; }
+  table { width: 100%; border-collapse: collapse; margin: .8rem 0; font-size: .88rem; }
+  th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; font-size: .78rem; text-transform: uppercase;
+       letter-spacing: .03em; }
+  td code { white-space: nowrap; }
+  .flow { font-family: var(--mono); font-size: .82rem; line-height: 1.9; margin: .6rem 0;
+          color: var(--dim); }
+  .flow b { color: var(--amber); }
+  .flow .g { color: var(--emerald); }
+  .flow .x { color: var(--red); }
+  .mockwrap { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+  @media (max-width: 720px) { .mockwrap { grid-template-columns: 1fr; } }
+  .mock { background: #0a0f1e; border: 1px solid var(--line); border-radius: 10px;
+          padding: 0; overflow: hidden; }
+  .mockhead { font-size: .72rem; color: var(--faint); font-family: var(--mono);
+              padding: .45rem .8rem; border-bottom: 1px solid var(--line);
+              background: #0e1526; }
+  .mockbody { padding: 1rem; min-height: 150px; }
+  .verdict { font-size: .8rem; color: var(--faint); margin-top: .55rem; }
+  .verdict.good { color: var(--emerald); }
+  .verdict.bad { color: var(--red); }
+  .rev { font-size: .82rem; color: var(--dim); border-left: 2px solid var(--line);
+         padding: .15rem 0 .15rem .8rem; margin: .5rem 0; }
+  .rev b { color: var(--ink); }
+  .tag { font-family: var(--mono); font-size: .72rem; padding: .06em .45em; border-radius: 4px; }
+  .tag.proven { color: var(--emerald); border: 1px solid rgba(16,185,129,.4); }
+  .tag.inferred { color: var(--amber); border: 1px solid rgba(245,158,11,.4); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>“localhost” timed out — the host that needs no connection</h1>
+<p class="sub">Why the one tab that should <em>always</em> be green is the only one that’s red. <span class="pill">talk · --html</span></p>
+
+<div class="key">
+<strong>The punchline.</strong> You’re right that <code>localhost</code> uses no network — and it doesn’t. But “no connection” isn’t “no handshake.” drishti treats <em>every</em> host uniformly: even localhost gets <code>nix-store&nbsp;--realise</code> → spawn the agent as a local stdio child → wait ≤30&nbsp;s for the first RPC. The agent enumerates <strong>all 956 processes before it starts answering</strong>, and on <code>zest</code> — a load-9.58 macOS box running <code>lsof</code> over its own process table — that enumeration overruns the 30&nbsp;s budget. The host that “should just work” is in fact the <em>worst</em> case in the fleet.
+</div>
+
+<h2>What you’re looking at</h2>
+<p>The card says <code>connect handshake timed out after 30000ms (transport up, no first RPC)</code>, then it backs off and retries to attempt 5/5, then gives up. The log shows the agent <em>realising fine</em> and only then the timeout:</p>
+
+<div class="log"><span class="stuck">[local]</span> connect handshake timed out after 30000ms (transport up, no first RPC)
+<span class="l">[local]</span> reconnecting in 16000ms… (attempt 4/5)
+<span class="l">[local]</span> localhost: realising '/nix/store/…-drishti-agent.drv'…
+<span class="warn">[local]</span> warning: you did not specify '--add-root'; the result might be removed by the GC
+<span class="ok">[local]</span> localhost: agent realised at /nix/store/…-drishti-agent</div>
+
+<p>That ordering is the first clue: the realise <em>succeeds</em> (<code>agent realised at …</code>) — the 30&nbsp;s is spent <em>after</em> it, on the handshake. The slow-nix-build theory is dead on arrival.</p>
+
+<h2>localhost really does skip the network</h2>
+<p>The transport layer special-cases the loopback names — no ssh, no <code>nix copy</code>:</p>
+
+<table>
+<tr><th>Step</th><th>localhost</th><th>a real remote</th></tr>
+<tr><td>arch probe</td><td><code>nix-instantiate --eval</code> run locally</td><td><code>ssh host nix-instantiate …</code></td></tr>
+<tr><td>ship closure</td><td>— skipped —</td><td><code>nix copy --to ssh-ng://host</code></td></tr>
+<tr><td>realise</td><td><code>nix-store --realise</code> run locally</td><td><code>ssh host nix-store --realise</code></td></tr>
+<tr><td>spawn agent</td><td><code>${agentPath}/bin/drishti-agent --stdio</code> (direct child)</td><td><code>ssh host … --stdio</code></td></tr>
+</table>
+<p class="cite">isLocalHost: @kolu/surface-nix-host host.ts:6 · buildAgentCommand host.ts:210 · buildSshProbeCommand host.ts:232 · nix-copy guard nixCopy.ts</p>
+
+<p>So your instinct holds: nothing leaves the box. What <em>doesn’t</em> change for localhost is the session lifecycle — it still spawns a child and waits for a handshake under a watchdog:</p>
+
+<div class="flow">
+copying <span class="g">──realise locally (outside the 30s)──▶</span> <b>connecting</b> <span class="g">──first RPC──▶</span> connected<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>connecting</b> <span class="x">──30s watchdog──▶</span> disconnected <span class="x">──×5 (cause “remote”)──▶</span> failed
+</div>
+
+<div class="key">
+The 30&nbsp;s watchdog is armed <strong>the instant the child is spawned</strong> — <em>after</em> <code>provisionAgent</code> (probe + realise) returns. So realise time is genuinely <em>not</em> in the budget; the whole 30&nbsp;s belongs to the agent’s own post-spawn startup. <span class="cite">watchdog armed at spawn: hostSession.ts:515 · default 30s: hostSession.ts:433 · wired by drishti: hostRegistry.ts:46,117</span>
+</div>
+
+<h2>Why it times out anyway: the agent serves last</h2>
+<p>The “first RPC” the parent waits on is the bridge’s <code>system.get</code> subscription — its first yield calls <code>markConnected()</code> (<code>connecting → connected</code>). But the agent can’t answer until it reaches <code>serveOverStdio()</code>, and that is the <em>last</em> thing <code>main()</code> does:</p>
+
+<div class="log"><span class="l">main.ts:106</span>  await reader.readSystem()      <span class="r">// darwin: vm_stat + statfs        (cheap)</span>
+<span class="l">main.ts:110</span>  await reader.readProcesses()   <span class="stuck">// darwin: ps  +  lsof -nP -d cwd  ← all 956 pids</span>
+<span class="l">main.ts:120</span>  await reader.readNetwork()     <span class="r">// darwin: netstat -ib</span>
+<span class="l">  …</span>
+<span class="l">main.ts:300</span>  await serveOverStdio(…)        <span class="ok">// ← only NOW is stdin read / RPCs answered</span></div>
+
+<p>Those are plain sequential <code>await</code>s, not a background warm-up. The parent’s <code>system.get</code> frame is written to the child’s stdin the moment the link opens — and then sits <strong>buffered, unread</strong>, because <code>serveOverStdio</code> hasn’t attached the stdin reader yet. The dominant cost is <code>lsof -nP -d cwd</code> over the whole table (the per-process cwd lookup added in <code>3d6ff0b</code>). On a load-9.58 box with 956 processes that overruns 30&nbsp;s → watchdog → SIGTERM → the exit handler reports the verbatim string and classifies it <code>"remote"</code> (bounded), so after 5 strikes it lands in terminal <code>failed</code>.</p>
+<p class="cite">handshake = system.get first yield → markConnected: router.ts:404–411 · ps+lsof: proc.ts:681 · timeout string + cause "remote": hostSession.ts:473 · give-up after 5: hostSession.ts (MAX_CONSECUTIVE_FAILURES)</p>
+
+<h2>The irony: localhost is the <em>worst</em> host, not the easiest</h2>
+<p>Three things stack up, and they all land hardest on exactly this host:</p>
+<ul>
+  <li><strong>localhost <em>is</em> zest.</strong> The agent runs <em>on</em> the most-loaded, highest-process-count box in the fleet — and competes for the very CPU it’s trying to measure.</li>
+  <li><strong>It’s darwin.</strong> macOS has no <code>/proc</code>, so the reader forks <code>ps</code> + <code>lsof</code> + <code>netstat</code>. Your green Linux remotes use pure <code>/proc</code> file reads (<span class="cite">proc.ts:328–381</span>) — no <code>lsof</code> fork — so they handshake sub-second even with more PIDs.</li>
+  <li><strong>The agent serves last.</strong> All 956 PIDs of <code>lsof</code> sit squarely on the handshake critical path, instead of filling in a beat after the link is live.</li>
+</ul>
+<p>A remote Linux host with 200 idle processes connects instantly; localhost — “which needs no connection” — is the one whose agent is too busy enumerating its own process table to say hello in time.</p>
+
+<h2>Confirm it in five seconds <span class="tag inferred">mechanism proven, magnitude to verify</span></h2>
+<p>The serve-after-enumerate ordering is proven in source. What the screenshot can’t prove on its own is that the enumeration is what ran out the clock (vs. a slow first-RPC <em>roundtrip</em> after serving). The agent prints a deliberate tell that settles it — scroll up in the connection log and look for these <code>[remote]</code> lines:</p>
+
+<div class="mockwrap">
+  <div class="mock">
+    <div class="mockhead">stuck pre-serve → the diagnosis holds</div>
+    <div class="mockbody">
+      <div class="log"><span class="r">[remote]</span> drishti-agent: os=darwin, pid=…
+<span class="stuck">⟨ 30s of silence — then SIGTERM ⟩</span></div>
+      <div class="verdict bad">no “serving surface over stdio”, no heartbeat → agent stuck in lsof. Serve-first fix applies.</div>
+    </div>
+  </div>
+  <div class="mock">
+    <div class="mockhead">served, but roundtrip slow → different bug</div>
+    <div class="mockbody">
+      <div class="log"><span class="r">[remote]</span> serving surface over stdio …
+<span class="r">[remote]</span> waiting for first RPC (5s)…
+<span class="r">[remote]</span> waiting for first RPC (25s)…</div>
+      <div class="verdict">heartbeat climbs to ~30s → stall is the parent→agent roundtrip; serve-first would <em>not</em> help.</div>
+    </div>
+  </div>
+</div>
+<p class="cite">os= line printed on spawn: main.ts:103 · “serving surface over stdio”: main.ts:288 · heartbeat: main.ts:295 · the agent’s own comment frames this as the discriminator</p>
+<p>Everything points to the left card. (Note: <code>lsof</code> is wrapped in <code>.catch(() =&gt; "")</code> — a <em>failing</em> lsof degrades to blank cwds and doesn’t block, so the stall needs lsof to be <em>slow</em>, not broken; under load 9.58 with a stale/network-backed cwd somewhere in 956 procs, slow is exactly what you get.)</p>
+
+<h2>Fix: serve first, enumerate lazily</h2>
+<p>The handshake only needs the cheap <code>system</code> cell — already seeded by <code>readSystem()</code> at <code>main.ts:106</code>. It does <em>not</em> need the <code>lsof</code>-driven process table or <code>netstat</code>. Reorder so the agent answers RPCs immediately and lets its existing 2-second poll loop fill the rest.</p>
+
+<table>
+<tr><th>Decision</th><th>Shape</th></tr>
+<tr>
+  <td>Move the seam</td>
+  <td>Call <code>serveOverStdio()</code> right after the cheap <code>readSystem()</code> seed; defer the two subprocess-backed reads (<code>readProcesses</code>’ lsof, <code>readNetwork</code>’ netstat) to the first <code>tick()</code> of the existing poll loop. <span class="cite">main.ts:105–121 vs :300</span></td>
+</tr>
+<tr>
+  <td>Keep the cheap seed</td>
+  <td><span class="rev"><b>Don’t defer everything.</b> <code>readCpuCores()</code> (main.ts:115) is synchronous <code>os.cpus()</code> — keep seeding it pre-serve; it costs nothing and gives the CPU-delta its baseline. Only the <em>fork</em>-backed reads belong off the critical path.</span></td>
+</tr>
+<tr>
+  <td>Uniformity preserved</td>
+  <td><span class="rev"><b>No localhost special-case.</b> This is an agent-startup fix, not a transport branch — so it speeds up <em>every</em> host’s cold start, darwin or linux, local or remote. The deliberate “localhost is not special” design (hostRegistry / host.ts) stays intact.</span></td>
+</tr>
+<tr>
+  <td>Accept the first-frame blip</td>
+  <td>CPU% / net throughput are deltas against a prior tick (<span class="cite">proc.ts:64–95, 201–220</span>); a browser that subscribes in the sub-second gap before tick #1 sees one frame of 0% / 0&nbsp;B/s and a momentarily empty process list, corrected on the next delta. Benign under the snapshot-then-delta contract the pumps already tolerate.</td>
+</tr>
+<tr>
+  <td>Not the watchdog</td>
+  <td>Raising / scaling <code>connectTimeoutMs</code> is a band-aid: it hides the latency instead of removing it, and a 956-proc darwin box under heavier load would still blow a bigger budget. Leave the 30&nbsp;s where it is.</td>
+</tr>
+</table>
+
+<div class="mockwrap">
+  <div class="mock">
+    <div class="mockhead">today — serve after enumerate</div>
+    <div class="mockbody">
+      <div class="flow">spawn <span class="x">─lsof×956─▶</span> serve <span class="x">─▶</span> answer<br><span class="verdict bad">handshake waits on the whole table → &gt;30s on zest → failed</span></div>
+    </div>
+  </div>
+  <div class="mock">
+    <div class="mockhead">after — serve, then enumerate on tick #1</div>
+    <div class="mockbody">
+      <div class="flow">spawn <span class="g">─▶</span> serve <span class="g">─▶</span> answer <span class="g">(sub-second)</span><br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─ poll tick fills procs/cpu/net<br><span class="verdict good">link live regardless of process count</span></div>
+    </div>
+  </div>
+</div>
+
+<h3>Scope</h3>
+<p>One file: <code>packages/agent/src/main.ts</code> (~lines 105–300) reordered. Add a regression test that the agent answers a <code>system.get</code> before <code>readProcesses()</code> resolves (stub a slow reader). No kolu change, no UI change. README has no user-facing surface to update — startup just gets faster.</p>
+
+<p class="sub" style="margin-top:2rem">Ready to ship? Verify the left-hand log card first (it’s a five-second scroll), then invoke <code>do</code> to implement the reorder + test and run <code>/ci</code>.</p>
+
+</main>
+</body>
+</html>
