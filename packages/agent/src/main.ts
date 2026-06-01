@@ -250,7 +250,7 @@ export async function serveAgent(
           upserts.push([pid, value]);
         }
       }
-      for (const pid of [...processSnapshot.keys()]) {
+      for (const pid of processSnapshot.keys()) {
         if (!nextProcesses.has(pid)) {
           fragment.ctx.collections.processes.remove(pid);
           removes.push(pid);
