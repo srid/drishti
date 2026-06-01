@@ -38,7 +38,6 @@ describe("serveAgent", () => {
     const reader = gatedReader(processesGate);
 
     let served = false;
-    let firstRequestFired = false;
     // Fake transport passed inline so it's contextually typed by serveAgent's
     // `serve` parameter (no exported type needed). It resolves immediately, as
     // if stdin closed at once. Were `serveAgent` to gate serving on the process
@@ -48,11 +47,9 @@ describe("serveAgent", () => {
     await serveAgent(reader, async ({ onFirstRequest }) => {
       served = true;
       onFirstRequest();
-      firstRequestFired = true;
     });
 
     expect(served).toBe(true);
-    expect(firstRequestFired).toBe(true);
 
     // Release the gate so the fire-and-forget first tick settles cleanly.
     releaseProcesses();
