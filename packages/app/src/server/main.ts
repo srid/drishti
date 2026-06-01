@@ -35,6 +35,7 @@ import { buildClient } from "./build";
 import { buildHostRegistry } from "./hostRegistry";
 import { loadHosts, resolveHostsFile, saveHosts } from "./hostsStore";
 import { installStderrTimestamps, makeLogger } from "./log";
+import { startWakeMonitor } from "./wakeMonitor";
 
 // Stamp every stderr line (drishti's, kolu's, and the forwarded remote
 // agent's) with a timestamp before anything logs — the connection
@@ -105,6 +106,20 @@ async function main(): Promise<void> {
   const admin = buildAdminRouter({ registry });
   // biome-ignore lint/suspicious/noExplicitAny: matches existing router-handler cast (see implementSurface fragment shape).
   const adminHandler = new RPCHandler(admin.router as any);
+
+  // Laptops sleep. On resume every ssh link is stale (the far end dropped
+  // the socket while we were frozen); without a nudge the parent waits
+  // ~30s for each ssh keepalive to notice. Detect the wake and re-probe
+  // the whole fleet at once. The timer is unref'd, so this never keeps the
+  // process alive on its own.
+  const stopWakeMonitor = startWakeMonitor({
+    onWake: (gapMs) => {
+      log(
+        `wake detected (process suspended ~${Math.round(gapMs / 1000)}s) — rechecking all host links`,
+      );
+      registry.recheckAll();
+    },
+  });
 
   // ── HTTP server: serve the client bundle ──────────────────────────
   const distDir = process.env.DRISHTI_DIST_DIR
@@ -227,6 +242,7 @@ async function main(): Promise<void> {
 
   const shutdown = (sig: string) => {
     log(`${sig}: destroying host sessions`);
+    stopWakeMonitor();
     destroyAllSessions();
     wss.close();
     for (const ws of wss.clients) {

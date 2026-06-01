@@ -91,6 +91,14 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
           opts.registry.reconnect(input.host);
           return { ok: true };
         },
+        recheck: () => {
+          // Fleet-wide force-reprobe (browser regained connectivity /
+          // refocused). Like `reconnect`, no membership change and no
+          // collection publish — each host's recovery streams back through
+          // its own `connection` cell.
+          opts.registry.recheckAll();
+          return { ok: true };
+        },
       },
     },
   });

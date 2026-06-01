@@ -73,6 +73,15 @@ export interface HostRegistry {
    *  not the host set, is what changes, so callers don't await it and no
    *  persistence happens. */
   reconnect(host: string): void;
+  /** Force a fresh link probe on *every* host — the fleet-wide companion
+   *  to the wake / network-change signals (`wakeMonitor`, the browser's
+   *  `online`/`visibilitychange`). Unlike `reconnect`, this cycles even a
+   *  `connected` session, because after a laptop sleep a "live" ssh child
+   *  is often holding a socket the far end already dropped (kolu's
+   *  `recheck()` — see there). Per-session no-ops mean an already-healthy
+   *  host just blips through one fast reconnect; idle (unpinned) sessions
+   *  are skipped. */
+  recheckAll(): void;
   registerConnection(host: string, ws: WsConn): void;
   unregisterConnection(host: string, ws: WsConn): void;
 }
@@ -163,6 +172,10 @@ export async function buildHostRegistry(
 
     reconnect(host) {
       entries.get(host)?.session.reconnect();
+    },
+
+    recheckAll() {
+      for (const entry of entries.values()) entry.session.recheck();
     },
 
     registerConnection(host, ws) {

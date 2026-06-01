@@ -62,6 +62,15 @@ export const adminSurface = defineSurface({
         input: z.object({ host: z.string() }),
         output: z.object({ ok: z.boolean() }),
       },
+      // Force a fresh link probe on every host — the browser fires this on
+      // regaining connectivity (`online`) or refocus (`visibilitychange`),
+      // the client-side companion to the parent's own wake monitor. No
+      // input (it's fleet-wide) and no host-set change; like `reconnect`,
+      // recovery is observed via each host's `connection` cell.
+      recheck: {
+        input: z.object({}),
+        output: z.object({ ok: z.boolean() }),
+      },
     },
   },
 });

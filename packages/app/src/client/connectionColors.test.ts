@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { STATE, withElapsed } from "./connectionColors";
+import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
 
 describe("connection STATE presentation", () => {
   it("covers every connection state", () => {
@@ -31,6 +31,19 @@ describe("connection STATE presentation", () => {
     // copying/connecting are in-flight → pending.
     expect(STATE.copying.pending).toBe(true);
     expect(STATE.connecting.pending).toBe(true);
+  });
+});
+
+describe("disconnectedMessage", () => {
+  it("names an unreachable host for a network fault", () => {
+    // The roaming case: the parent retries a network fault forever, so the
+    // overlay should say *why* it's stuck rather than a bare "Reconnecting…".
+    expect(disconnectedMessage("network")).toBe("Host unreachable — retrying…");
+  });
+
+  it("falls back to the base message for a remote fault or none yet", () => {
+    expect(disconnectedMessage("remote")).toBe(STATE.disconnected.message);
+    expect(disconnectedMessage(null)).toBe(STATE.disconnected.message);
   });
 });
 

@@ -45,7 +45,7 @@ import {
   type Process,
   type SystemInfo,
 } from "drishti-common";
-import { STATE, withElapsed } from "./connectionColors";
+import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
 import {
@@ -316,6 +316,28 @@ export default function App() {
       prevHosts = next;
     }),
   );
+
+  // Nudge the parent to re-probe every host link when the browser regains
+  // connectivity (`online`) or the tab is refocused (`visibilitychange`) —
+  // the client-side companion to the server's wake monitor. It catches the
+  // case the parent's clock-gap detector can't: a brief network flap (café
+  // Wi-Fi dropping for a few seconds) that never suspends the process.
+  // partysocket already reconnects these loopback control sockets; this RPC
+  // reaches past them to the *agent* links the parent holds over ssh.
+  const recheckAllHosts = () => {
+    void admin.rpc.surface.hosts
+      .recheck({})
+      .catch((err) => console.error("hosts.recheck failed", err));
+  };
+  const onVisible = () => {
+    if (document.visibilityState === "visible") recheckAllHosts();
+  };
+  window.addEventListener("online", recheckAllHosts);
+  document.addEventListener("visibilitychange", onVisible);
+  onCleanup(() => {
+    window.removeEventListener("online", recheckAllHosts);
+    document.removeEventListener("visibilitychange", onVisible);
+  });
 
   // The fleet overview is the default landing view — the "single pane of
   // glass" across every host. `view` holds the user's intent; the host
@@ -982,6 +1004,13 @@ function ConnectingOverlay(props: {
   // The freshest parent progress line (e.g. "reconnecting in 4000ms…
   // (attempt 2/5)"). Display only — never parsed for control flow.
   const lastProgress = () => c().progressLines.at(-1) ?? null;
+  // The pending-state headline. `disconnected` refines by failureCause
+  // ("Host unreachable — retrying…" for a network fault); every other
+  // state takes its static message.
+  const statusMessage = () =>
+    c().state === "disconnected"
+      ? disconnectedMessage(c().failureCause)
+      : STATE[c().state].message;
 
   // Seconds elapsed in the *current* connection state, reset on every
   // state change so it counts time-in-this-phase rather than total. A
@@ -1015,7 +1044,7 @@ function ConnectingOverlay(props: {
         fallback={
           <>
             <div class="mb-2 text-lg">
-              {withElapsed(STATE[c().state].message, elapsedSec())}
+              {withElapsed(statusMessage(), elapsedSec())}
             </div>
             <Show
               when={lastProgress()}
