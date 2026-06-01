@@ -45,7 +45,7 @@ import {
   type ProcessesSnapshotMsg,
   surface,
 } from "drishti-common";
-import { createProcReader } from "./proc";
+import { createProcReader, type ProcReader } from "./proc";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -94,31 +94,55 @@ function processChanged(a: Process, b: Process): boolean {
   return MUTABLE_PROCESS_FIELDS.some((f) => a[f] !== b[f]);
 }
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  if (!args.includes("--stdio")) usage();
-  const brokenStdoutLog = args.includes("--broken-stdout-log");
+/** The slice of `serveOverStdio` that `serveAgent` depends on — narrowed to
+ *  the one call shape it uses, so a test can inject a fake transport (no real
+ *  stdio) and prove the first RPC is answered without waiting on the process
+ *  scan. The real `serveOverStdio` is assignable to this. */
+export type ServeOverStdio = (opts: {
+  // biome-ignore lint/suspicious/noExplicitAny: the kolu handler's router type; the real serveOverStdio is invoked with the same `as any` cast at the call site below.
+  router: any;
+  onFirstRequest: () => void;
+}) => Promise<void>;
 
-  const reader = createProcReader();
-  log(`drishti-agent: os=${reader.os}, pid=${process.pid}`);
-
+/**
+ * Build the surface fragment + poll loop for `reader`, then serve it.
+ *
+ * **Serve before you enumerate.** The connect handshake — the parent's first
+ * `system.get` — needs only the cheap `system` snapshot, so that is the one
+ * read we seed before serving. The expensive process scan (darwin: `ps` +
+ * `lsof -nP -d cwd` over the *whole* table) and network read (`netstat`) are
+ * NOT on the handshake's critical path: they start empty and the poll loop
+ * fills them. `await`-ing them before `serve` is what let a busy,
+ * high-process-count host (a loaded macOS box as `localhost`, say) blow the
+ * parent's 30s connect watchdog — "transport up, no first RPC" — while the
+ * link itself was fine. See docs/plans/talk-localhost-handshake-timeout.html.
+ *
+ * `serve` is injectable for tests; it defaults to the real stdio transport.
+ */
+export async function serveAgent(
+  reader: ProcReader,
+  serve: ServeOverStdio = serveOverStdio,
+): Promise<void> {
+  // Seed the `system` cell synchronously — the cheap read (vm_stat + statfs
+  // on darwin, a couple of /proc reads on linux) the handshake actually
+  // needs, so the cell is live the instant we serve.
   const systemStore = inMemoryStore({
     ...(await reader.readSystem()),
     pollIntervalMs: POLL_INTERVAL_MS,
   });
-  const processSnapshot = new Map<Pid, Process>();
-  for (const [pid, value] of await reader.readProcesses())
-    processSnapshot.set(pid, value);
-  // Seed CPU-core baseline so the first delta has a previous tick to
-  // compare against — first call returns mostly-zero usages.
+  // Per-core CPU usage is a *rate* against the previous tick; the reader
+  // captured its baseline at construction, so this synchronous seed (just
+  // os.cpus(), no fork) costs nothing and lets a subscriber see cores at once.
   const cpuCoreSnapshot = new Map<CoreId, CpuCore>();
   for (const [core, value] of reader.readCpuCores())
     cpuCoreSnapshot.set(core, value);
-  // Seed the network baseline so the first published delta has a previous
-  // tick to rate against — this first read returns 0 bytes/sec everywhere.
+  // Processes and network start EMPTY and are filled by the poll loop's first
+  // tick (kicked immediately below), NOT awaited here. On darwin
+  // `readProcesses` forks `ps` + `lsof` over every pid and `readNetwork`
+  // forks `netstat`; awaiting them before serving would gate the first RPC
+  // behind a full process scan — the bug this reorder fixes.
+  const processSnapshot = new Map<Pid, Process>();
   const netSnapshot = new Map<IfaceName, NetInterface>();
-  for (const [iface, value] of await reader.readNetwork())
-    netSnapshot.set(iface, value);
 
   // Build the surface implementation. The `processes` collection's
   // `readAll` yields the current snapshot; `upsert`/`remove` are the
@@ -268,15 +292,12 @@ async function main(): Promise<void> {
   const interval = setInterval(() => {
     void tick();
   }, POLL_INTERVAL_MS);
-
-  // Deliberately broken variant — bypass console.log redirection and
-  // write directly to fd 1. This is exactly the wire-corrupting bug
-  // `serveOverStdio` documents.
-  if (brokenStdoutLog) {
-    process.stdout.write(
-      "DEBUG: this line corrupts the protocol channel\n",
-    );
-  }
+  // Kick the first enumeration immediately and fire-and-forget, so processes
+  // and network populate within one scan rather than after a full poll
+  // interval — but off the serving critical path, so the handshake still
+  // roundtrips now. (The broken-stdout smoke test writes to fd 1 in `main`,
+  // before we ever serve.)
+  void tick();
 
   // `implementSurface` returns a fragment with shape `{ surface: ... }`;
   // passing it straight to `serveOverStdio`'s `StandardRPCHandler`
@@ -297,7 +318,7 @@ async function main(): Promise<void> {
       `waiting for first RPC (${Math.round((Date.now() - servingSince) / 1000)}s)…`,
     );
   }, 5000);
-  await serveOverStdio({
+  await serve({
     // biome-ignore lint/suspicious/noExplicitAny: implementSurface's Lazy<Router> spread isn't accepted by oRPC's Router<any, T> input type; runtime shape is valid.
     router: router as any,
     onFirstRequest: () => {
@@ -310,7 +331,30 @@ async function main(): Promise<void> {
   log("stdin closed — agent exiting");
 }
 
-main().catch((err) => {
-  log(`fatal: ${(err as Error).message}\n${(err as Error).stack ?? ""}`);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  if (!args.includes("--stdio")) usage();
+  const brokenStdoutLog = args.includes("--broken-stdout-log");
+
+  const reader = createProcReader();
+  log(`drishti-agent: os=${reader.os}, pid=${process.pid}`);
+
+  // Deliberately broken variant — bypass console.log redirection and write
+  // directly to fd 1, before any RPC. This is exactly the wire-corrupting bug
+  // `serveOverStdio` documents: the parent's client peer sees garbage and
+  // surfaces a frame-parse failure rather than hanging. Smoke-test only.
+  if (brokenStdoutLog) {
+    process.stdout.write("DEBUG: this line corrupts the protocol channel\n");
+  }
+
+  await serveAgent(reader);
+}
+
+// Guard the entrypoint so importing this module (e.g. from main.test.ts to
+// exercise `serveAgent` directly) doesn't spawn the agent. Mirrors build.ts.
+if (import.meta.main) {
+  main().catch((err) => {
+    log(`fatal: ${(err as Error).message}\n${(err as Error).stack ?? ""}`);
+    process.exit(1);
+  });
+}
