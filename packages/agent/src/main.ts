@@ -231,9 +231,10 @@ export async function serveAgent(
   // mutates the snapshot AND publishes to subscribers in one step).
   const tick = async (): Promise<void> => {
     try {
-      const [nextSystem, nextProcesses] = await Promise.all([
+      const [nextSystem, nextProcesses, nextNet] = await Promise.all([
         reader.readSystem(),
         reader.readProcesses(),
+        reader.readNetwork(),
       ]);
       fragment.ctx.cells.system.set({
         ...nextSystem,
@@ -276,8 +277,10 @@ export async function serveAgent(
       // Per-NIC network I/O — same Collection<K,T> publish shape as
       // cpuCores. Throughput shifts almost every tick, so unconditional
       // upserts are simplest; evict interfaces that vanished (NIC down /
-      // hot-unplug) so stale rows don't linger in the browser.
-      const nextNet = await reader.readNetwork();
+      // hot-unplug) so stale rows don't linger in the browser. `nextNet`
+      // is read in the tick-top Promise.all — an independent forked probe
+      // (darwin `netstat`), so it rides alongside system/processes rather
+      // than adding a serial leg to every tick's latency.
       for (const [iface, value] of nextNet) {
         fragment.ctx.collections.networkInterfaces.upsert(iface, value);
       }
