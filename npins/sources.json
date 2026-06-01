@@ -9,9 +9,9 @@
       },
       "branch": "reconnect-roaming",
       "submodules": false,
-      "revision": "f10666be191c218d30574b2f8667b59ab3d3c262",
-      "url": "https://github.com/juspay/kolu/archive/f10666be191c218d30574b2f8667b59ab3d3c262.tar.gz",
-      "hash": "sha256-A2vnbNtzhsWYlTfwSGWXBiB5SSiLz23T28178iglnNY="
+      "revision": "d86a20b46fe56395554a4e24916bcfd59c89f054",
+      "url": "https://github.com/juspay/kolu/archive/d86a20b46fe56395554a4e24916bcfd59c89f054.tar.gz",
+      "hash": "sha256-3fEGN8FDRVZJBcXLHgpDgzosEXHfwNPbOosX1y9860I="
     },
     "nixpkgs": {
       "type": "Git",
