@@ -13,6 +13,7 @@
  * of its props plus its connection cell.
  */
 
+import { isCleanRef } from "@kolu/surface-app";
 import { useSurfaceApp } from "@kolu/surface-app/solid";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { type ConnectionState, DEFAULT_CONNECTION } from "drishti-common";
@@ -61,36 +62,87 @@ export function TabStrip(props: {
         )}
       </For>
       <AddHostForm onAdd={props.onAdd} />
-      <SkewBadge />
+      <IdentityRail />
       <ThemeToggle theme={props.theme} onToggle={props.onToggleTheme} />
     </div>
   );
 }
 
-// Build-skew affordance, rendered from surface-app's headless model. Visible
-// ONLY when this tab's bundle is provably behind the parent's (both clean refs
-// that disagree — `clientIsStale`); a one-tap reload lands the deployed build
-// (a plain `location.reload()` against the no-store shell). `ml-auto` pins it
-// to the right edge next to the theme toggle; when not stale it renders
-// nothing, so the toggle keeps its own `ml-auto` right-alignment. This is the
-// control-plane (admin link) skew signal — distinct from the per-host
-// `connection` dots on the chips, which track each host's SSH link.
-function SkewBadge() {
+// Always-on identity rail — the same `srv · client` readout kolu carries in its
+// ChromeBar (`packages/client/src/ui/IdentityRail.tsx`), ported here with
+// drishti's tailwind palette. `srv` is the control-plane connection: a liveness
+// dot (from surface-app's headless `status()`) plus the server's build commit;
+// `client` is the commit this browser's bundle was baked from, flagging `≠ srv`
+// (one-tap reload) when the two clean refs provably disagree. Distinct from the
+// per-host SSH `connection` dots on the chips. `ml-auto` right-aligns it next to
+// the theme toggle; unlike the old skew-only badge, it is ALWAYS visible.
+const SRV_DOT: Record<string, string> = {
+  live: "bg-emerald-500",
+  reconnecting: "bg-amber-500 animate-pulse",
+  restarted: "bg-amber-500 animate-pulse",
+  down: "bg-red-500",
+};
+
+function IdentityRail() {
   const pwa = useSurfaceApp();
   return (
-    <Show when={pwa.stale()}>
-      <button
-        type="button"
-        class="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/30"
-        title={`This tab runs an older build (${pwa.clientCommit}) than the server (${pwa.server()?.commit ?? "?"}). Reload to update.`}
-        onClick={pwa.reload}
-      >
+    <div class="ml-auto mr-1 inline-flex items-stretch self-center rounded-lg border border-gray-200 bg-gray-100/60 p-0.5 font-mono text-xs dark:border-gray-700 dark:bg-gray-800/60">
+      <span class="inline-flex items-center gap-1.5 px-2 py-0.5">
+        <span class="text-[9px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
+          srv
+        </span>
         <span
-          aria-hidden="true"
-          class="inline-block h-2 w-2 rounded-full bg-amber-500"
+          title="Server connection"
+          data-ws-status={pwa.status()}
+          class={`inline-block h-[7px] w-[7px] rounded-full ${SRV_DOT[pwa.status()] ?? "bg-gray-400"}`}
         />
-        <span>≠ server — reload</span>
-      </button>
+        <Commit sha={pwa.server()?.commit} />
+      </span>
+      <span class="mx-0.5 h-4 w-px self-center bg-gray-300 dark:bg-gray-600" />
+      <span class="inline-flex items-center gap-1.5 px-2 py-0.5">
+        <span class="text-[9px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
+          client
+        </span>
+        <span title="This browser's JS build (baked in at build time)">
+          <Commit sha={pwa.clientCommit} />
+        </span>
+        <Show when={pwa.stale()}>
+          <button
+            type="button"
+            title="This client build doesn't match the server — reload to pick up the server's version."
+            onClick={pwa.reload}
+            class="self-center rounded-full border border-amber-400/50 px-1.5 text-[9px] leading-4 text-amber-600 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/30"
+          >
+            ≠ srv
+          </button>
+        </Show>
+      </span>
+    </div>
+  );
+}
+
+const DRISHTI_REPO_URL = "https://github.com/srid/drishti";
+
+// A git-commit cell (kolu's `ui/Commit.tsx`, ported): the short SHA links to
+// its GitHub commit page when the ref is clean and navigable, plain text
+// otherwise (a dirty / dev / absent ref — never a broken `-dirty` link).
+function Commit(props: { sha: string | undefined }) {
+  const linkable = () => isCleanRef(props.sha);
+  return (
+    <Show
+      when={linkable()}
+      fallback={
+        <span class="text-gray-600 dark:text-gray-300">{props.sha || "—"}</span>
+      }
+    >
+      <a
+        href={`${DRISHTI_REPO_URL}/commit/${props.sha}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="text-gray-600 underline decoration-dotted underline-offset-2 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100"
+      >
+        {props.sha}
+      </a>
     </Show>
   );
 }
