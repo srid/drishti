@@ -35,6 +35,10 @@
 { pkgs ? null
 , b2n ? null
 , agentDrvBySystem ? null
+  # Build commit, stamped into the client bundle AND the server wrapper from
+  # one source (flake.nix passes `self.rev`), so the freshness rail is
+  # self-consistent. Defaults to "dev" for non-flake (`nix-build`) invocations.
+, rev ? "dev"
 }:
 let
   resolvedPkgs =
@@ -47,7 +51,7 @@ let
   # if needed without bun2nix wired up.
   drishtiBuilt =
     if b2n != null
-    then resolvedPkgs.callPackage ./nix/packages/drishti { bun2nix = b2n; }
+    then resolvedPkgs.callPackage ./nix/packages/drishti { bun2nix = b2n; surfaceAppCommit = rev; }
     else throw "drishti build derivation needs `b2n` (lib.mkBun2nix output) — invoke via flake.nix";
 
   # The agent's own minimal build tree. Scoped to packages/agent + the wire
@@ -88,6 +92,10 @@ let
         makeWrapper ${resolvedPkgs.bun}/bin/bun $out/bin/drishti \
           --add-flags "${drishtiBuilt}/lib/drishti/packages/app/src/server/main.ts" \
           --set DRISHTI_DIST_DIR "${drishti-client}" \
+          `# Same build commit baked into the client bundle (above), so the` \
+          `# server's buildInfo cell and the client's __SURFACE_APP_COMMIT__` \
+          `# agree — the freshness rail reads one consistent commit.` \
+          --set SURFACE_APP_COMMIT "${rev}" \
           `# DRISHTI_AGENT_DRVS_JSON: {system -> drvPath} JSON map. flake.nix` \
           `# pre-evaluates one entry per system in its 'systems' list; the` \
           `# server picks the right entry at runtime via 'uname -ms' on each` \

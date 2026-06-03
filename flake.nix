@@ -28,6 +28,13 @@
         systems);
       eachSystem = f: builtins.mapAttrs (_: ctx: f ctx) perSystemAttrs;
 
+      # The build commit, stamped into BOTH the client bundle (the build
+      # derivation's SURFACE_APP_COMMIT env) and the server wrapper, so the
+      # freshness rail shows one consistent `srv · client` commit rather than
+      # a sandbox-built `dev` client beside a git-resolved server. `self.rev`
+      # is present only for a clean tree; a dirty build is honestly "dev".
+      rev = if self ? rev then builtins.substring 0 7 self.rev else "dev";
+
       # Per-system `drishti-agent.drvPath`. Pure eval — drvPath is just a
       # string interpolation, not a built output — so a macOS evaluator
       # can produce the linux .drv path without IFD or remote builders.
@@ -48,7 +55,7 @@
     in
     {
       packages = eachSystem ({ pkgs, b2n }:
-        let drvs = import ./default.nix { inherit pkgs b2n agentDrvBySystem; };
+        let drvs = import ./default.nix { inherit pkgs b2n agentDrvBySystem rev; };
         in {
           # `nix run github:srid/drishti -- user@host` → the monitor.
           default = drvs.drishti;
