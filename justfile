@@ -15,27 +15,17 @@ default:
 # outer shell (which runs under `set -u` and errors on the unset vars if
 # the user invokes `just install` from a non-direnv terminal).
 #
-# @kolu/surface-app (the app shell) is hydrated the same way — its raw .ts is
-# consumed directly (no build step). DRAFT-PR NOTE: it is not yet pinned via
-# npins, so DRISHTI_KOLU_SURFACE_APP is defaulted to a LOCAL kolu worktree here.
-# For the real PR, add surface-app to npins (kolu source) + nix/env.nix exactly
-# like the other two and drop the `:-` default below.
-surface_app_src := env('DRISHTI_KOLU_SURFACE_APP', '/home/srid/code/kolu/.worktrees/reload-error/packages/surface-app')
+# All three @kolu/* packages (surface, surface-nix-host, surface-app) are
+# sourced hermetically from the npins-pinned kolu tree: the overlay extracts
+# each as a nix-store path (nix/overlay.nix), nix/env.nix exports it as
+# $DRISHTI_KOLU_SURFACE{,_NIX_HOST,_APP}, and this recipe copies it into
+# node_modules. surface-app's raw .ts is consumed directly (no build step).
 install:
     {{ nix_shell }} bun install
     {{ nix_shell }} sh -c 'sh scripts/hydrate-kolu-packages.sh \
       "$DRISHTI_KOLU_SURFACE" @kolu/surface \
-      "$DRISHTI_KOLU_SURFACE_NIX_HOST" @kolu/surface-nix-host'
-    # DRAFT-PR ONLY: stage a CLEAN copy of the local surface-app worktree
-    # (its `src` + package.json — never its node_modules/example, which carry
-    # cyclic workspace symlinks `cp -rL` chokes on), then hydrate from that.
-    # The eventual npins/nix-store source is already clean, so this staging
-    # step disappears with the `:-` default in `surface_app_src` above.
-    {{ nix_shell }} sh -c 'stage=$(mktemp -d); \
-      cp -rL "{{ surface_app_src }}/src" "$stage/src"; \
-      cp -L "{{ surface_app_src }}/package.json" "$stage/package.json"; \
-      sh scripts/hydrate-kolu-packages.sh "$stage" @kolu/surface-app; \
-      rm -rf "$stage"'
+      "$DRISHTI_KOLU_SURFACE_NIX_HOST" @kolu/surface-nix-host \
+      "$DRISHTI_KOLU_SURFACE_APP" @kolu/surface-app'
 
 # Boot the parent server. Defaults to localhost; pass any number of
 # user@host targets after it. Exports DRISHTI_AGENT_DRVS_JSON (the

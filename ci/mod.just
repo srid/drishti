@@ -26,7 +26,8 @@ install:
     {{ nix_shell }} bun install
     {{ nix_shell }} sh -c 'sh scripts/hydrate-kolu-packages.sh \
       "$DRISHTI_KOLU_SURFACE" @kolu/surface \
-      "$DRISHTI_KOLU_SURFACE_NIX_HOST" @kolu/surface-nix-host'
+      "$DRISHTI_KOLU_SURFACE_NIX_HOST" @kolu/surface-nix-host \
+      "$DRISHTI_KOLU_SURFACE_APP" @kolu/surface-app'
 
 # Pre-populate the nix store with crates.io tarballs that nixpkgs' fetchurl
 # can't download (crates.io returns 403 for curl/* User-Agent). Idempotent;

@@ -9,7 +9,7 @@
 # Client bundling: re-uses `packages/app/src/server/build.ts` — the same
 # TS code path the dev server invokes when DRISHTI_DIST_DIR is unset.
 # One bundle pipeline; two callers.
-{ stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-nix-host }:
+{ stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-nix-host, kolu-surface-app }:
 # `@tailwindcss/cli` transitively dlopen()s `@parcel/watcher`'s native
 # binding, which requires `libstdc++.so.6` at runtime even when we don't
 # use --watch. Expose stdenv's libstdc++ via LD_LIBRARY_PATH during the
@@ -68,15 +68,16 @@ stdenv.mkDerivation {
   dontFixup = true;
   dontPatchShebangs = true;
 
-  # @kolu/surface and @kolu/surface-nix-host are NOT in bun.lock — they're
-  # Nix-store sources supplied by the overlay (same hydration strategy as
+  # @kolu/surface, @kolu/surface-nix-host and @kolu/surface-app are NOT in
+  # bun.lock — they're Nix-store sources supplied by the overlay (same hydration strategy as
   # `shell.nix`'s shellHook and the `just install` recipe). Drop the
   # copies in *after* bun install populates node_modules, otherwise bun
   # install would either overwrite our copies or refuse to proceed.
   postBunNodeModulesInstallPhase = ''
     sh scripts/hydrate-kolu-packages.sh \
       ${kolu-surface} @kolu/surface \
-      ${kolu-surface-nix-host} @kolu/surface-nix-host
+      ${kolu-surface-nix-host} @kolu/surface-nix-host \
+      ${kolu-surface-app} @kolu/surface-app
   '';
 
   # Skip the hook's default `bun build --compile` invocation — that flag

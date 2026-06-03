@@ -7,8 +7,9 @@
 #   DRISHTI_KOLU_SURFACE          — /nix/store path to @kolu/surface source.
 #   DRISHTI_KOLU_SURFACE_NIX_HOST — /nix/store path to @kolu/surface-nix-host
 #                                    source.
+#   DRISHTI_KOLU_SURFACE_APP      — /nix/store path to @kolu/surface-app source.
 #
-# Both are hydrated into node_modules/@kolu/{surface,surface-nix-host}
+# All three are hydrated into node_modules/@kolu/{surface,surface-nix-host,surface-app}
 # by scripts/hydrate-kolu-packages.sh (three callers: shell.nix
 # shellHook, the justfile install recipe, and the build derivations'
 # postBunNodeModulesInstallPhase).
@@ -16,4 +17,5 @@
 {
   DRISHTI_KOLU_SURFACE = pkgs.kolu-surface;
   DRISHTI_KOLU_SURFACE_NIX_HOST = pkgs.kolu-surface-nix-host;
+  DRISHTI_KOLU_SURFACE_APP = pkgs.kolu-surface-app;
 }
