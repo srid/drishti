@@ -14,6 +14,7 @@
  */
 
 import { defineSurface, type SurfaceTypes } from "@kolu/surface/define";
+import { buildInfo, serverIdentity } from "@kolu/surface-app/surface";
 import { z } from "zod";
 
 /** Reserved string used as the `host=` query value for the admin
@@ -34,6 +35,13 @@ const HostInputSchema = z
   );
 
 export const adminSurface = defineSurface({
+  // surface-app-specific — the global build identity (`buildInfo` cell). The
+  // admin surface is drishti's CONTROL PLANE: the one always-open, global
+  // connection (the per-host surfaces are per-entity), so global build skew
+  // belongs here, not on a host surface.
+  cells: {
+    ...buildInfo.cells,
+  },
   collections: {
     /** Configured hosts. Key = host string (ssh target). The browser's
      *  tab strip subscribes to this collection — adds/removes ripple
@@ -44,6 +52,10 @@ export const adminSurface = defineSurface({
     },
   },
   procedures: {
+    // surface-app-specific — the `server.info` identity probe, composed (not
+    // hand-written). surface-app reads `processId` on each (re)connect to tell
+    // a transient drop from a parent restart (drives the control-plane status).
+    ...serverIdentity.procedures,
     hosts: {
       add: {
         input: z.object({ host: HostInputSchema }),

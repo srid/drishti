@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "//": "@kolu/surface-app is NOT a bun dependency — like @kolu/surface and @kolu/surface-nix-host it is hydrated into node_modules/@kolu/surface-app (its raw .ts sources are consumed directly: no build step). For this draft PR `just install` copies it from a LOCAL kolu worktree (DRISHTI_KOLU_SURFACE_APP, defaulted in the install recipe). For the real PR: pin it via npins (npins/sources.json → kolu) and source the path from the dev shell exactly as the other two @kolu/* packages are, then regenerate bun.nix.",
   "scripts": {
     "dev": "bun --watch src/server/main.ts",
     "start": "bun src/server/main.ts",

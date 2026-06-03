@@ -19,6 +19,7 @@ import {
   implementSurface,
   inMemoryChannelByName,
 } from "@kolu/surface/server";
+import { buildInfoServer, serverIdentity } from "@kolu/surface-app/server";
 import { adminSurface } from "../common/admin-surface";
 import type { HostRegistry } from "./hostRegistry";
 import { makeLogger } from "./log";
@@ -32,6 +33,13 @@ export interface AdminRouterOptions {
 export function buildAdminRouter(opts: AdminRouterOptions) {
   const fragment = implementSurface(adminSurface, {
     channel: inMemoryChannelByName(),
+    // surface-app-specific — the build-identity cell store (commit resolved
+    // once: SURFACE_APP_COMMIT env → git → "dev"). The same commit is baked
+    // into the client bundle via build.ts's Bun.build define, so client and
+    // server stamp one value and skew is detectable across deploys.
+    cells: {
+      ...buildInfoServer(),
+    },
     collections: {
       hosts: {
         // Live projection from the registry — the framework calls this
@@ -48,6 +56,11 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
       },
     },
     procedures: {
+      // surface-app-specific — the identity probe impl (one processId per
+      // process, minted by the library). Restart the parent → new id →
+      // the control-plane status flips to "restarted". Composed, not
+      // hand-written.
+      ...serverIdentity(),
       hosts: {
         add: async ({ input }) => {
           // `HostInputSchema` already rejects blank, whitespace-containing,

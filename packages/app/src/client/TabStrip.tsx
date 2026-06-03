@@ -13,6 +13,7 @@
  * of its props plus its connection cell.
  */
 
+import { useSurfaceApp } from "@kolu/surface-app/solid";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { type ConnectionState, DEFAULT_CONNECTION } from "drishti-common";
 import type { View } from "./view";
@@ -60,8 +61,37 @@ export function TabStrip(props: {
         )}
       </For>
       <AddHostForm onAdd={props.onAdd} />
+      <SkewBadge />
       <ThemeToggle theme={props.theme} onToggle={props.onToggleTheme} />
     </div>
+  );
+}
+
+// Build-skew affordance, rendered from surface-app's headless model. Visible
+// ONLY when this tab's bundle is provably behind the parent's (both clean refs
+// that disagree — `clientIsStale`); a one-tap reload lands the deployed build
+// (a plain `location.reload()` against the no-store shell). `ml-auto` pins it
+// to the right edge next to the theme toggle; when not stale it renders
+// nothing, so the toggle keeps its own `ml-auto` right-alignment. This is the
+// control-plane (admin link) skew signal — distinct from the per-host
+// `connection` dots on the chips, which track each host's SSH link.
+function SkewBadge() {
+  const pwa = useSurfaceApp();
+  return (
+    <Show when={pwa.stale()}>
+      <button
+        type="button"
+        class="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/30"
+        title={`This tab runs an older build (${pwa.clientCommit}) than the server (${pwa.server()?.commit ?? "?"}). Reload to update.`}
+        onClick={pwa.reload}
+      >
+        <span
+          aria-hidden="true"
+          class="inline-block h-2 w-2 rounded-full bg-amber-500"
+        />
+        <span>≠ server — reload</span>
+      </button>
+    </Show>
   );
 }
 
