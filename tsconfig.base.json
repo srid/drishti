@@ -3,13 +3,6 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    // @kolu/surface-app's raw-.ts sources use explicit `.ts` extensions on
-    // their intra-package relative imports (e.g. `./commit.ts`), so typechecking
-    // a consumer that imports them needs this flag. (@kolu/surface is
-    // extensionless, so this wasn't needed before adopting surface-app.) Safe:
-    // drishti is a bundler-resolution project run via Bun and only `tsc
-    // --noEmit`s, never emits.
-    "allowImportingTsExtensions": true,
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "jsx": "preserve",
     "jsxImportSource": "solid-js",
