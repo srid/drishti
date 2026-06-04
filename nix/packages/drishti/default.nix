@@ -16,6 +16,10 @@
 # buildPhase so the dlopen succeeds; without this the buildPhase fails
 # with `ERR_DLOPEN_FAILED` at module load.
 let
+  # Compose surface-app's build-commit helper from the EXTRACTED package tree
+  # (kolu-surface-app is the runCommand-staged `packages/surface-app`), so the
+  # env-var name + export-line shape are single-sourced upstream, not hardcoded.
+  stamp = import (kolu-surface-app + "/nix/commit-stamp.nix") { };
   src = lib.fileset.toSource {
     root = ../../..;
     fileset = lib.fileset.unions [
@@ -92,7 +96,7 @@ stdenv.mkDerivation {
     # so resolveCommit() would otherwise fall back to "dev"; the server wrapper
     # is stamped with the SAME value, so the freshness rail shows one consistent
     # `srv · client` commit instead of `<sha> · dev`.
-    export SURFACE_APP_COMMIT="${surfaceAppCommit}"
+    ${stamp.exportLine surfaceAppCommit}
     mkdir -p packages/app/dist
     bun packages/app/src/server/build.ts packages/app/dist
     runHook postBuild

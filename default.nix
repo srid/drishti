@@ -41,6 +41,10 @@
 , rev ? "dev"
 }:
 let
+  # surface-app's build-commit helper (upstream single source for the env-var
+  # name) — composed here so the server wrapper's --set name stays equal to the
+  # client define rather than repeating the "SURFACE_APP_COMMIT" literal.
+  stamp = import ((import ./npins).kolu + "/packages/surface-app/nix/commit-stamp.nix") { };
   resolvedPkgs =
     if pkgs != null
     then pkgs
@@ -95,7 +99,7 @@ let
           `# Same build commit baked into the client bundle (above), so the` \
           `# server's buildInfo cell and the client's __SURFACE_APP_COMMIT__` \
           `# agree — the freshness rail reads one consistent commit.` \
-          --set SURFACE_APP_COMMIT "${rev}" \
+          --set ${stamp.envVar} "${rev}" \
           `# DRISHTI_AGENT_DRVS_JSON: {system -> drvPath} JSON map. flake.nix` \
           `# pre-evaluates one entry per system in its 'systems' list; the` \
           `# server picks the right entry at runtime via 'uname -ms' on each` \

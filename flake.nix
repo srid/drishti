@@ -28,12 +28,18 @@
         systems);
       eachSystem = f: builtins.mapAttrs (_: ctx: f ctx) perSystemAttrs;
 
+      # surface-app's build-commit Nix helper — the upstream single source for
+      # the env-var name and the `self.rev → short → "dev"` resolution. We
+      # compose it instead of re-deriving the rev logic downstream.
+      stamp = import ((import ./npins).kolu + "/packages/surface-app/nix/commit-stamp.nix") { };
+
       # The build commit, stamped into BOTH the client bundle (the build
       # derivation's SURFACE_APP_COMMIT env) and the server wrapper, so the
       # freshness rail shows one consistent `srv · client` commit rather than
-      # a sandbox-built `dev` client beside a git-resolved server. `self.rev`
-      # is present only for a clean tree; a dirty build is honestly "dev".
-      rev = if self ? rev then builtins.substring 0 7 self.rev else "dev";
+      # a sandbox-built `dev` client beside a git-resolved server. The rev
+      # resolution (clean tree → short rev; dirty/non-flake → "dev") now comes
+      # from surface-app's commit-stamp.nix rather than being repeated here.
+      rev = stamp.revFromSelf self;
 
       # Per-system `drishti-agent.drvPath`. Pure eval — drvPath is just a
       # string interpolation, not a built output — so a macOS evaluator
