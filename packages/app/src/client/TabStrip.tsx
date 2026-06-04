@@ -14,7 +14,7 @@
  */
 
 import { isCleanRef } from "@kolu/surface-app";
-import { useSurfaceApp } from "@kolu/surface-app/solid";
+import { type ConnectionStatus, useSurfaceApp } from "@kolu/surface-app/solid";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { type ConnectionState, DEFAULT_CONNECTION } from "drishti-common";
 import type { View } from "./view";
@@ -76,7 +76,7 @@ export function TabStrip(props: {
 // (one-tap reload) when the two clean refs provably disagree. Distinct from the
 // per-host SSH `connection` dots on the chips. `ml-auto` right-aligns it next to
 // the theme toggle; unlike the old skew-only badge, it is ALWAYS visible.
-const SRV_DOT: Record<string, string> = {
+const SRV_DOT: Record<ConnectionStatus, string> = {
   live: "bg-emerald-500",
   reconnecting: "bg-amber-500 animate-pulse",
   restarted: "bg-amber-500 animate-pulse",
@@ -94,7 +94,7 @@ function IdentityRail() {
         <span
           title="Server connection"
           data-ws-status={pwa.status()}
-          class={`inline-block h-[7px] w-[7px] rounded-full ${SRV_DOT[pwa.status()] ?? "bg-gray-400"}`}
+          class={`inline-block h-[7px] w-[7px] rounded-full ${SRV_DOT[pwa.status()]}`}
         />
         <Commit sha={pwa.server()?.commit} />
       </span>
