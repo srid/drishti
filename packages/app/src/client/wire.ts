@@ -101,7 +101,7 @@ export function adminClient() {
 /** The (cached) admin transport. The admin socket is drishti's control
  *  plane — the one global, always-open connection — so surface-app's
  *  `<SurfaceAppProvider>` observes ITS open/close to derive the connection
- *  lifecycle (and pairs it with the `server.info` probe to tell a transient
+ *  lifecycle (and pairs it with the `surfaceApp.info` probe to tell a transient
  *  drop from a parent restart). The per-host sockets are per-entity and keep
  *  their own `connection` cell UI; this is distinct from those. */
 export function adminSocket() {

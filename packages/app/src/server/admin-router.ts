@@ -19,7 +19,7 @@ import {
   implementSurface,
   inMemoryChannelByName,
 } from "@kolu/surface/server";
-import { buildInfoServer, serverIdentity } from "@kolu/surface-app/server";
+import { surfaceAppServer } from "@kolu/surface-app/server";
 import { adminSurface } from "../common/admin-surface";
 import type { HostRegistry } from "./hostRegistry";
 import { makeLogger } from "./log";
@@ -31,14 +31,18 @@ export interface AdminRouterOptions {
 }
 
 export function buildAdminRouter(opts: AdminRouterOptions) {
+  // surface-app-specific — both halves of the surface-app server fragment in one
+  // call: the build-identity cell store (commit resolved once: SURFACE_APP_COMMIT
+  // env → git → "dev"; the same commit is baked into the client bundle via
+  // build.ts's Bun.build define, so client and server stamp one value and skew is
+  // detectable across deploys) AND the `surfaceApp.info` identity probe impl (one
+  // processId per process, minted by the library — restart the parent → new id →
+  // the control-plane status flips to "restarted"). Composed, not hand-written.
+  const surfaceApp = surfaceAppServer();
   const fragment = implementSurface(adminSurface, {
     channel: inMemoryChannelByName(),
-    // surface-app-specific — the build-identity cell store (commit resolved
-    // once: SURFACE_APP_COMMIT env → git → "dev"). The same commit is baked
-    // into the client bundle via build.ts's Bun.build define, so client and
-    // server stamp one value and skew is detectable across deploys.
     cells: {
-      ...buildInfoServer(),
+      ...surfaceApp.cells,
     },
     collections: {
       hosts: {
@@ -56,11 +60,9 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
       },
     },
     procedures: {
-      // surface-app-specific — the identity probe impl (one processId per
-      // process, minted by the library). Restart the parent → new id →
-      // the control-plane status flips to "restarted". Composed, not
-      // hand-written.
-      ...serverIdentity(),
+      // surface-app-specific — the `surfaceApp.info` probe impl, bundled with
+      // the buildInfo cell store above by `surfaceAppServer()`.
+      ...surfaceApp.procedures,
       hosts: {
         add: async ({ input }) => {
           // `HostInputSchema` already rejects blank, whitespace-containing,

@@ -302,7 +302,7 @@ function projectHistory(
 //  - clientCommit = the commit baked into THIS bundle by build.ts's Bun.build
 //    define (`__SURFACE_APP_COMMIT__`); the same value `buildInfoServer()` reads
 //    server-side, so skew is a real comparison.
-//  - ws + probe = the admin socket's open/close paired with the `server.info`
+//  - ws + probe = the admin socket's open/close paired with the `surfaceApp.info`
 //    processId probe, so a reconnect to a *restarted* parent reads as a restart,
 //    not a transient drop.
 export default function App() {
@@ -311,7 +311,7 @@ export default function App() {
       controlPlane={adminClient()}
       clientCommit={__SURFACE_APP_COMMIT__}
       ws={adminSocket()}
-      probe={() => adminClient().rpc.surface.server.info({})}
+      probe={() => adminClient().rpc.surface.surfaceApp.info({})}
     >
       <MultiHostApp />
     </SurfaceAppProvider>
