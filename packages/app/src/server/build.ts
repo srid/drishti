@@ -148,15 +148,18 @@ export async function buildClient(distDir: string): Promise<void> {
       .replace(`href="./styles.css"`, `href="${cssHref}"`),
   );
 
-  // Static PWA assets — the icons (and a fallback manifest) — are shipped
-  // verbatim. They live under client/public/ so "which static assets exist"
-  // is encapsulated in one directory; this step copies the tree wholesale
-  // instead of enumerating filenames that would drift. NB: drishti no longer
-  // ships its own caching service worker — surface-app serves a
-  // self-destructing `/sw.js` from the server (it unregisters any legacy
-  // worker a prior build left behind), and the manifest is served dynamically
-  // by `installPwaManifest`. The icons are referenced by stable paths, so they
-  // sit at the dist root (outside `/assets/`) and are NOT pinned immutable.
+  // Static PWA assets — the icons — are shipped verbatim. They live under
+  // client/public/ so "which static assets exist" is encapsulated in one
+  // directory; this step copies the tree wholesale instead of enumerating
+  // filenames that would drift. NB: drishti no longer ships its own caching
+  // service worker — surface-app serves a self-destructing `/sw.js` from the
+  // server (it unregisters any legacy worker a prior build left behind), and
+  // the manifest is served dynamically by `installPwaManifest` — the
+  // `public/manifest.webmanifest` that rides along in this copy is inert at
+  // runtime (the dynamic route shadows it); it stays only as the brand-color
+  // fixture `brand.test.ts` asserts against. The icons are referenced by stable
+  // paths, so they sit at the dist root (outside `/assets/`) and are NOT pinned
+  // immutable.
   const PUBLIC_DIR = resolve(CLIENT_DIR, "public");
   if (!existsSync(PUBLIC_DIR))
     throw new Error(
