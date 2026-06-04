@@ -293,7 +293,7 @@ function projectHistory(
 }
 
 // The app root: wrap the multi-host tree in surface-app's headless provider so
-// any descendant (`SkewBadge` in the TabStrip) reads build skew + the
+// any descendant (`IdentityRail` in the TabStrip) reads build skew + the
 // control-plane connection lifecycle via `useSurfaceApp()`.
 //
 //  - controlPlane = the ADMIN surface client: drishti's one global, always-open
