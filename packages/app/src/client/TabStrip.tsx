@@ -147,14 +147,15 @@ function Commit(props: { sha: string | undefined }) {
   );
 }
 
-// Right-aligned (`ml-auto`) light/dark switch. Shows the icon of the theme
-// it will switch *to*, the common affordance: a moon while light, a sun
-// while dark.
+// Light/dark switch. Right-alignment is a consequence of following IdentityRail
+// in the flex row — IdentityRail owns the row's single `ml-auto`, which absorbs
+// all free space, so this button needs none of its own. Shows the icon of the
+// theme it will switch *to*: a moon while light, a sun while dark.
 function ThemeToggle(props: { theme: Theme; onToggle: () => void }) {
   return (
     <button
       type="button"
-      class="ml-auto flex items-center px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60"
+      class="flex items-center px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60"
       title={`Switch to ${otherTheme(props.theme)} theme`}
       aria-label={`Switch to ${otherTheme(props.theme)} theme`}
       onClick={props.onToggle}
