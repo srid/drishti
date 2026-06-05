@@ -12,4 +12,8 @@ in
   kolu-surface = mkKoluPackage "surface";
   kolu-surface-nix-host = mkKoluPackage "surface-nix-host";
   kolu-surface-app = mkKoluPackage "surface-app";
+  # TODO(pin): the install-card adapter. Lands once the kolu pin tracks a
+  # revision where `packages/solid-pwa-install/src/index.tsx` exists (the
+  # `welcome` PR — it is scaffolded but unimplemented on the current pin).
+  kolu-solid-pwa-install = mkKoluPackage "solid-pwa-install";
 }

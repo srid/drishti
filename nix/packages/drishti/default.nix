@@ -9,7 +9,7 @@
 # Client bundling: re-uses `packages/app/src/server/build.ts` — the same
 # TS code path the dev server invokes when DRISHTI_DIST_DIR is unset.
 # One bundle pipeline; two callers.
-{ stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-nix-host, kolu-surface-app, surfaceAppCommit ? "dev" }:
+{ stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-nix-host, kolu-surface-app, kolu-solid-pwa-install, surfaceAppCommit ? "dev" }:
 # `@tailwindcss/cli` transitively dlopen()s `@parcel/watcher`'s native
 # binding, which requires `libstdc++.so.6` at runtime even when we don't
 # use --watch. Expose stdenv's libstdc++ via LD_LIBRARY_PATH during the
@@ -81,7 +81,8 @@ stdenv.mkDerivation {
     sh scripts/hydrate-kolu-packages.sh \
       ${kolu-surface} @kolu/surface \
       ${kolu-surface-nix-host} @kolu/surface-nix-host \
-      ${kolu-surface-app} @kolu/surface-app
+      ${kolu-surface-app} @kolu/surface-app \
+      ${kolu-solid-pwa-install} @kolu/solid-pwa-install
   '';
 
   # Skip the hook's default `bun build --compile` invocation — that flag
