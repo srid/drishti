@@ -21,13 +21,13 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
-import { serveStatic } from "@hono/node-server/serve-static";
 import { RPCHandler } from "@orpc/server/ws";
 import { cli } from "cleye";
 import { Hono } from "hono";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
 import { destroyAllSessions } from "@kolu/surface-nix-host";
+import { installSurfaceApp } from "@kolu/surface-app/server";
 import { ADMIN_HOST_SENTINEL } from "../common/admin-surface";
 import { buildAdminRouter } from "./admin-router";
 import { resolveDrvForHost } from "./archMap";
@@ -138,10 +138,37 @@ async function main(): Promise<void> {
     log(`serving prebuilt client bundle from ${distDir}`);
   }
   const app = new Hono();
-  // serveStatic serves the whole dist tree, including the PWA assets. It
-  // already maps `.webmanifest` to `application/manifest+json` (via
-  // hono/utils/mime), so the manifest needs no special-casing here.
-  app.use("*", serveStatic({ root: distDir }));
+  // surface-app owns the freshness contract on the wire (the four-times-
+  // relitigated stale-client bug): the no-store SPA shell, immutable hashed
+  // `/assets/*`, a 404 (never the HTML shell) on an asset miss, the dynamic
+  // PWA manifest, and the self-destructing `/sw.js` that retires the legacy
+  // caching worker earlier drishti builds registered. One call replaces the
+  // bare `serveStatic` mount that set no cache headers at all.
+  //
+  // Registered AFTER the `/rpc/ws` upgrade is wired below — but order is moot
+  // here: drishti's WebSocket lives on the raw `httpServer.on("upgrade")`
+  // handler, not in this Hono app, so this static catch-all only sees HTTP and
+  // must simply be the app's last route (it is — nothing is mounted after it).
+  installSurfaceApp(app, {
+    clientDist: distDir,
+    manifest: {
+      name: "drishti — remote process monitor",
+      short_name: "drishti",
+      themeColor: "#0b0d12",
+      backgroundColor: "#0b0d12",
+      description:
+        "htop for your whole fleet — live processes, CPU, memory, and network over SSH, with nothing installed on the remote.",
+      id: "/",
+      scope: "/",
+      orientation: "any",
+      icons: [
+        { src: "/icons/icon.svg", type: "image/svg+xml", sizes: "any", purpose: "any" },
+        { src: "/icons/icon-192.png", type: "image/png", sizes: "192x192", purpose: "any" },
+        { src: "/icons/icon-512.png", type: "image/png", sizes: "512x512", purpose: "any" },
+        { src: "/icons/icon-maskable-512.png", type: "image/png", sizes: "512x512", purpose: "maskable" },
+      ],
+    },
+  });
 
   const httpServer = serve(
     {

@@ -14,11 +14,18 @@ default:
 # expand *inside* the nix-develop shell that exports them, not by just's
 # outer shell (which runs under `set -u` and errors on the unset vars if
 # the user invokes `just install` from a non-direnv terminal).
+#
+# All three @kolu/* packages (surface, surface-nix-host, surface-app) are
+# sourced hermetically from the npins-pinned kolu tree: the overlay extracts
+# each as a nix-store path (nix/overlay.nix), nix/env.nix exports it as
+# $DRISHTI_KOLU_SURFACE{,_NIX_HOST,_APP}, and this recipe copies it into
+# node_modules. surface-app's raw .ts is consumed directly (no build step).
 install:
     {{ nix_shell }} bun install
     {{ nix_shell }} sh -c 'sh scripts/hydrate-kolu-packages.sh \
       "$DRISHTI_KOLU_SURFACE" @kolu/surface \
-      "$DRISHTI_KOLU_SURFACE_NIX_HOST" @kolu/surface-nix-host'
+      "$DRISHTI_KOLU_SURFACE_NIX_HOST" @kolu/surface-nix-host \
+      "$DRISHTI_KOLU_SURFACE_APP" @kolu/surface-app'
 
 # Boot the parent server. Defaults to localhost; pass any number of
 # user@host targets after it. Exports DRISHTI_AGENT_DRVS_JSON (the

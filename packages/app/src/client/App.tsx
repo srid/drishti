@@ -15,6 +15,7 @@
  */
 
 import { streamCall } from "@kolu/surface/client";
+import { SurfaceAppProvider } from "@kolu/surface-app/solid";
 import {
   type Accessor,
   batch,
@@ -83,7 +84,12 @@ import {
   THEME_KEY,
   type Theme,
 } from "./theme";
-import { adminClient, disposeHostSurface, surfaceForHost } from "./wire";
+import {
+  adminClient,
+  adminSocket,
+  disposeHostSurface,
+  surfaceForHost,
+} from "./wire";
 
 const SORT_KEYS = ["cpu", "mem", "pid", "user"] as const;
 type SortKey = (typeof SORT_KEYS)[number];
@@ -286,7 +292,33 @@ function projectHistory(
   return { latest, points };
 }
 
+// The app root: wrap the multi-host tree in surface-app's headless provider so
+// any descendant (`IdentityRail` in the TabStrip) reads build skew + the
+// control-plane connection lifecycle via `useSurfaceApp()`.
+//
+//  - controlPlane = the ADMIN surface client: drishti's one global, always-open
+//    connection, and the surface that now carries the `buildInfo` cell. (Passing
+//    a per-host client would be a compile error — its surface has no buildInfo.)
+//  - clientCommit = the commit baked into THIS bundle by build.ts's Bun.build
+//    define (`__SURFACE_APP_COMMIT__`); the same value `buildInfoServer()` reads
+//    server-side, so skew is a real comparison.
+//  - ws + probe = the admin socket's open/close paired with the `surfaceApp.info`
+//    processId probe, so a reconnect to a *restarted* parent reads as a restart,
+//    not a transient drop.
 export default function App() {
+  return (
+    <SurfaceAppProvider
+      controlPlane={adminClient()}
+      clientCommit={__SURFACE_APP_COMMIT__}
+      ws={adminSocket()}
+      probe={() => adminClient().rpc.surface.surfaceApp.info({})}
+    >
+      <MultiHostApp />
+    </SurfaceAppProvider>
+  );
+}
+
+function MultiHostApp() {
   const admin = adminClient();
   const hosts = admin.collections.hosts.use({
     onError: (err) => console.error("admin.hosts subscription failed", err),

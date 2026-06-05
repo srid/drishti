@@ -9,10 +9,17 @@
 // fires there, and Bun's default JSX transform emits `React.createElement`
 // calls that break at runtime. Bun.build accepts a `plugins` array
 // directly, so we drive the build ourselves.
+//
+// The freshness contract — content-hashed `/assets/*` naming, the
+// `__SURFACE_APP_COMMIT__` define, the no-store shell rewrite, the public
+// copy — is owned by `@kolu/surface-app/bun`'s `buildSurfaceClient`. This
+// file *composes* it, supplying only what is genuinely drishti's own: the
+// Solid JSX plugin and the Tailwind CSS toolchain.
 
-import { existsSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { transformAsync } from "@babel/core";
 // @ts-expect-error - babel preset types are loose
@@ -20,6 +27,7 @@ import babelTypeScript from "@babel/preset-typescript";
 // @ts-expect-error - babel preset types are loose
 import babelSolid from "babel-preset-solid";
 import type { BunPlugin } from "bun";
+import { buildSurfaceClient } from "@kolu/surface-app/bun";
 import { makeLogger } from "./log";
 
 const log = makeLogger("build");
@@ -48,74 +56,62 @@ const solidJsxPlugin: BunPlugin = {
 
 const CLIENT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "client");
 
-export async function buildClient(distDir: string): Promise<void> {
-  await Bun.$`mkdir -p ${distDir}`;
-
-  // JS bundle. Minified — Bun emits a linked sourcemap so DevTools still
-  // surfaces original sources, but the wire/parse cost on first paint
-  // drops by ~3× vs. the unminified output.
-  const jsResult = await Bun.build({
-    entrypoints: [resolve(CLIENT_DIR, "main.tsx")],
-    outdir: distDir,
-    target: "browser",
-    format: "esm",
-    splitting: false,
-    minify: true,
-    sourcemap: "linked",
-    plugins: [solidJsxPlugin],
-  });
-  if (!jsResult.success) {
-    for (const m of jsResult.logs) log(m.message);
-    throw new Error("Bun.build failed for client");
-  }
-
-  // Tailwind v4 CSS — invoke @tailwindcss/cli via its in-tree binary
-  // path instead of `bunx`. `bunx` resolves by name and falls back to
-  // a network fetch when the local copy doesn't match — the Nix build
-  // sandbox has no network, so that fallback fails. `createRequire`
-  // walks Node's standard resolution from this file outward, so the
-  // path stays correct regardless of where in the workspace tree the
-  // build.ts file ends up.
-  const TAILWIND_BIN = createRequire(import.meta.url).resolve(
-    "@tailwindcss/cli/package.json",
-  ).replace(/package\.json$/, "dist/index.mjs");
-  if (!(await Bun.file(TAILWIND_BIN).exists()))
+// Tailwind v4 CSS — produce the stylesheet bytes for buildSurfaceClient to
+// content-hash, name, and write under `/assets/styles-<hash>.css` (the same
+// immutable-caching contract as the JS bundle). We only own *producing* the
+// bytes; the helper owns hashing/naming/writing and the shell rewrite.
+async function buildTailwindCss(): Promise<ArrayBuffer> {
+  // Invoke @tailwindcss/cli via its in-tree binary path instead of `bunx`.
+  // `bunx` resolves by name and falls back to a network fetch when the local
+  // copy doesn't match — the Nix build sandbox has no network, so that
+  // fallback fails. `createRequire` walks Node's standard resolution from this
+  // file outward, so the path stays correct regardless of where in the
+  // workspace tree this file ends up.
+  const tailwindBin = createRequire(import.meta.url)
+    .resolve("@tailwindcss/cli/package.json")
+    .replace(/package\.json$/, "dist/index.mjs");
+  if (!(await Bun.file(tailwindBin).exists()))
     throw new Error(
-      `Tailwind CLI not found at ${TAILWIND_BIN} — ensure @tailwindcss/cli is installed at workspace root.`,
+      `Tailwind CLI not found at ${tailwindBin} — ensure @tailwindcss/cli is installed at workspace root.`,
     );
+  // Tailwind has no content-hash naming of its own, so build to a temp path,
+  // read the bytes, drop the temp, and hand the bytes back. The temp lives
+  // in the OS temp dir (the source tree and the Nix dist may be read-only).
+  const cssTmp = join(mkdtempSync(join(tmpdir(), "drishti-css-")), "styles.css");
   const cssProc = Bun.spawn(
-    [
-      "bun",
-      TAILWIND_BIN,
-      "-i",
-      resolve(CLIENT_DIR, "styles.css"),
-      "-o",
-      resolve(distDir, "styles.css"),
-    ],
+    ["bun", tailwindBin, "-i", resolve(CLIENT_DIR, "styles.css"), "-o", cssTmp],
     { stderr: "inherit", stdout: "inherit" },
   );
   const cssCode = await cssProc.exited;
-  if (cssCode !== 0)
-    throw new Error(`@tailwindcss/cli exited ${cssCode}`);
+  if (cssCode !== 0) throw new Error(`@tailwindcss/cli exited ${cssCode}`);
+  const cssBytes = await Bun.file(cssTmp).arrayBuffer();
+  await Bun.$`rm -f ${cssTmp}`;
+  return cssBytes;
+}
 
-  // index.html is shipped verbatim. The HTML entrypoint references
-  // ./main.js (Bun.build renames .tsx → .js) and ./styles.css.
-  const html = await Bun.file(resolve(CLIENT_DIR, "index.html")).text();
-  await Bun.write(
-    resolve(distDir, "index.html"),
-    html.replace(`src="./main.tsx"`, `src="./main.js"`),
-  );
-
-  // Static PWA assets — the web manifest, service worker, and icons — are
-  // shipped verbatim. They live under client/public/ so "which static
-  // assets exist" is encapsulated in one directory; this step copies the
-  // tree wholesale instead of enumerating filenames that would drift.
-  const PUBLIC_DIR = resolve(CLIENT_DIR, "public");
-  if (!existsSync(PUBLIC_DIR))
-    throw new Error(
-      `public assets dir missing at ${PUBLIC_DIR} — run \`just gen-pwa-icons\` to generate the icons.`,
-    );
-  await Bun.$`cp -R ${PUBLIC_DIR}/. ${distDir}/`;
+export async function buildClient(distDir: string): Promise<void> {
+  await buildSurfaceClient({
+    entrypoint: resolve(CLIENT_DIR, "main.tsx"),
+    distDir,
+    htmlTemplate: resolve(CLIENT_DIR, "index.html"),
+    entryHtmlPlaceholder: `src="./main.tsx"`,
+    plugins: [solidJsxPlugin],
+    extraAssets: [
+      {
+        name: "styles",
+        ext: "css",
+        build: buildTailwindCss,
+        htmlPlaceholder: `href="./styles.css"`,
+      },
+    ],
+    // Static PWA assets — the icons — shipped verbatim from client/public/.
+    // They sit at the dist root (outside `/assets/`), referenced by stable
+    // paths and NOT pinned immutable. NB: the `public/manifest.webmanifest`
+    // that rides along is inert at runtime (the dynamic `installPwaManifest`
+    // route shadows it); it stays only as the brand-color fixture
+    // `brand.test.ts` asserts against.
+    publicDir: resolve(CLIENT_DIR, "public"),
+  });
 }
 
 // CLI entrypoint: `bun src/server/build.ts <distDir>` — used by the Nix

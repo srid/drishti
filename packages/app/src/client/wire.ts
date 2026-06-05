@@ -87,10 +87,24 @@ export function disposeHostSurface(host: string): void {
 
 let adminEntry: AdminClient | undefined;
 
+function adminEntryLazy(): AdminClient {
+  if (adminEntry === undefined) adminEntry = buildAdminSurface();
+  return adminEntry;
+}
+
 /** Get the (cached) admin surface client. Lazy — opens the admin WS on
  *  first call. */
 export function adminClient() {
-  if (adminEntry === undefined) adminEntry = buildAdminSurface();
-  return adminEntry.client;
+  return adminEntryLazy().client;
+}
+
+/** The (cached) admin transport. The admin socket is drishti's control
+ *  plane — the one global, always-open connection — so surface-app's
+ *  `<SurfaceAppProvider>` observes ITS open/close to derive the connection
+ *  lifecycle (and pairs it with the `surfaceApp.info` probe to tell a transient
+ *  drop from a parent restart). The per-host sockets are per-entity and keep
+ *  their own `connection` cell UI; this is distinct from those. */
+export function adminSocket() {
+  return adminEntryLazy().ws;
 }
 

@@ -9,13 +9,17 @@
 # Client bundling: re-uses `packages/app/src/server/build.ts` — the same
 # TS code path the dev server invokes when DRISHTI_DIST_DIR is unset.
 # One bundle pipeline; two callers.
-{ stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-nix-host }:
+{ stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-nix-host, kolu-surface-app, surfaceAppCommit ? "dev" }:
 # `@tailwindcss/cli` transitively dlopen()s `@parcel/watcher`'s native
 # binding, which requires `libstdc++.so.6` at runtime even when we don't
 # use --watch. Expose stdenv's libstdc++ via LD_LIBRARY_PATH during the
 # buildPhase so the dlopen succeeds; without this the buildPhase fails
 # with `ERR_DLOPEN_FAILED` at module load.
 let
+  # Compose surface-app's build-commit helper from the EXTRACTED package tree
+  # (kolu-surface-app is the runCommand-staged `packages/surface-app`), so the
+  # env-var name + export-line shape are single-sourced upstream, not hardcoded.
+  stamp = import (kolu-surface-app + "/nix/commit-stamp.nix") { };
   src = lib.fileset.toSource {
     root = ../../..;
     fileset = lib.fileset.unions [
@@ -68,15 +72,16 @@ stdenv.mkDerivation {
   dontFixup = true;
   dontPatchShebangs = true;
 
-  # @kolu/surface and @kolu/surface-nix-host are NOT in bun.lock — they're
-  # Nix-store sources supplied by the overlay (same hydration strategy as
+  # @kolu/surface, @kolu/surface-nix-host and @kolu/surface-app are NOT in
+  # bun.lock — they're Nix-store sources supplied by the overlay (same hydration strategy as
   # `shell.nix`'s shellHook and the `just install` recipe). Drop the
   # copies in *after* bun install populates node_modules, otherwise bun
   # install would either overwrite our copies or refuse to proceed.
   postBunNodeModulesInstallPhase = ''
     sh scripts/hydrate-kolu-packages.sh \
       ${kolu-surface} @kolu/surface \
-      ${kolu-surface-nix-host} @kolu/surface-nix-host
+      ${kolu-surface-nix-host} @kolu/surface-nix-host \
+      ${kolu-surface-app} @kolu/surface-app
   '';
 
   # Skip the hook's default `bun build --compile` invocation — that flag
@@ -87,6 +92,11 @@ stdenv.mkDerivation {
   buildPhase = ''
     runHook preBuild
     export LD_LIBRARY_PATH="${stdenv.cc.cc.lib}/lib:''${LD_LIBRARY_PATH:-}"
+    # Stamp the build commit into the client bundle. The sandbox has no git,
+    # so resolveCommit() would otherwise fall back to "dev"; the server wrapper
+    # is stamped with the SAME value, so the freshness rail shows one consistent
+    # `srv · client` commit instead of `<sha> · dev`.
+    ${stamp.exportLine surfaceAppCommit}
     mkdir -p packages/app/dist
     bun packages/app/src/server/build.ts packages/app/dist
     runHook postBuild
