@@ -16,11 +16,17 @@
  * pins the un-importable brand-color sites.
  */
 
+/** The product short name — the bare brand. The single source for every place
+ *  "drishti" appears as a name: the host-view title suffix, the long product
+ *  title below, the PWA `short_name`, and `apple-mobile-web-app-title`. A rename
+ *  is one edit here rather than several hand-kept literals that can diverge. */
+export const APP_NAME = "drishti";
+
 /** The product title — the fleet-overview title and the boot/pre-mount value. */
-export const APP_TITLE = "drishti — remote process monitor";
+export const APP_TITLE = `${APP_NAME} — remote process monitor`;
 
 /** The document title for the current view: the selected host (so the tab
  *  identifies the machine) or the product title when none is selected (fleet). */
 export function titleForHost(host: string | null): string {
-  return host ? `${host} — drishti` : APP_TITLE;
+  return host ? `${host} — ${APP_NAME}` : APP_TITLE;
 }
