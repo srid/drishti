@@ -9,9 +9,9 @@
       },
       "branch": "surface-nested-mounts",
       "submodules": false,
-      "revision": "5ceb8fde94f6de4c64381e8f1f68c5fef7fe89e0",
-      "url": "https://github.com/juspay/kolu/archive/5ceb8fde94f6de4c64381e8f1f68c5fef7fe89e0.tar.gz",
-      "hash": "sha256-DUwQCgQX6NlyiQ8wfedQHTzf8NF2Wkx39faf95O51Mk="
+      "revision": "30e28f72dca5ea9e817d63fc31b2c6244c7c547d",
+      "url": "https://github.com/juspay/kolu/archive/30e28f72dca5ea9e817d63fc31b2c6244c7c547d.tar.gz",
+      "hash": "sha256-c3Kd2VyMbAE8rSce05DmvnakMqa/u8Tx9gk7Q1TONlE="
     },
     "nixpkgs": {
       "type": "Git",
