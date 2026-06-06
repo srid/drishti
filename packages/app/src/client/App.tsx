@@ -16,6 +16,7 @@
 
 import { streamCall } from "@kolu/surface/client";
 import { SurfaceAppProvider, surfaceAppProbe } from "@kolu/surface-app/solid";
+import { Meta, Title } from "@solidjs/meta";
 import {
   type Accessor,
   batch,
@@ -77,6 +78,8 @@ import {
 } from "../common/history";
 import { TabStrip } from "./TabStrip";
 import { prefKey, readPref, writePref } from "./localStorageState";
+import { BRAND_DARK, BRAND_LIGHT } from "./brand";
+import { titleForHost } from "./title";
 import {
   applyTheme,
   initialTheme,
@@ -465,6 +468,16 @@ function MultiHostApp() {
 
   return (
     <div class="min-h-screen bg-gray-50 p-4 font-mono text-sm dark:bg-gray-950">
+      {/* Reactive head, kolu's app-shell pattern over `@solidjs/meta`: the tab
+          title names the host on screen (fleet keeps the product title), and
+          the PWA `theme-color` tracks the *chosen* theme — the static
+          media-query metas only knew the OS preference, so the address-bar
+          tint disagreed with the page whenever the toggle overrode the OS. */}
+      <Title>{titleForHost(selectedHost())}</Title>
+      <Meta
+        name="theme-color"
+        content={theme() === "dark" ? BRAND_DARK : BRAND_LIGHT}
+      />
       <div class="overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
         <TabStrip
           hosts={hostList()}
