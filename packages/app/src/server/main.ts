@@ -29,6 +29,7 @@ import { z } from "zod";
 import { destroyAllSessions } from "@kolu/surface-nix-host";
 import { installSurfaceApp } from "@kolu/surface-app/server";
 import { ADMIN_HOST_SENTINEL } from "../common/admin-surface";
+import { BRAND_DARK } from "../client/brand";
 import { buildAdminRouter } from "./admin-router";
 import { resolveDrvForHost } from "./archMap";
 import { buildClient } from "./build";
@@ -154,8 +155,8 @@ async function main(): Promise<void> {
     manifest: {
       name: "drishti — remote process monitor",
       short_name: "drishti",
-      themeColor: "#0b0d12",
-      backgroundColor: "#0b0d12",
+      themeColor: BRAND_DARK,
+      backgroundColor: BRAND_DARK,
       description:
         "htop for your whole fleet — live processes, CPU, memory, and network over SSH, with nothing installed on the remote.",
       id: "/",
