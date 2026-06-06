@@ -12,9 +12,13 @@
  */
 
 import { websocketLink } from "@kolu/surface/links/websocket";
-import { surfaceClient } from "@kolu/surface/solid";
+import { surfaceClient, surfaceClients } from "@kolu/surface/solid";
 import { WebSocket as PartySocket } from "partysocket";
-import { ADMIN_HOST_SENTINEL, adminSurface } from "../common/admin-surface";
+import {
+  ADMIN_HOST_SENTINEL,
+  adminContract,
+  adminSurfaces,
+} from "../common/admin-surface";
 import { surface } from "drishti-common";
 
 function wsUrlFor(host: string): string {
@@ -49,11 +53,15 @@ function buildHostSurface(host: string) {
 
 function buildAdminSurface() {
   const ws = makeSocket(ADMIN_HOST_SENTINEL);
-  const client = surfaceClient(
-    adminSurface,
-    websocketLink<typeof adminSurface.contract>(ws as unknown as WebSocket),
-  );
-  return { ws, client };
+  // The admin transport multiplexes TWO sibling surfaces (kolu#1197/#1201):
+  // drishti's own `admin` surface (the host set + procedures) and surface-app's
+  // complete surface (`buildInfo` + the `identity.info` probe). `surfaceClients`
+  // splits the one link into a per-key client bundle; each client's `.rpc` is
+  // the SCOPED slice (`{ surface: link.surface[key] }`), so its primitives
+  // resolve at `/surface/<key>/<prim>/<verb>`.
+  const link = websocketLink<typeof adminContract>(ws as unknown as WebSocket);
+  const clients = surfaceClients(link, adminSurfaces);
+  return { ws, link, clients };
 }
 
 const hostCache = new Map<string, HostClient>();
@@ -92,10 +100,32 @@ function adminEntryLazy(): AdminClient {
   return adminEntry;
 }
 
-/** Get the (cached) admin surface client. Lazy — opens the admin WS on
- *  first call. */
+/** Get the (cached) admin surface client — drishti's OWN `admin` surface,
+ *  used for the bound subscription hooks (`adminClient().collections.hosts
+ *  .use(...)`). Lazy — opens the admin WS on first call. surface-app's
+ *  build-identity surface rides the same transport; reach it via
+ *  `surfaceAppClient()`. */
 export function adminClient() {
-  return adminEntryLazy().client;
+  return adminEntryLazy().clients.admin;
+}
+
+/** The admin surface's PROCEDURE namespace, typed off the full combined link.
+ *  `adminRpc().hosts.add(...)` / `.remove(...)` / `.reconnect(...)` /
+ *  `.recheck(...)` resolve at `/surface/admin/hosts/<verb>`. Procedure calls go
+ *  through the full typed link (not the per-key scoped client, whose `.rpc` is
+ *  `unknown`) — mirroring kolu, where raw/surface procedures resolve off the
+ *  full combined link rather than a scoped slice. */
+export function adminRpc() {
+  return adminEntryLazy().link.surface.admin;
+}
+
+/** Get the (cached) surface-app client over the admin transport — the global
+ *  build-identity `buildInfo` cell + the `identity.info` restart probe. Handed
+ *  to `<SurfaceAppProvider controlPlane=...>` and `surfaceAppProbe(...)`. The
+ *  `surfaceApp` key is consumed by the scope, so the probe's wire path is
+ *  `/surface/surfaceApp/identity/info` (the key does NOT reappear). */
+export function surfaceAppClient() {
+  return adminEntryLazy().clients.surfaceApp;
 }
 
 /** The (cached) admin transport. The admin socket is drishti's control

@@ -12,15 +12,25 @@
  * mutation resolves — so a browser subscribing to a newly-added host
  * always lands on a live handler, and a subscriber learning about a
  * removed host never sees the upgrade handler still routing to it.
+ *
+ * The admin transport multiplexes TWO sibling surfaces (kolu#1197/#1201):
+ * drishti's OWN `admin` surface (this file's host set + procedures) and
+ * surface-app's complete surface (the global `buildInfo` cell + the
+ * `identity.info` restart probe). `implementSurfaces` serves both —
+ * surface-app's deps come from `surfaceAppServer()` in one call; drishti's
+ * own deps are the `hosts` collection + procedures. The runtime fires the
+ * buildInfo cell's async republish; no app-visible connect.
  */
 
 import { implement } from "@orpc/server";
 import { inMemoryChannelByName } from "@kolu/surface/server";
+import { implementSurfaces } from "@kolu/surface/server";
+import { surfaceAppServer } from "@kolu/surface-app/server";
 import {
-  implementSurfaceApp,
-  surfaceAppServer,
-} from "@kolu/surface-app/server";
-import { adminSurface } from "../common/admin-surface";
+  adminContract,
+  adminSurface,
+  surfaceAppSurface,
+} from "../common/admin-surface";
 import type { HostRegistry } from "./hostRegistry";
 import { makeLogger } from "./log";
 
@@ -31,94 +41,114 @@ export interface AdminRouterOptions {
 }
 
 export function buildAdminRouter(opts: AdminRouterOptions) {
-  // The whole surface-app server side composed in one call: `surfaceAppServer()`
-  // supplies both halves of the fragment — the build-identity cell store (commit
-  // resolved once: SURFACE_APP_COMMIT env → git → "dev"; the same commit is baked
-  // into the client bundle via build.ts's Bun.build define, so client and server
-  // stamp one value and skew is detectable across deploys) AND the `surfaceApp.info`
-  // identity probe impl (one processId per process, minted by the library — restart
-  // the parent → new id → the control-plane status flips to "restarted").
-  // `implementSurfaceApp` merges both into our own deps, runs `implementSurface`,
-  // and owns the buildInfo connect — so we pass ONLY drishti's own collections and
-  // host procedures.
-  const { router: fragmentRouter, ctx } = implementSurfaceApp(
-    adminSurface,
-    surfaceAppServer(),
+  // Two SIBLING surfaces over the one admin transport (kolu#1197/#1201):
+  // drishti's OWN `admin` surface (the host set + host-lifecycle procedures)
+  // under the `admin` key, and surface-app's COMPLETE surface (the
+  // build-identity `buildInfo` cell + the `identity.info` restart probe) under
+  // the `surfaceApp` key. They are NOT merged — `implementSurfaces` keys each
+  // surface, serving them at `/surface/admin/…` and `/surface/surfaceApp/…`
+  // with a key-namespaced channel per surface.
+  //
+  // `surfaceAppServer()` supplies surface-app's whole server side in one call:
+  // the build-identity cell store (commit resolved once: SURFACE_APP_COMMIT env
+  // → git → "dev"; the same commit is baked into the client bundle via
+  // build.ts's Bun.build define, so client and server stamp one value and skew
+  // is detectable across deploys) AND the `identity.info` probe impl (one
+  // processId per process — restart the parent → new id → the control-plane
+  // status flips to "restarted"). The buildInfo cell's async republish is fired
+  // by the surface runtime — no app-visible connect.
+  const { router: surfacesRouter, ctx } = implementSurfaces(
+    { channel: inMemoryChannelByName() },
     {
-      channel: inMemoryChannelByName(),
-      collections: {
-        hosts: {
-          // Live projection from the registry — the framework calls this
-          // for every new subscriber's first frame.
-          readAll: () => opts.registry.snapshot(),
-          // No-op deps. The procedures below mutate the registry directly
-          // and then call `ctx.collections.hosts.upsert/remove` to publish
-          // the change; the framework's channel publish fires off these calls
-          // regardless of what the deps do. Keeping the deps empty avoids
-          // maintaining a parallel cache that could drift from the registry.
-          upsert: () => {},
-          remove: () => {},
-        },
+      // ── surface-app served as a sibling ──────────────────────────────
+      surfaceApp: {
+        surface: surfaceAppSurface,
+        // biome-ignore lint/suspicious/noExplicitAny: heterogeneous entry deps are `any`-spec'd; the surfaceAppServer bundle's concretely-typed cell entry rejects the `unknown`-typed member contravariantly. Runtime shape is exact.
+        deps: surfaceAppServer() as any,
       },
-      procedures: {
-        hosts: {
-          add: async ({ input }) => {
-            // `HostInputSchema` already rejects blank, whitespace-containing,
-            // and sentinel strings at validation time; no re-check needed here.
-            const host = input.host.trim();
-            if (opts.registry.has(host)) {
-              return { ok: false, error: "host already exists" };
-            }
-            try {
-              // Invariant: `registry.add` must resolve BEFORE the channel
-              // publish below. The publish synchronously triggers each
-              // subscribed browser to open a new WS for the host; if the
-              // handler isn't built yet, the upgrade handler rejects.
-              await opts.registry.add(host);
-            } catch (err) {
-              return { ok: false, error: (err as Error).message };
-            }
-            ctx.collections.hosts.upsert(host, { host });
-            return { ok: true };
+
+      // ── drishti's own admin surface served as a sibling ──────────────
+      admin: {
+        surface: adminSurface,
+        // biome-ignore lint/suspicious/noExplicitAny: heterogeneous entry deps are `any`-spec'd; the concretely-typed admin deps reject the `unknown`-typed member contravariantly. Runtime shape is exact.
+        deps: {
+          collections: {
+            hosts: {
+              // Live projection from the registry — the framework calls this
+              // for every new subscriber's first frame.
+              readAll: () => opts.registry.snapshot(),
+              // No-op deps. The procedures below mutate the registry directly
+              // and then call `ctx.admin.collections.hosts.upsert/remove` to
+              // publish the change; the framework's channel publish fires off
+              // these calls regardless of what the deps do. Keeping the deps
+              // empty avoids maintaining a parallel cache that could drift from
+              // the registry.
+              upsert: () => {},
+              remove: () => {},
+            },
           },
-          remove: async ({ input }) => {
-            if (!opts.registry.has(input.host)) return { ok: false };
-            try {
-              // Invariant: `registry.remove` must resolve BEFORE the
-              // channel publish below. The registry closes the host's
-              // open WSes and destroys the session synchronously; only
-              // then is the subscriber notified the host has gone.
-              await opts.registry.remove(input.host);
-            } catch (err) {
-              log(`remove ${input.host} failed: ${(err as Error).message}`);
-              return { ok: false };
-            }
-            ctx.collections.hosts.remove(input.host);
-            return { ok: true };
+          procedures: {
+            hosts: {
+              add: async ({ input }: { input: { host: string } }) => {
+                // `HostInputSchema` already rejects blank, whitespace-containing,
+                // and sentinel strings at validation time; no re-check needed here.
+                const host = input.host.trim();
+                if (opts.registry.has(host)) {
+                  return { ok: false, error: "host already exists" };
+                }
+                try {
+                  // Invariant: `registry.add` must resolve BEFORE the channel
+                  // publish below. The publish synchronously triggers each
+                  // subscribed browser to open a new WS for the host; if the
+                  // handler isn't built yet, the upgrade handler rejects.
+                  await opts.registry.add(host);
+                } catch (err) {
+                  return { ok: false, error: (err as Error).message };
+                }
+                ctx.admin.collections.hosts.upsert(host, { host });
+                return { ok: true };
+              },
+              remove: async ({ input }: { input: { host: string } }) => {
+                if (!opts.registry.has(input.host)) return { ok: false };
+                try {
+                  // Invariant: `registry.remove` must resolve BEFORE the
+                  // channel publish below. The registry closes the host's
+                  // open WSes and destroys the session synchronously; only
+                  // then is the subscriber notified the host has gone.
+                  await opts.registry.remove(input.host);
+                } catch (err) {
+                  log(`remove ${input.host} failed: ${(err as Error).message}`);
+                  return { ok: false };
+                }
+                ctx.admin.collections.hosts.remove(input.host);
+                return { ok: true };
+              },
+              reconnect: ({ input }: { input: { host: string } }) => {
+                // No `hosts` collection publish: membership is unchanged. The
+                // session's copying→connecting→connected transition streams
+                // back through the per-host `connection` cell on its own.
+                if (!opts.registry.has(input.host)) return { ok: false };
+                opts.registry.reconnect(input.host);
+                return { ok: true };
+              },
+              recheck: () => {
+                // Fleet-wide force-reprobe (browser regained connectivity /
+                // refocused). Like `reconnect`, no membership change and no
+                // collection publish — each host's recovery streams back through
+                // its own `connection` cell.
+                opts.registry.recheckAll();
+                return { ok: true };
+              },
+            },
           },
-          reconnect: ({ input }) => {
-            // No `hosts` collection publish: membership is unchanged. The
-            // session's copying→connecting→connected transition streams
-            // back through the per-host `connection` cell on its own.
-            if (!opts.registry.has(input.host)) return { ok: false };
-            opts.registry.reconnect(input.host);
-            return { ok: true };
-          },
-          recheck: () => {
-            // Fleet-wide force-reprobe (browser regained connectivity /
-            // refocused). Like `reconnect`, no membership change and no
-            // collection publish — each host's recovery streams back through
-            // its own `connection` cell.
-            opts.registry.recheckAll();
-            return { ok: true };
-          },
-        },
+          // biome-ignore lint/suspicious/noExplicitAny: see above — entry deps are `any`-spec'd.
+        } as any,
       },
     },
   );
 
-  const router = implement(adminSurface.contract).router({
-    ...fragmentRouter,
+  const router = implement(adminContract).router({
+    ...surfacesRouter,
   });
   return { router };
 }
