@@ -48,6 +48,16 @@ Requirements:
 - The remote host must be `ssh`-reachable with **passwordless** auth and a working **`nix-daemon`** that **trusts your user** (`trusted-users` in `nix.conf`) — drishti provisions the agent by shipping its `.drv` to the remote with `nix copy --derivation` and realising it there.
 - Localhost works without any remote setup.
 
+**Hosts behind a bastion (SSH hops).** drishti runs plain `ssh <host>`, so a host reachable only *through* a jump box needs no drishti config — just an `~/.ssh/config` entry with `ProxyJump`:
+
+```
+Host db-internal
+  HostName 10.0.0.5
+  ProxyJump bastion.example.com
+```
+
+Then add `db-internal` like any other host. The agent spawn, the nix-system probe, and the `nix copy` of the agent closure all hop through the bastion automatically. The jump host must itself be non-interactive from where drishti runs (drishti forces `BatchMode=yes`), so a bastion that prompts for a password fails rather than hangs — use a key.
+
 Mixed-architecture host sets are supported: the monitor wrapper bakes a `{system → drv}` map for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`, and the parent probes each host's nix-system on add (via [`@kolu/surface-nix-host`'s `resolveSystem`](https://github.com/juspay/kolu/pull/1009), which asks the host's own Nix for `builtins.currentSystem`) to pick the matching `.drv`. A macOS user can drive a Linux remote (or both) from one `nix run` invocation.
 
 ## Architecture
