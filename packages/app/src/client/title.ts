@@ -1,32 +1,35 @@
 /**
- * Document-title policy — the single source of truth for what the browser
- * tab (and the installed-PWA window) is named.
+ * App-identity strings — the product name and the per-host identity that names
+ * both the installed PWA and the browser tab.
  *
- * kolu derives its tab title from server identity (`<Title>{appTitle()}</Title>`
- * over `@solidjs/meta`); drishti is a fleet monitor, so the natural identity to
- * surface is *which host is on screen*. A host view names the host so a row of
- * pinned drishti tabs/windows is self-labelling ("user@host — drishti"); the
- * fleet overview has no single host, so it keeps the full product title.
+ * drishti is one server per host (it runs *on* the machine and ships agents to
+ * remotes over SSH). kolu names itself after its server identity; drishti's
+ * server identity is the host it runs on, so the app presents as `drishti@<host>`
+ * — e.g. `drishti@zest`. That string is the single source for the served PWA
+ * `name`/`short_name`/`id` (so installing drishti from two hosts gives two
+ * distinct, separately-labelled apps) *and* the tab title (so a row of tabs
+ * across hosts is self-labelling). The server forms it from `os.hostname()` and
+ * bakes it into the manifest; the client reads it back from there — one site.
  *
- * Pure and view-only: the reactive plumbing (reading `selectedHost`, feeding
- * `<Title>`) lives in `App.tsx`. This module owns only the *string*, so the
- * format is unit-testable without a DOM. `APP_TITLE` is also the static
- * pre-paint `<title>` in `index.html`; `title.test.ts` canaries that
- * hand-authored copy against this constant, mirroring how `brand.test.ts`
- * pins the un-importable brand-color sites.
+ * Pure and DOM-free, so it's importable by both the client (App.tsx) and the
+ * server (main.ts, which builds the manifest) and unit-testable without a DOM.
+ * `APP_TITLE` is also the static pre-paint `<title>` in `index.html` — the
+ * boot/fallback value shown before the manifest is read; `title.test.ts`
+ * canaries that hand-authored copy against this constant.
  */
 
-/** The product short name — the bare brand. The single source for every place
- *  "drishti" appears as a name: the host-view title suffix, the long product
- *  title below, the PWA `short_name`, and `apple-mobile-web-app-title`. A rename
- *  is one edit here rather than several hand-kept literals that can diverge. */
+/** The product short name — the bare brand. The single source for the `@host`
+ *  identity below, the long product title, and the un-importable name sites
+ *  (the static `<title>`, `apple-mobile-web-app-title`, the static manifest). */
 export const APP_NAME = "drishti";
 
-/** The product title — the fleet-overview title and the boot/pre-mount value. */
+/** The product title — the boot/fallback value before the per-host identity is
+ *  known, and the fleet-wide default. */
 export const APP_TITLE = `${APP_NAME} — remote process monitor`;
 
-/** The document title for the current view: the selected host (so the tab
- *  identifies the machine) or the product title when none is selected (fleet). */
-export function titleForHost(host: string | null): string {
-  return host ? `${host} — ${APP_NAME}` : APP_TITLE;
+/** The app's per-host identity, e.g. `drishti@zest`. `host` is the machine the
+ *  parent server runs on (`os.hostname()`). Used for the PWA `name`/`short_name`
+ *  and the tab title, so each deployment is a distinct, self-labelling app. */
+export function appNameForHost(host: string): string {
+  return `${APP_NAME}@${host}`;
 }

@@ -23,6 +23,7 @@ import {
   createContext,
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   For,
   type JSX,
@@ -79,7 +80,7 @@ import {
 import { TabStrip } from "./TabStrip";
 import { prefKey, readPref, writePref } from "./localStorageState";
 import { brandColorForTheme } from "./brand";
-import { titleForHost } from "./title";
+import { APP_TITLE } from "./title";
 import {
   applyTheme,
   initialTheme,
@@ -466,14 +467,32 @@ function MultiHostApp() {
     }
   };
 
+  // The app's identity is *which host this drishti runs on* — `drishti@<host>`.
+  // The parent server (which knows `os.hostname()`) bakes that into the served
+  // PWA manifest's name/short_name, so installing drishti from two hosts gives
+  // two distinct, separately-labelled apps. The tab title is the same identity,
+  // so we read it back from that one source — the manifest's `short_name` —
+  // rather than re-deriving the host client-side (the browser never exposes
+  // it). Falls back to the product title until the fetch resolves, or if it
+  // fails (offline / blocked).
+  const [appName] = createResource(async () => {
+    try {
+      const res = await fetch("/manifest.webmanifest");
+      const m = (await res.json()) as { short_name?: string };
+      return m.short_name ?? null;
+    } catch {
+      return null;
+    }
+  });
+
   return (
     <div class="min-h-screen bg-gray-50 p-4 font-mono text-sm dark:bg-gray-950">
       {/* Reactive head, kolu's app-shell pattern over `@solidjs/meta`: the tab
-          title names the host on screen (fleet keeps the product title), and
-          the PWA `theme-color` tracks the *chosen* theme — the static
-          media-query metas only knew the OS preference, so the address-bar
-          tint disagreed with the page whenever the toggle overrode the OS. */}
-      <Title>{titleForHost(selectedHost())}</Title>
+          title is the server's own `drishti@<host>` identity (read from the
+          served manifest), and the PWA `theme-color` tracks the *chosen* theme
+          — the static media-query metas only knew the OS preference, so the
+          address-bar tint disagreed with the page when the toggle overrode it. */}
+      <Title>{appName() ?? APP_TITLE}</Title>
       <Meta name="theme-color" content={brandColorForTheme(theme())} />
       <div class="overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
         <TabStrip

@@ -1,16 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { APP_NAME, APP_TITLE, titleForHost } from "./title";
+import { APP_NAME, APP_TITLE, appNameForHost } from "./title";
 
-describe("titleForHost", () => {
-  it("names the selected host so the tab identifies the machine", () => {
-    expect(titleForHost("user@host")).toBe("user@host — drishti");
-    expect(titleForHost("localhost")).toBe("localhost — drishti");
-  });
-
-  it("falls back to the product title for the fleet overview (no host)", () => {
-    expect(titleForHost(null)).toBe(APP_TITLE);
+describe("appNameForHost", () => {
+  it("names the server's own host so each deployment is a distinct app", () => {
+    expect(appNameForHost("zest")).toBe("drishti@zest");
+    expect(appNameForHost("rasam.tail12b27.ts.net")).toBe(
+      "drishti@rasam.tail12b27.ts.net",
+    );
   });
 });
 

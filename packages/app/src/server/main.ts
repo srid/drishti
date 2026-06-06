@@ -18,6 +18,7 @@
  * which persists back to the same file so UI changes survive restart.
  */
 
+import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
@@ -30,7 +31,7 @@ import { destroyAllSessions } from "@kolu/surface-nix-host";
 import { installSurfaceApp } from "@kolu/surface-app/server";
 import { ADMIN_HOST_SENTINEL } from "../common/admin-surface";
 import { BRAND_DARK } from "../client/brand";
-import { APP_NAME, APP_TITLE } from "../client/title";
+import { appNameForHost } from "../client/title";
 import { buildAdminRouter } from "./admin-router";
 import { resolveDrvForHost } from "./archMap";
 import { buildClient } from "./build";
@@ -151,16 +152,23 @@ async function main(): Promise<void> {
   // here: drishti's WebSocket lives on the raw `httpServer.on("upgrade")`
   // handler, not in this Hono app, so this static catch-all only sees HTTP and
   // must simply be the app's last route (it is — nothing is mounted after it).
+  // The app's identity is the host this drishti runs on — `drishti@<host>`.
+  // Baking the server's own hostname into the manifest's name/short_name/id
+  // makes each deployment a distinct, separately-labelled installable PWA
+  // (install drishti from `zest` and from `rasam` and they don't collapse into
+  // one "drishti" in the OS app list), and the client reads `short_name` back
+  // for the matching tab title.
+  const appName = appNameForHost(hostname());
   installSurfaceApp(app, {
     clientDist: distDir,
     manifest: {
-      name: APP_TITLE,
-      short_name: APP_NAME,
+      name: appName,
+      short_name: appName,
       themeColor: BRAND_DARK,
       backgroundColor: BRAND_DARK,
       description:
         "htop for your whole fleet — live processes, CPU, memory, and network over SSH, with nothing installed on the remote.",
-      id: "/",
+      id: `/?app=${encodeURIComponent(appName)}`,
       scope: "/",
       orientation: "any",
       icons: [
