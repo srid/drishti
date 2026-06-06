@@ -30,6 +30,7 @@ import { destroyAllSessions } from "@kolu/surface-nix-host";
 import { installSurfaceApp } from "@kolu/surface-app/server";
 import { ADMIN_HOST_SENTINEL } from "../common/admin-surface";
 import { BRAND_DARK } from "../client/brand";
+import { APP_NAME, APP_TITLE } from "../client/title";
 import { buildAdminRouter } from "./admin-router";
 import { resolveDrvForHost } from "./archMap";
 import { buildClient } from "./build";
@@ -153,8 +154,8 @@ async function main(): Promise<void> {
   installSurfaceApp(app, {
     clientDist: distDir,
     manifest: {
-      name: "drishti — remote process monitor",
-      short_name: "drishti",
+      name: APP_TITLE,
+      short_name: APP_NAME,
       themeColor: BRAND_DARK,
       backgroundColor: BRAND_DARK,
       description:
