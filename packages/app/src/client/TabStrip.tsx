@@ -15,16 +15,7 @@
 
 import { isCleanRef } from "@kolu/surface-app";
 import { type ConnectionStatus, useSurfaceApp } from "@kolu/surface-app/solid";
-// TODO(pin): the install-card adapter. This package is scaffolded on the kolu
-// `welcome` branch but its `src/index.tsx` is not implemented yet, and that
-// branch is not on a pinned/published kolu revision — so this import does not
-// resolve against the current `npins/sources.json` kolu pin. Bump the kolu pin
-// to the merged `welcome` revision (which ships `@kolu/solid-pwa-install`'s
-// source + adds `canInstallPwa` / `isInstalled` to `useSurfaceApp()`), then drop
-// the `PWA_INSTALL_WIRED` guard below. The nix wiring (overlay/env/shell/justfile/
-// build derivation) to hydrate this package into node_modules is already in place.
-//
-// import { PwaInstall } from "@kolu/solid-pwa-install";
+import { createPwaInstall, installInstructions } from "@kolu/solid-pwa-install";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { type ConnectionState, DEFAULT_CONNECTION } from "drishti-common";
 import type { View } from "./view";
@@ -132,79 +123,59 @@ function IdentityRail() {
   );
 }
 
-// Whether the install-card adapter is wired (see the TODO(pin) on the import at
-// the top of this file). Flipped to `true` in the same change that bumps the
-// kolu pin and uncomments the `@kolu/solid-pwa-install` import — until then the
-// button stays off so an unwired build still runs. This guard is the ONLY thing
-// that should change when the kolu PR lands; the gate logic below is final.
-const PWA_INSTALL_WIRED = false;
-
 // "Pin app" — drishti's install affordance, the second consumer of
-// `@kolu/surface-app`'s new installability signals (mirroring how kolu wires its
-// own EmptyState install card). The gate is exactly the one the kolu welcome plan
+// `@kolu/surface-app`'s installability signals (mirroring how kolu wires its own
+// EmptyState install card). The gate is exactly the one the kolu welcome plan
 // documents:
 //
 //   1. NOT a secure context (plain http://, e.g. a bare `100.x` Tailscale IP)
-//      → render nothing. `beforeinstallprompt` never fires there and Chromium
-//      shows no install affordance, so a button would be a dead control.
+//      → render nothing (`canInstallPwa()` is false): no one-click prompt is
+//      possible there, so a button would be a dead control.
 //   2. ALREADY installed (standalone display-mode / iOS `navigator.standalone`)
 //      → render nothing. Nothing left to pin.
-//   3. secure + not installed → show the button; clicking opens the
-//      `@kolu/solid-pwa-install` card, which owns the cross-browser volatility
-//      (Chromium one-click `prompt()`, Safari/iOS "Add to Home Screen"
-//      instructions, the `appinstalled` listener).
+//   3. secure + not installed → show the button. On Chromium a click fires the
+//      one-click `prompt()`; elsewhere (Safari/Firefox/iOS — no JS prompt) it
+//      reveals the auto-detected per-platform `installInstructions` inline.
 //
-// `canInstallPwa` (isSecureContext) and `isInstalled` (display-mode) are the new
-// signals on `useSurfaceApp()` from the kolu welcome PR. surface-app owns them
-// because secure-context + install state are an environment fact every surface
-// app needs, not a drishti concern.
+// `canInstallPwa` (isSecureContext) and `isInstalled` (display-mode) are signals
+// on `useSurfaceApp()`; `createPwaInstall` / `installInstructions` come from
+// `@kolu/solid-pwa-install`. surface-app owns the signals because secure-context
+// + install state are an environment fact every surface app needs; solid-pwa-
+// install owns the cross-browser install volatility behind one socket.
 function PinAppButton() {
   const app = useSurfaceApp();
-  // The card's open state. Read into the trigger's `aria-expanded` so it's a live
-  // value now (not just a TODO), and consumed by the `<PwaInstall>` `open` prop
-  // once that import lands — see the gated block below.
+  const install = createPwaInstall();
   const [open, setOpen] = createSignal(false);
-
-  // TODO(pin): once the kolu pin ships the new signals, these read straight off
-  // the model: `const show = () => app.canInstallPwa() && !app.isInstalled();`.
-  // Until then the model has neither accessor, so the button is held off by the
-  // wiring guard rather than the (not-yet-present) runtime signals — keeping an
-  // unwired build type-clean and runnable.
-  const show = () =>
-    PWA_INSTALL_WIRED &&
-    // @ts-expect-error TODO(pin): canInstallPwa/isInstalled arrive on the model
-    // with the kolu welcome PR; typed-checked once the pin is bumped.
-    app.canInstallPwa?.() === true &&
-    // @ts-expect-error see above.
-    app.isInstalled?.() !== true;
+  const show = () => app.canInstallPwa() && !app.isInstalled();
+  const instr = () => installInstructions(install.platform());
 
   return (
     <Show when={show()}>
-      <button
-        type="button"
-        class="flex items-center gap-1.5 self-center rounded-lg border border-indigo-300 bg-indigo-50 px-2.5 py-0.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/40"
-        title="Install drishti as an app on this device"
-        aria-expanded={open()}
-        onClick={() => setOpen(true)}
-      >
-        <span aria-hidden="true">⤓</span>
-        Pin app
-      </button>
-      {/*
-        TODO(pin): render the install card once `@kolu/solid-pwa-install` resolves.
-        The card owns the per-platform branch; drishti only feeds branding +
-        controls open state:
-
-          <PwaInstall
-            open={open()}
-            onClose={() => setOpen(false)}
-            manifest-url="/manifest.webmanifest"
-            icon="/icons/icon-192.png"
-            install-description="htop for your whole fleet — pin it for one-tap access."
-          />
-
-        `open()` is wired now so the trigger half is real and reviewable; only the
-        card import is gated. */}
+      <div class="relative self-center">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-indigo-50 px-2.5 py-0.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/40"
+          title="Install drishti as an app on this device"
+          aria-expanded={open()}
+          onClick={() => {
+            // Chromium: the one-click native prompt. Otherwise toggle the inline
+            // per-platform steps (the package owns the recipe).
+            if (install.canPrompt()) install.prompt();
+            else setOpen((v) => !v);
+          }}
+        >
+          <span aria-hidden="true">⤓</span>
+          Pin app
+        </button>
+        <Show when={open() && !install.canPrompt()}>
+          <div class="absolute right-0 top-full z-10 mt-1 w-60 rounded-lg border border-zinc-200 bg-white p-3 text-xs text-zinc-700 shadow-lg dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+            <div class="mb-1 font-semibold">{instr().title}</div>
+            <ol class="ml-4 list-decimal space-y-0.5">
+              <For each={instr().steps}>{(s) => <li>{s}</li>}</For>
+            </ol>
+          </div>
+        </Show>
+      </div>
     </Show>
   );
 }
