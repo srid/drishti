@@ -68,12 +68,15 @@ describe("buildClient — static PWA assets at the dist root", () => {
     expect(read("icons/icon.svg").trimStart()).toStartWith("<svg");
   });
 
-  it("wires the manifest link, theme-color, and icons into index.html", () => {
+  it("wires the manifest link and icons into index.html", () => {
     const html = read("index.html");
     expect(html).toContain('rel="manifest"');
     expect(html).toContain('href="/manifest.webmanifest"');
-    expect(html).toContain('name="theme-color"');
     expect(html).toContain('rel="apple-touch-icon"');
+    // No static theme-color meta: App.tsx injects it into the live DOM at
+    // runtime via @solidjs/meta (so it tracks the in-app theme), and the
+    // builder never re-adds it to the static shell.
+    expect(html).not.toContain('name="theme-color"');
   });
 });
 
