@@ -11,10 +11,20 @@
  * Served at `/rpc/ws?host=__admin__` — the reserved sentinel; see
  * `ADMIN_HOST_SENTINEL` below and the upgrade handler in
  * `server/main.ts`.
+ *
+ * The admin connection is also drishti's CONTROL PLANE: the one
+ * always-open, global connection. surface-app's build-identity surface
+ * (the `buildInfo` cell + the `identity.info` restart probe) rides this
+ * same transport — but as a SIBLING surface, NOT merged into the admin
+ * surface (kolu#1197/#1201). `composeSurfaceContracts` multiplexes the
+ * two: drishti's own `admin` surface under the `admin` key, surface-app's
+ * complete surface under the `surfaceApp` key. Each is namespaced by its
+ * key on the wire (`/surface/admin/…` vs `/surface/surfaceApp/…`).
  */
 
-import { defineSurface, type SurfaceTypes } from "@kolu/surface/define";
-import { composeSurfaces, surfaceAppSurface } from "@kolu/surface-app/surface";
+import { composeSurfaceContracts, defineSurface } from "@kolu/surface/define";
+import type { SurfaceTypes } from "@kolu/surface/define";
+import { surfaceAppSurface } from "@kolu/surface-app/surface";
 import { z } from "zod";
 
 /** Reserved string used as the `host=` query value for the admin
@@ -34,57 +44,70 @@ const HostInputSchema = z
     "host must be non-empty, have no whitespace, and not be the admin sentinel",
   );
 
-// surface-app-specific — the global build identity (`buildInfo` cell) and the
-// `surfaceApp.info` restart probe, merged in one call. The admin surface is
-// drishti's CONTROL PLANE: the one always-open, global connection (the per-host
-// surfaces are per-entity), so global build skew + the restart probe belong
-// here, not on a host surface. surface-app reads `processId` on each (re)connect
-// to tell a transient drop from a parent restart (drives the control-plane
-// status). drishti uses the DEFAULT build identity (`{ commit }`), so it merges
-// `surfaceAppSurface` directly — no `surfaceAppSurfaceWith`.
-export const adminSurface = defineSurface(
-  composeSurfaces(surfaceAppSurface, {
-    collections: {
-      /** Configured hosts. Key = host string (ssh target). The browser's
-       *  tab strip subscribes to this collection — adds/removes ripple
-       *  through `useCollection` and the strip updates without polling. */
-      hosts: {
-        keySchema: z.string(),
-        schema: HostEntrySchema,
+/** drishti's OWN admin surface — just the host set + the host-lifecycle
+ *  procedures. surface-app's buildInfo/identity ride the sibling surface,
+ *  not here. */
+export const adminSurface = defineSurface({
+  collections: {
+    /** Configured hosts. Key = host string (ssh target). The browser's
+     *  tab strip subscribes to this collection — adds/removes ripple
+     *  through `useCollection` and the strip updates without polling. */
+    hosts: {
+      keySchema: z.string(),
+      schema: HostEntrySchema,
+    },
+  },
+  procedures: {
+    hosts: {
+      add: {
+        input: z.object({ host: HostInputSchema }),
+        output: z.object({ ok: z.boolean(), error: z.string().optional() }),
+      },
+      remove: {
+        input: z.object({ host: z.string() }),
+        output: z.object({ ok: z.boolean() }),
+      },
+      // Re-arm a host whose parent session gave up (its `connection`
+      // cell is `failed`). Distinct from add/remove: it mutates session
+      // lifecycle, not host-set membership — the host stays configured,
+      // so this never touches the `hosts` collection. The recovery flows
+      // back through the per-host `connection` cell, not here.
+      reconnect: {
+        input: z.object({ host: z.string() }),
+        output: z.object({ ok: z.boolean() }),
+      },
+      // Force a fresh link probe on every host — the browser fires this on
+      // regaining connectivity (`online`) or refocus (`visibilitychange`),
+      // the client-side companion to the parent's own wake monitor. No
+      // input (it's fleet-wide) and no host-set change; like `reconnect`,
+      // recovery is observed via each host's `connection` cell.
+      recheck: {
+        input: z.object({}),
+        output: z.object({ ok: z.boolean() }),
       },
     },
-    procedures: {
-      hosts: {
-        add: {
-          input: z.object({ host: HostInputSchema }),
-          output: z.object({ ok: z.boolean(), error: z.string().optional() }),
-        },
-        remove: {
-          input: z.object({ host: z.string() }),
-          output: z.object({ ok: z.boolean() }),
-        },
-        // Re-arm a host whose parent session gave up (its `connection`
-        // cell is `failed`). Distinct from add/remove: it mutates session
-        // lifecycle, not host-set membership — the host stays configured,
-        // so this never touches the `hosts` collection. The recovery flows
-        // back through the per-host `connection` cell, not here.
-        reconnect: {
-          input: z.object({ host: z.string() }),
-          output: z.object({ ok: z.boolean() }),
-        },
-        // Force a fresh link probe on every host — the browser fires this on
-        // regaining connectivity (`online`) or refocus (`visibilitychange`),
-        // the client-side companion to the parent's own wake monitor. No
-        // input (it's fleet-wide) and no host-set change; like `reconnect`,
-        // recovery is observed via each host's `connection` cell.
-        recheck: {
-          input: z.object({}),
-          output: z.object({ ok: z.boolean() }),
-        },
-      },
-    },
-  }),
-);
+  },
+});
+
+/** surface-app served as a SIBLING of the admin surface — drishti uses the
+ *  DEFAULT build identity (`{ commit }`), so it takes the library's
+ *  `surfaceAppSurface` directly (no `surfaceAppSurfaceWith`). Re-exported so
+ *  the server (`implementSurfaces`) and client (`surfaceClients`) bind the
+ *  same surface instance. */
+export { surfaceAppSurface };
+
+/** The two siblings, keyed. Both server and client iterate this same map,
+ *  so the keys can't drift. */
+export const adminSurfaces = {
+  admin: adminSurface,
+  surfaceApp: surfaceAppSurface,
+} as const;
+
+/** Combined wire contract for the admin transport — `{ surface: { admin,
+ *  surfaceApp } }`. The server wraps `implementSurfaces`' router with
+ *  `implement(adminContract).router(...)`; the client types its
+ *  `websocketLink` off `typeof adminContract`. */
+export const adminContract = composeSurfaceContracts(adminSurfaces);
 
 type AS = SurfaceTypes<typeof adminSurface.spec>;
 export type HostEntry = AS["collections"]["hosts"]["Value"];

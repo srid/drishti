@@ -15,7 +15,7 @@
  */
 
 import { streamCall } from "@kolu/surface/client";
-import { SurfaceAppProvider } from "@kolu/surface-app/solid";
+import { SurfaceAppProvider, surfaceAppProbe } from "@kolu/surface-app/solid";
 import {
   type Accessor,
   batch,
@@ -86,8 +86,10 @@ import {
 } from "./theme";
 import {
   adminClient,
+  adminRpc,
   adminSocket,
   disposeHostSurface,
+  surfaceAppClient,
   surfaceForHost,
 } from "./wire";
 
@@ -296,22 +298,23 @@ function projectHistory(
 // any descendant (`IdentityRail` in the TabStrip) reads build skew + the
 // control-plane connection lifecycle via `useSurfaceApp()`.
 //
-//  - controlPlane = the ADMIN surface client: drishti's one global, always-open
-//    connection, and the surface that now carries the `buildInfo` cell. (Passing
-//    a per-host client would be a compile error — its surface has no buildInfo.)
+//  - controlPlane = the surface-app client over the admin transport: surface-app
+//    rides drishti's one global, always-open connection as a SIBLING surface
+//    (kolu#1197/#1201). It carries the `buildInfo` cell + the `identity.info`
+//    probe; the admin surface (host set) is its sibling on the same wire.
 //  - clientCommit = the commit baked into THIS bundle by build.ts's Bun.build
-//    define (`__SURFACE_APP_COMMIT__`); the same value `buildInfoServer()` reads
+//    define (`__SURFACE_APP_COMMIT__`); the same value `surfaceAppServer()` reads
 //    server-side, so skew is a real comparison.
-//  - ws + probe = the admin socket's open/close paired with the `surfaceApp.info`
-//    processId probe, so a reconnect to a *restarted* parent reads as a restart,
-//    not a transient drop.
+//  - ws + probe = the admin socket's open/close paired with the shared
+//    `surfaceAppProbe` helper (the scoped `surface.identity.info` probe), so a
+//    reconnect to a *restarted* parent reads as a restart, not a transient drop.
 export default function App() {
   return (
     <SurfaceAppProvider
-      controlPlane={adminClient()}
+      controlPlane={surfaceAppClient()}
       clientCommit={__SURFACE_APP_COMMIT__}
       ws={adminSocket()}
-      probe={() => adminClient().rpc.surface.surfaceApp.info({})}
+      probe={() => surfaceAppProbe(surfaceAppClient())}
     >
       <MultiHostApp />
     </SurfaceAppProvider>
@@ -357,8 +360,8 @@ function MultiHostApp() {
   // partysocket already reconnects these loopback control sockets; this RPC
   // reaches past them to the *agent* links the parent holds over ssh.
   const recheckAllHosts = () => {
-    void admin.rpc.surface.hosts
-      .recheck({})
+    void adminRpc()
+      .hosts.recheck({})
       .catch((err) => console.error("hosts.recheck failed", err));
   };
   const onVisible = () => {
@@ -438,7 +441,7 @@ function MultiHostApp() {
 
   const onAdd = async (host: string): Promise<string | null> => {
     try {
-      const res = await admin.rpc.surface.hosts.add({ host });
+      const res = await adminRpc().hosts.add({ host });
       if (!res.ok) return res.error ?? "add failed";
       setView({ kind: "host", host });
       return null;
@@ -449,7 +452,7 @@ function MultiHostApp() {
 
   const onRemove = async (host: string) => {
     try {
-      await admin.rpc.surface.hosts.remove({ host });
+      await adminRpc().hosts.remove({ host });
       // Drop the intent if the removed host was the selected one, so the
       // URL clears to the fleet path. (`resolvedView` already falls the
       // pane back to fleet; resetting the intent keeps the address in sync.)
@@ -668,11 +671,9 @@ function HostView(props: { host: string }) {
   // `connection` cell streams the resulting copying→connecting→connected
   // transition back on its own.
   const onReconnect = () => {
-    void adminClient()
-      .rpc.surface.hosts.reconnect({ host: props.host })
-      .catch((err) =>
-        console.error(`reconnect ${props.host} failed`, err),
-      );
+    void adminRpc()
+      .hosts.reconnect({ host: props.host })
+      .catch((err) => console.error(`reconnect ${props.host} failed`, err));
   };
 
   const [processes, setProcesses] = createStore<Record<Pid, Process>>({});
