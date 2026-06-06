@@ -42,9 +42,9 @@ export type HistoryWindowKey = (typeof HISTORY_WINDOWS)[number]["key"];
 export const WIDEST_HISTORY_WINDOW: HistoryWindowKey =
   HISTORY_WINDOWS.at(-1)!.key;
 
-/** Default window on first open — the middle ground popular monitors land
- *  on: long enough to show a trend, short enough to stay responsive. */
-export const DEFAULT_HISTORY_WINDOW: HistoryWindowKey = "5m";
+/** Default window on first open — the widest span, so the chart shows the
+ *  fullest trend the ring retains the moment a host opens. */
+export const DEFAULT_HISTORY_WINDOW: HistoryWindowKey = "30m";
 
 /** Retention bound for the ring: the widest selectable window. Samples
  *  older than this are evicted on push, so a host left open for hours
