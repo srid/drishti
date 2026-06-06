@@ -12,4 +12,6 @@ in
   kolu-surface = mkKoluPackage "surface";
   kolu-surface-nix-host = mkKoluPackage "surface-nix-host";
   kolu-surface-app = mkKoluPackage "surface-app";
+  # The install-card adapter; shipped via juspay/kolu#1199 (merged to master).
+  kolu-solid-pwa-install = mkKoluPackage "solid-pwa-install";
 }

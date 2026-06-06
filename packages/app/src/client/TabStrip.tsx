@@ -15,6 +15,7 @@
 
 import { isCleanRef } from "@kolu/surface-app";
 import { type ConnectionStatus, useSurfaceApp } from "@kolu/surface-app/solid";
+import { createPwaInstall, installInstructions } from "@kolu/solid-pwa-install";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { type ConnectionState, DEFAULT_CONNECTION } from "drishti-common";
 import type { View } from "./view";
@@ -62,6 +63,7 @@ export function TabStrip(props: {
         )}
       </For>
       <AddHostForm onAdd={props.onAdd} />
+      <PinAppButton />
       <IdentityRail />
       <ThemeToggle theme={props.theme} onToggle={props.onToggleTheme} />
     </div>
@@ -118,6 +120,63 @@ function IdentityRail() {
         </Show>
       </span>
     </div>
+  );
+}
+
+// "Pin app" — drishti's install affordance, the second consumer of
+// `@kolu/surface-app`'s installability signals (mirroring how kolu wires its own
+// EmptyState install card). The gate is exactly the one the kolu welcome plan
+// documents:
+//
+//   1. NOT a secure context (plain http://, e.g. a bare `100.x` Tailscale IP)
+//      → render nothing (`canInstallPwa()` is false): no one-click prompt is
+//      possible there, so a button would be a dead control.
+//   2. ALREADY installed (standalone display-mode / iOS `navigator.standalone`)
+//      → render nothing. Nothing left to pin.
+//   3. secure + not installed → show the button. On Chromium a click fires the
+//      one-click `prompt()`; elsewhere (Safari/Firefox/iOS — no JS prompt) it
+//      reveals the auto-detected per-platform `installInstructions` inline.
+//
+// `canInstallPwa` (isSecureContext) and `isInstalled` (display-mode) are signals
+// on `useSurfaceApp()`; `createPwaInstall` / `installInstructions` come from
+// `@kolu/solid-pwa-install`. surface-app owns the signals because secure-context
+// + install state are an environment fact every surface app needs; solid-pwa-
+// install owns the cross-browser install volatility behind one socket.
+function PinAppButton() {
+  const app = useSurfaceApp();
+  const install = createPwaInstall();
+  const [open, setOpen] = createSignal(false);
+  const show = () => app.canInstallPwa() && !app.isInstalled();
+  const instr = () => installInstructions(install.platform());
+
+  return (
+    <Show when={show()}>
+      <div class="relative self-center">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-indigo-50 px-2.5 py-0.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/40"
+          title="Install drishti as an app on this device"
+          aria-expanded={open()}
+          onClick={() => {
+            // Chromium: the one-click native prompt. Otherwise toggle the inline
+            // per-platform steps (the package owns the recipe).
+            if (install.canPrompt()) install.prompt();
+            else setOpen((v) => !v);
+          }}
+        >
+          <span aria-hidden="true">⤓</span>
+          Pin app
+        </button>
+        <Show when={open() && !install.canPrompt()}>
+          <div class="absolute right-0 top-full z-10 mt-1 w-60 rounded-lg border border-zinc-200 bg-white p-3 text-xs text-zinc-700 shadow-lg dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+            <div class="mb-1 font-semibold">{instr().title}</div>
+            <ol class="ml-4 list-decimal space-y-0.5">
+              <For each={instr().steps}>{(s) => <li>{s}</li>}</For>
+            </ol>
+          </div>
+        </Show>
+      </div>
+    </Show>
   );
 }
 
