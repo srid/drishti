@@ -13,23 +13,24 @@ describe("appNameForHost", () => {
 });
 
 // The product name appears verbatim in sites that can't import TypeScript:
-// index.html (the pre-paint `<title>` and `apple-mobile-web-app-title`) and the
-// static PWA manifest. These canaries pin every hand-authored copy to the
-// `title.ts` constants — APP_TITLE (long form) and APP_NAME (short form) — so a
-// rename that misses one fails here, mirroring brand.test.ts's color canaries.
+// `apple-mobile-web-app-title` in index.html and the static PWA manifest. These
+// canaries pin the hand-authored copies to the `title.ts` constants so a rename
+// that misses one fails here, mirroring brand.test.ts's color canaries. (There
+// is no static `<title>` to canary — @solidjs/meta owns the document title; see
+// index.html. The served runtime manifest is host-scoped — `drishti@<host>`,
+// formed from APP_NAME via appNameForHost — so only the static placeholder
+// manifest, which keeps the bare brand, is pinned here.)
 describe("un-importable name sites stay in sync with the title constants", () => {
   const here = import.meta.dir;
   const read = (p: string) => readFileSync(join(here, p), "utf8");
   const html = read("index.html");
   const manifest = JSON.parse(read("public/manifest.webmanifest"));
 
-  it("pins index.html's title (long) and apple app title (short)", () => {
-    // The boot/SSR value before @solidjs/meta's reactive <Title> takes over.
-    expect(html).toContain(`<title>${APP_TITLE}</title>`);
-    expect(html).toContain(`content="${APP_NAME}"`); // apple-mobile-web-app-title
+  it("pins the apple-mobile-web-app-title to APP_NAME", () => {
+    expect(html).toContain(`content="${APP_NAME}"`);
   });
 
-  it("pins the manifest name (long) and short_name (short)", () => {
+  it("pins the static placeholder manifest name/short_name", () => {
     expect(manifest.name).toBe(APP_TITLE);
     expect(manifest.short_name).toBe(APP_NAME);
   });

@@ -3,7 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>drishti — remote process monitor</title>
+    <!-- No static <title>: @solidjs/meta's reactive <Title> (App.tsx) owns it,
+         so document.title is the single, correct `drishti@<host>` identity. A
+         static <title> here would leave TWO <title> elements — @solidjs/meta
+         appends rather than replaces — and the document.title getter would
+         then report this stale one. kolu ships no static <title> for the same
+         reason; the tab shows the URL for the brief pre-mount instant. -->
     <meta
       name="description"
       content="htop for your whole fleet — live processes, CPU, memory, and network over SSH, with nothing installed on the remote."
