@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { BRAND_DARK, BRAND_LIGHT } from "./brand";
+import { BRAND_DARK, BRAND_LIGHT, brandColorForTheme } from "./brand";
 
 // The brand colors have one canonical home (brand.ts). TypeScript sites import
 // them directly (the icon generator; App.tsx's reactive `theme-color` <Meta>),
@@ -25,5 +25,12 @@ describe("brand colors stay consistent across un-importable sites", () => {
 
   it("uses the light color for the light-theme page background", () => {
     expect(css).toContain(BRAND_LIGHT); // light-theme page background
+  });
+});
+
+describe("brandColorForTheme maps each theme to its surface color", () => {
+  it("selects the right brand color for both themes", () => {
+    expect(brandColorForTheme("dark")).toBe(BRAND_DARK);
+    expect(brandColorForTheme("light")).toBe(BRAND_LIGHT);
   });
 });

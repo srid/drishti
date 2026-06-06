@@ -78,7 +78,7 @@ import {
 } from "../common/history";
 import { TabStrip } from "./TabStrip";
 import { prefKey, readPref, writePref } from "./localStorageState";
-import { BRAND_DARK, BRAND_LIGHT } from "./brand";
+import { brandColorForTheme } from "./brand";
 import { titleForHost } from "./title";
 import {
   applyTheme,
@@ -474,10 +474,7 @@ function MultiHostApp() {
           media-query metas only knew the OS preference, so the address-bar
           tint disagreed with the page whenever the toggle overrode the OS. */}
       <Title>{titleForHost(selectedHost())}</Title>
-      <Meta
-        name="theme-color"
-        content={theme() === "dark" ? BRAND_DARK : BRAND_LIGHT}
-      />
+      <Meta name="theme-color" content={brandColorForTheme(theme())} />
       <div class="overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
         <TabStrip
           hosts={hostList()}
