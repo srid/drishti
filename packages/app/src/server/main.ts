@@ -28,6 +28,11 @@ import { Hono } from "hono";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
 import { destroyAllSessions } from "@kolu/surface-nix-host";
+import {
+  rejectStaleProcess,
+  SERVER_PROCESS_ID_PARAM,
+  STALE_PROCESS_CLOSE_CODE,
+} from "@kolu/surface-app";
 import { installSurfaceApp } from "@kolu/surface-app/server";
 import { ADMIN_HOST_SENTINEL } from "../common/admin-surface";
 import { BRAND_DARK } from "../client/brand";
@@ -239,6 +244,24 @@ async function main(): Promise<void> {
       socket as Parameters<typeof wss.handleUpgrade>[1],
       head as Parameters<typeof wss.handleUpgrade>[2],
       (ws) => {
+        // Stale-tab handshake gate (kolu#1231 / @kolu/surface-app): a tab that
+        // reconnects after a PARENT restart still carries the previous process's
+        // `pid`. Reject it here — before the oRPC handler upgrades the socket —
+        // so its live subscriptions never replay against a process that never had
+        // them. The client reads STALE_PROCESS_CLOSE_CODE as a definitive restart
+        // and surfaces its reload affordance. An absent `pid` (the first-ever
+        // connect) always passes. `admin.processId` is the live id the
+        // `identity.info` probe reports, so the gate and the probe single-source.
+        if (
+          rejectStaleProcess(
+            url.searchParams.get(SERVER_PROCESS_ID_PARAM),
+            admin.processId,
+          )
+        ) {
+          log(`rejecting stale browser ws (host=${host}) — parent restarted`);
+          ws.close(STALE_PROCESS_CLOSE_CODE, "stale server process");
+          return;
+        }
         if (host === ADMIN_HOST_SENTINEL) {
           log("browser ws connect (admin)");
           ws.on("close", (code, reason) =>
