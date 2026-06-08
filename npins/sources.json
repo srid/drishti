@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "master",
+      "branch": "feat/surface-connection-plan",
       "submodules": false,
-      "revision": "7126b5fa2a13b21bb1133a33e5d296f65ac2d75d",
-      "url": "https://github.com/juspay/kolu/archive/7126b5fa2a13b21bb1133a33e5d296f65ac2d75d.tar.gz",
-      "hash": "sha256-Iuz5DVWvxpZf3WTdtBzGYsUpM3BJ3GA2euccJmS6GQw="
+      "revision": "dbe1900e800a1aab84cae704760a994328f73635",
+      "url": "https://github.com/juspay/kolu/archive/dbe1900e800a1aab84cae704760a994328f73635.tar.gz",
+      "hash": "sha256-oWGvwk1tUA1SAaRoav0AeHGew4pGy1UCZLswCvGQcxw="
     },
     "nixpkgs": {
       "type": "Git",

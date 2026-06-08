@@ -13,12 +13,10 @@
 
 import { websocketLink } from "@kolu/surface/links/websocket";
 import { surfaceClient, surfaceClients } from "@kolu/surface/solid";
-import { WebSocket as PartySocket } from "partysocket";
 import {
-  SERVER_PROCESS_ID_PARAM,
-  STALE_PROCESS_CLOSE_CODE,
-} from "@kolu/surface-app";
-import { retireSocket } from "@kolu/surface-app/lifecycle";
+  createProcessIdEcho,
+  createSurfaceSocket,
+} from "@kolu/surface-app/connect";
 import {
   ADMIN_HOST_SENTINEL,
   adminContract,
@@ -26,58 +24,43 @@ import {
 } from "../common/admin-surface";
 import { surface } from "drishti-common";
 
-// The parent mints a fresh `processId` per boot. We echo the last-known one as a
+// ONE shared `pid` echo across every socket (per-host + admin). The parent mints
+// a fresh `processId` per boot; the echo threads the last-known one back as the
 // `pid` query param on every (re)connect so the parent recognizes a stale tab
-// after a restart and rejects it at the handshake (kolu#1231). `App.tsx` feeds
-// this via the provider's `onProcessId` callback (the turnkey `{ ws, probe }`
-// source publishes each observed id — kolu#1231); it's null until the first
-// probe, so the first connect omits the param. Read by the URL THUNK in
-// `makeSocket`, re-evaluated by partysocket on every reconnect.
-let lastServerProcessId: string | null = null;
-export function rememberServerProcessId(id: string): void {
-  lastServerProcessId = id;
+// after a restart and rejects it at the handshake. `App.tsx` feeds this via the
+// provider's `onProcessId` callback (the turnkey `{ ws, probe }` source publishes
+// each observed id); it's null until the first probe, so the first connect omits
+// the param. `createSurfaceSocket` reads it on every reconnect.
+const echo = createProcessIdEcho();
+export const rememberServerProcessId = echo.remember;
+
+// The base WS URL — WITHOUT the `pid` (the echo appends it). A per-host string is
+// built fresh on each reconnect by `createSurfaceSocket`'s URL thunk.
+function wsBaseFor(host: string): string {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${location.host}/rpc/ws?host=${encodeURIComponent(host)}`;
 }
 
-function wsUrlFor(host: string): string {
-  const params = new URLSearchParams({ host });
-  if (lastServerProcessId) {
-    params.set(SERVER_PROCESS_ID_PARAM, lastServerProcessId);
-  }
-  return `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/rpc/ws?${params.toString()}`;
-}
-
-// `partysocket`'s `WebSocket` export is `ReconnectingWebSocket`. Cold
-// start can take 30+ seconds while the parent provisions the agent via
-// `nix copy`, so the connect deadline is bumped well past partysocket's
-// 4s default — without this, the socket flaps repeatedly during the
-// first connect. The URL is a THUNK so partysocket re-reads `lastServerProcessId`
-// (the `pid` echo) on every reconnect.
+// Cold start can take 30+ seconds while the parent provisions the agent via
+// `nix copy`, so the connect deadline is bumped well past partysocket's 4s
+// default — without this, the socket flaps repeatedly during the first connect.
 //
 // `retire` controls who tears the socket down on a stale-close: the per-host
-// sockets have no provider lifecycle, so they attach the close-listener
-// retirement themselves (`retire: true`). The admin socket is owned by
-// `<SurfaceAppProvider>`'s turnkey `{ ws, probe }` source, which retires it
-// itself (`onStaleRestart: () => retireSocket(ws)` internally, kolu#1231) — so
-// it opts out here (`retire: false`) to avoid a double-retire.
-function makeSocket(host: string, retire: boolean): PartySocket {
-  const ws = new PartySocket(() => wsUrlFor(host), undefined, {
-    connectionTimeout: 60_000,
-    minReconnectionDelay: 2_000,
-    maxReconnectionDelay: 15_000,
-  });
-  // When the parent rejects this socket as stale (a previous-process binding) it
-  // closes with STALE_PROCESS_CLOSE_CODE. RETIRE the socket: stop reconnect +
-  // fail further sends loudly, so neither partysocket's offline buffer nor oRPC's
-  // pending peers grow unbounded. A fresh page reconnects cleanly. `retireSocket`
-  // is shared @kolu/surface-app electricity (kolu#1231).
-  if (retire) {
-    ws.addEventListener("close", (event) => {
-      if ((event as CloseEvent).code === STALE_PROCESS_CLOSE_CODE) {
-        retireSocket(ws);
-      }
-    });
-  }
-  return ws;
+// sockets have no provider lifecycle, so they self-retire on a stale-close
+// (`retire: true`). The admin socket is owned by `<SurfaceAppProvider>`'s turnkey
+// `{ ws, probe }` source, which retires it itself — so it opts out (`retire:
+// false`) to avoid a double-retire.
+function makeSocket(host: string, retire: boolean) {
+  return createSurfaceSocket({
+    url: () => wsBaseFor(host),
+    echo,
+    socketOptions: {
+      connectionTimeout: 60_000,
+      minReconnectionDelay: 2_000,
+      maxReconnectionDelay: 15_000,
+    },
+    retireOnStaleClose: retire,
+  }).ws;
 }
 
 type HostClient = ReturnType<typeof buildHostSurface>;
