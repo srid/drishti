@@ -9,9 +9,9 @@
       },
       "branch": "fix/stale-client-processid-gate",
       "submodules": false,
-      "revision": "ef9887978f0ee19e8ed1ba28b812d90cf3a3e11d",
-      "url": "https://github.com/juspay/kolu/archive/ef9887978f0ee19e8ed1ba28b812d90cf3a3e11d.tar.gz",
-      "hash": "sha256-OJ8nLB9cz9wcoA+ZRQste0WH5IOpRmttNV6FlJuViWY="
+      "revision": "13c378d9c809f8db03e66e2defdf94aaea0c0ee2",
+      "url": "https://github.com/juspay/kolu/archive/13c378d9c809f8db03e66e2defdf94aaea0c0ee2.tar.gz",
+      "hash": "sha256-Iuz5DVWvxpZf3WTdtBzGYsUpM3BJ3GA2euccJmS6GQw="
     },
     "nixpkgs": {
       "type": "Git",

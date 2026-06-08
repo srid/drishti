@@ -28,11 +28,11 @@ import { surface } from "drishti-common";
 
 // The parent mints a fresh `processId` per boot. We echo the last-known one as a
 // `pid` query param on every (re)connect so the parent recognizes a stale tab
-// after a restart and rejects it at the handshake (kolu#1231). `App.tsx`'s probe
-// wrapper feeds this via `rememberServerProcessId` as each identity probe
-// resolves; it's null until the first probe, so the first connect omits the
-// param. Read by the URL THUNK in `makeSocket`, re-evaluated by partysocket on
-// every reconnect.
+// after a restart and rejects it at the handshake (kolu#1231). `App.tsx` feeds
+// this via the provider's `onProcessId` callback (the turnkey `{ ws, probe }`
+// source publishes each observed id — kolu#1231); it's null until the first
+// probe, so the first connect omits the param. Read by the URL THUNK in
+// `makeSocket`, re-evaluated by partysocket on every reconnect.
 let lastServerProcessId: string | null = null;
 export function rememberServerProcessId(id: string): void {
   lastServerProcessId = id;
@@ -52,7 +52,14 @@ function wsUrlFor(host: string): string {
 // 4s default — without this, the socket flaps repeatedly during the
 // first connect. The URL is a THUNK so partysocket re-reads `lastServerProcessId`
 // (the `pid` echo) on every reconnect.
-function makeSocket(host: string): PartySocket {
+//
+// `retire` controls who tears the socket down on a stale-close: the per-host
+// sockets have no provider lifecycle, so they attach the close-listener
+// retirement themselves (`retire: true`). The admin socket is owned by
+// `<SurfaceAppProvider>`'s turnkey `{ ws, probe }` source, which retires it
+// itself (`onStaleRestart: () => retireSocket(ws)` internally, kolu#1231) — so
+// it opts out here (`retire: false`) to avoid a double-retire.
+function makeSocket(host: string, retire: boolean): PartySocket {
   const ws = new PartySocket(() => wsUrlFor(host), undefined, {
     connectionTimeout: 60_000,
     minReconnectionDelay: 2_000,
@@ -62,13 +69,14 @@ function makeSocket(host: string): PartySocket {
   // closes with STALE_PROCESS_CLOSE_CODE. RETIRE the socket: stop reconnect +
   // fail further sends loudly, so neither partysocket's offline buffer nor oRPC's
   // pending peers grow unbounded. A fresh page reconnects cleanly. `retireSocket`
-  // is shared @kolu/surface-app electricity (kolu#1231). Applied to every socket
-  // (admin + per-host) since any of them can outlive a parent restart.
-  ws.addEventListener("close", (event) => {
-    if ((event as CloseEvent).code === STALE_PROCESS_CLOSE_CODE) {
-      retireSocket(ws);
-    }
-  });
+  // is shared @kolu/surface-app electricity (kolu#1231).
+  if (retire) {
+    ws.addEventListener("close", (event) => {
+      if ((event as CloseEvent).code === STALE_PROCESS_CLOSE_CODE) {
+        retireSocket(ws);
+      }
+    });
+  }
   return ws;
 }
 
@@ -76,7 +84,8 @@ type HostClient = ReturnType<typeof buildHostSurface>;
 type AdminClient = ReturnType<typeof buildAdminSurface>;
 
 function buildHostSurface(host: string) {
-  const ws = makeSocket(host);
+  // Per-host sockets own their stale-close retirement — no provider watches them.
+  const ws = makeSocket(host, true);
   const client = surfaceClient(
     surface,
     websocketLink<typeof surface.contract>(ws as unknown as WebSocket),
@@ -85,7 +94,9 @@ function buildHostSurface(host: string) {
 }
 
 function buildAdminSurface() {
-  const ws = makeSocket(ADMIN_HOST_SENTINEL);
+  // The admin socket is owned by `<SurfaceAppProvider>`'s turnkey source, which
+  // retires it on a stale-restart itself (kolu#1231) — so it opts out here.
+  const ws = makeSocket(ADMIN_HOST_SENTINEL, false);
   // The admin transport multiplexes TWO sibling surfaces (kolu#1197/#1201):
   // drishti's own `admin` surface (the host set + procedures) and surface-app's
   // complete surface (`buildInfo` + the `identity.info` probe). `surfaceClients`

@@ -79,6 +79,7 @@ import {
   windowSlice,
 } from "../common/history";
 import { TabStrip } from "./TabStrip";
+import { TransportOverlay } from "./TransportOverlay";
 import { prefKey, readPref, writePref } from "./localStorageState";
 import { brandColorForTheme } from "./brand";
 import { APP_TITLE } from "./title";
@@ -314,23 +315,24 @@ function projectHistory(
 //  - ws + probe = the admin socket's open/close paired with the shared
 //    `surfaceAppProbe` helper (the scoped `surface.identity.info` probe), so a
 //    reconnect to a *restarted* parent reads as a restart, not a transient drop.
+//  - onProcessId = the turnkey `{ ws, probe }` source now publishes each observed
+//    server `processId` (kolu#1231); we stash it in the `wire.ts` mutable the
+//    admin/per-host URL thunks echo as the `pid` handshake param. The provider
+//    also retires the admin socket itself on a stale-restart, so drishti no
+//    longer hand-rolls either the probe-wrapper echo or the admin retirement —
+//    the per-host sockets, which have no provider lifecycle, keep their own
+//    close-listener retirement in `wire.ts`.
 export default function App() {
   return (
     <SurfaceAppProvider
       controlPlane={surfaceAppClient()}
       clientCommit={__SURFACE_APP_COMMIT__}
       ws={adminSocket()}
-      probe={async () => {
-        const probed = await surfaceAppProbe(surfaceAppClient());
-        // Echo the live id back as the next reconnect's `pid` handshake param
-        // (kolu#1231). The turnkey provider doesn't expose `onProcessId`, so we
-        // stash it from our OWN probe — the one identity hook a provider consumer
-        // owns. (kolu wires the same via `createServerLifecycle`'s `onProcessId`.)
-        rememberServerProcessId(probed.processId);
-        return probed;
-      }}
+      probe={() => surfaceAppProbe(surfaceAppClient())}
+      onProcessId={rememberServerProcessId}
       restartCloseCode={STALE_PROCESS_CLOSE_CODE}
     >
+      <TransportOverlay />
       <MultiHostApp />
     </SurfaceAppProvider>
   );
