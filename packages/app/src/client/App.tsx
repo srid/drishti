@@ -15,6 +15,7 @@
  */
 
 import { streamCall } from "@kolu/surface/client";
+import { STALE_PROCESS_CLOSE_CODE } from "@kolu/surface-app";
 import { SurfaceAppProvider, surfaceAppProbe } from "@kolu/surface-app/solid";
 import { Meta, Title } from "@solidjs/meta";
 import {
@@ -93,6 +94,7 @@ import {
   adminRpc,
   adminSocket,
   disposeHostSurface,
+  rememberServerProcessId,
   surfaceAppClient,
   surfaceForHost,
 } from "./wire";
@@ -318,7 +320,16 @@ export default function App() {
       controlPlane={surfaceAppClient()}
       clientCommit={__SURFACE_APP_COMMIT__}
       ws={adminSocket()}
-      probe={() => surfaceAppProbe(surfaceAppClient())}
+      probe={async () => {
+        const probed = await surfaceAppProbe(surfaceAppClient());
+        // Echo the live id back as the next reconnect's `pid` handshake param
+        // (kolu#1231). The turnkey provider doesn't expose `onProcessId`, so we
+        // stash it from our OWN probe — the one identity hook a provider consumer
+        // owns. (kolu wires the same via `createServerLifecycle`'s `onProcessId`.)
+        rememberServerProcessId(probed.processId);
+        return probed;
+      }}
+      restartCloseCode={STALE_PROCESS_CLOSE_CODE}
     >
       <MultiHostApp />
     </SurfaceAppProvider>

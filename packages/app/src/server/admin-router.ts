@@ -58,13 +58,18 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // here we add only the server-only per-surface deps, keyed the same way.
   // Per-key deps are typed against each surface's own spec now (kolu#1201), so
   // the concretely-typed admin / surface-app deps bind directly — no cast.
+  // `surfaceAppServer()` mints this process's `processId` (no override passed),
+  // and now EXPOSES it — so the stale-tab handshake gate in `main.ts` compares a
+  // reconnecting tab's `pid` against the SAME id `identity.info` reports, rather
+  // than minting a second one that would never match.
+  const surfaceApp = surfaceAppServer();
   const { router: surfacesRouter, ctx } = implementSurfaces(
     adminSurfaces,
     { channel: inMemoryChannelByName() },
     {
       // ── surface-app served as a sibling ──────────────────────────────
       // `surfaceAppServer()` is the surface-app deps bundle; pass it directly.
-      surfaceApp: surfaceAppServer(),
+      surfaceApp,
 
       // ── drishti's own admin surface served as a sibling ──────────────
       admin: {
@@ -144,5 +149,8 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   const router = implement(adminContract).router({
     ...surfacesRouter,
   });
-  return { router };
+  // `processId` is this parent process's live id — `main.ts`'s WS-upgrade gate
+  // feeds it to `rejectStaleProcess` so a tab that reconnects after a parent
+  // restart is rejected at the handshake.
+  return { router, processId: surfaceApp.processId };
 }
