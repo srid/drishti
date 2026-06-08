@@ -28,12 +28,7 @@ import { Hono } from "hono";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
 import { destroyAllSessions } from "@kolu/surface-nix-host";
-import {
-  rejectStaleProcess,
-  SERVER_PROCESS_ID_PARAM,
-  STALE_PROCESS_CLOSE_CODE,
-} from "@kolu/surface-app";
-import { installSurfaceApp } from "@kolu/surface-app/server";
+import { gateStaleSocket, installSurfaceApp } from "@kolu/surface-app/server";
 import { ADMIN_HOST_SENTINEL } from "../common/admin-surface";
 import { BRAND_DARK } from "../client/brand";
 import { appNameForHost } from "../client/title";
@@ -244,33 +239,34 @@ async function main(): Promise<void> {
       socket as Parameters<typeof wss.handleUpgrade>[1],
       head as Parameters<typeof wss.handleUpgrade>[2],
       (ws) => {
-        // Stale-tab handshake gate (kolu#1231 / @kolu/surface-app): a tab that
-        // reconnects after a PARENT restart still carries the previous process's
-        // `pid`. Reject it here — before the oRPC handler upgrades the socket —
+        // Stale-tab handshake gate (@kolu/surface-app): a tab that reconnects
+        // after a PARENT restart still carries the previous process's `pid`.
+        // `gateStaleSocket` installs the `error` listener FIRST (the one crash-free
+        // order), reads the claimed `pid` off the request URL, and on a stale tab
+        // closes with STALE_PROCESS_CLOSE_CODE before the oRPC handler upgrades —
         // so its live subscriptions never replay against a process that never had
-        // them. The client reads STALE_PROCESS_CLOSE_CODE as a definitive restart
-        // and surfaces its reload affordance. An absent `pid` (the first-ever
-        // connect) always passes. `admin.processId` is the live id the
-        // `identity.info` probe reports, so the gate and the probe single-source.
+        // them. An absent `pid` (the first-ever connect) always passes.
+        // `admin.processId` is the live id the `identity.info` probe reports, so
+        // the gate and the probe single-source. The installed `error` listener
+        // persists for the connection lifetime — so the per-branch handlers below
+        // no longer re-install one.
         if (
-          rejectStaleProcess(
-            url.searchParams.get(SERVER_PROCESS_ID_PARAM),
-            admin.processId,
-          )
-        ) {
-          log(`rejecting stale browser ws (host=${host}) — parent restarted`);
-          ws.close(STALE_PROCESS_CLOSE_CODE, "stale server process");
+          gateStaleSocket(ws, url, admin.processId, {
+            onError: (err) =>
+              log(`browser ws error (host=${host}): ${err.message}`),
+            onReject: () =>
+              log(
+                `rejecting stale browser ws (host=${host}) — parent restarted`,
+              ),
+          })
+        )
           return;
-        }
         if (host === ADMIN_HOST_SENTINEL) {
           log("browser ws connect (admin)");
           ws.on("close", (code, reason) =>
             log(
               `browser ws disconnect (admin) (code=${code} reason=${reason.toString() || "<none>"})`,
             ),
-          );
-          ws.on("error", (err) =>
-            log(`browser ws error (admin): ${err.message}`),
           );
           void adminHandler.upgrade(
             ws as unknown as Parameters<typeof adminHandler.upgrade>[0],
@@ -290,9 +286,6 @@ async function main(): Promise<void> {
             `browser ws disconnect (host=${host}) (code=${code} reason=${reason.toString() || "<none>"})`,
           );
         });
-        ws.on("error", (err) =>
-          log(`browser ws error (host=${host}): ${err.message}`),
-        );
         void handler.upgrade(
           ws as unknown as Parameters<typeof handler.upgrade>[0],
         );
