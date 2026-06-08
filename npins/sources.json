@@ -7,10 +7,10 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "fix/stale-client-processid-gate",
+      "branch": "master",
       "submodules": false,
-      "revision": "13c378d9c809f8db03e66e2defdf94aaea0c0ee2",
-      "url": "https://github.com/juspay/kolu/archive/13c378d9c809f8db03e66e2defdf94aaea0c0ee2.tar.gz",
+      "revision": "7126b5fa2a13b21bb1133a33e5d296f65ac2d75d",
+      "url": "https://github.com/juspay/kolu/archive/7126b5fa2a13b21bb1133a33e5d296f65ac2d75d.tar.gz",
       "hash": "sha256-Iuz5DVWvxpZf3WTdtBzGYsUpM3BJ3GA2euccJmS6GQw="
     },
     "nixpkgs": {
