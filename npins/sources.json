@@ -7,10 +7,10 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "suited-salt",
+      "branch": "master",
       "submodules": false,
-      "revision": "b2533c6daa5412dafe8b42a18acbc1e0f34c0280",
-      "url": "https://github.com/juspay/kolu/archive/b2533c6daa5412dafe8b42a18acbc1e0f34c0280.tar.gz",
+      "revision": "485bbb5cbb09e470d9544c39decea02d90f5015c",
+      "url": "https://github.com/juspay/kolu/archive/485bbb5cbb09e470d9544c39decea02d90f5015c.tar.gz",
       "hash": "sha256-umdVGdx8dNMj57vzVSCOUFeiu19jZjP5wxQKCrlj9kA="
     },
     "nixpkgs": {
