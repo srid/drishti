@@ -98,12 +98,16 @@ function processChanged(a: Process, b: Process): boolean {
  *  uses, so a test can inject a fake (the default is the real stdio
  *  transport, which is assignable to this). Module-private and named for the
  *  *role*, not the `serveOverStdio` implementation: nothing outside this file
- *  consumes it, and the test passes an inline, contextually-typed fake. */
+ *  consumes it, and the test passes an inline, contextually-typed fake.
+ *  Resolves to `unknown` because the agent only awaits serving's *end*, not
+ *  its value: the real `serveOverStdio` settles with a `ServeOverStdioEnd`
+ *  (`{ reason: "end" | "error" }` — it never rejects on a peer transport
+ *  death), while a test fake may simply resolve void. */
 type Serve = (opts: {
   // biome-ignore lint/suspicious/noExplicitAny: the kolu handler's router type; the real serveOverStdio is invoked with the same `as any` cast at the call site below.
   router: any;
   onFirstRequest: () => void;
-}) => Promise<void>;
+}) => Promise<unknown>;
 
 /**
  * Build the surface fragment + poll loop for `reader`, then serve it.
