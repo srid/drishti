@@ -28,7 +28,11 @@ import { Hono } from "hono";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
 import { destroyAllSessions } from "@kolu/surface-nix-host";
-import { gateStaleSocket, installSurfaceApp } from "@kolu/surface-app/server";
+import {
+  gateStaleSocket,
+  installSurfaceApp,
+  startWsHeartbeat,
+} from "@kolu/surface-app/server";
 import { ADMIN_HOST_SENTINEL } from "../common/admin-surface";
 import { BRAND_DARK } from "../client/brand";
 import { appNameForHost } from "../client/title";
@@ -203,6 +207,15 @@ async function main(): Promise<void> {
     maxPayload: 8 * 1024 * 1024,
   });
 
+  // Liveness heartbeat (@kolu/surface-app): ping accepted sockets and terminate
+  // any that stop ponging, reaping the server-side zombie a half-open browser
+  // (laptop sleep, Wi-Fi roam, a NAT/proxy dropping an idle connection) would
+  // otherwise leak. Covers BOTH the admin control-plane socket and every per-host
+  // socket — each registers below, after the stale-tab gate. The browser's own
+  // recovery is automatic: the admin socket rides `<SurfaceAppProvider>`'s turnkey
+  // source, which now starts a `createHeartbeat` watchdog itself.
+  const heartbeat = startWsHeartbeat(wss);
+
   // ── WebSocket upgrade: parse ?host=<id>, then dispatch directly ──────
   // The `host` variable is closed over in the handleUpgrade callback so
   // there is no need to taint the IncomingMessage object with __host.
@@ -261,6 +274,10 @@ async function main(): Promise<void> {
           })
         )
           return;
+        // Accepted socket (gate passed): enrol it in the liveness heartbeat so a
+        // half-open client is reaped here. One call covers both branches below;
+        // gate-rejected sockets already returned.
+        heartbeat.register(ws);
         if (host === ADMIN_HOST_SENTINEL) {
           log("browser ws connect (admin)");
           ws.on("close", (code, reason) =>
@@ -297,6 +314,7 @@ async function main(): Promise<void> {
     log(`${sig}: destroying host sessions`);
     stopWakeMonitor();
     destroyAllSessions();
+    heartbeat.stop();
     wss.close();
     for (const ws of wss.clients) {
       try {
