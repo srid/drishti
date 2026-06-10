@@ -78,6 +78,7 @@ import {
   windowMsFor,
   windowSlice,
 } from "../common/history";
+import { StatusFooter } from "./StatusFooter";
 import { TabStrip } from "./TabStrip";
 import { TransportOverlay } from "./TransportOverlay";
 import { prefKey, readPref, writePref } from "./localStorageState";
@@ -302,8 +303,8 @@ function projectHistory(
 }
 
 // The app root: wrap the multi-host tree in surface-app's headless provider so
-// any descendant (`IdentityRail` in the TabStrip) reads build skew + the
-// control-plane connection lifecycle via `useSurfaceApp()`.
+// any descendant (the `StatusFooter`, the TabStrip's Pin-app button) reads
+// build skew + the control-plane connection lifecycle via `useSurfaceApp()`.
 //
 //  - controlPlane = the surface-app client over the admin transport: surface-app
 //    rides drishti's one global, always-open connection as a SIBLING surface
@@ -499,7 +500,11 @@ function MultiHostApp() {
   });
 
   return (
-    <div class="min-h-screen bg-gray-50 p-4 font-mono text-sm dark:bg-gray-950">
+    // The bottom padding reserves room for the viewport-fixed StatusFooter
+    // (plus the phone home-indicator inset it absorbs), so the last table
+    // rows / fleet cards are never hidden under the bar. The baseline is
+    // the shared --status-footer-height constant from styles.css.
+    <div class="min-h-screen bg-gray-50 p-4 pb-[calc(var(--status-footer-height)+env(safe-area-inset-bottom))] font-mono text-sm dark:bg-gray-950">
       {/* Reactive head, kolu's app-shell pattern over `@solidjs/meta`: the tab
           title is the server's own `drishti@<host>` identity (read from the
           served manifest), and the PWA `theme-color` tracks the *chosen* theme
@@ -541,6 +546,7 @@ function MultiHostApp() {
           </Show>
         </Show>
       </div>
+      <StatusFooter />
     </div>
   );
 }
