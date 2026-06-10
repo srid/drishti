@@ -11,6 +11,13 @@
   font-family:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu,
     Cantarell, "Helvetica Neue", Arial, sans-serif;
+
+  /* Baseline (non-safe-area) room the page wrapper reserves for the
+   * viewport-fixed StatusFooter — the one shared constant between the
+   * footer's rendered height (StatusFooter.tsx, intrinsic: it must stay
+   * free to grow with env(safe-area-inset-bottom)) and the page's bottom
+   * padding (App.tsx, which adds the same inset on top of this). */
+  --status-footer-height: 2.5rem;
 }
 
 html[data-theme="dark"] {

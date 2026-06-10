@@ -502,8 +502,9 @@ function MultiHostApp() {
   return (
     // The bottom padding reserves room for the viewport-fixed StatusFooter
     // (plus the phone home-indicator inset it absorbs), so the last table
-    // rows / fleet cards are never hidden under the bar.
-    <div class="min-h-screen bg-gray-50 p-4 pb-[calc(2.5rem+env(safe-area-inset-bottom))] font-mono text-sm dark:bg-gray-950">
+    // rows / fleet cards are never hidden under the bar. The baseline is
+    // the shared --status-footer-height constant from styles.css.
+    <div class="min-h-screen bg-gray-50 p-4 pb-[calc(var(--status-footer-height)+env(safe-area-inset-bottom))] font-mono text-sm dark:bg-gray-950">
       {/* Reactive head, kolu's app-shell pattern over `@solidjs/meta`: the tab
           title is the server's own `drishti@<host>` identity (read from the
           served manifest), and the PWA `theme-color` tracks the *chosen* theme
