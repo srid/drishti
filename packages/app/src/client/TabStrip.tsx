@@ -13,8 +13,7 @@
  * of its props plus its connection cell.
  */
 
-import { isCleanRef } from "@kolu/surface-app";
-import { type ConnectionStatus, useSurfaceApp } from "@kolu/surface-app/solid";
+import { useSurfaceApp } from "@kolu/surface-app/solid";
 import { createPwaInstall, installInstructions } from "@kolu/solid-pwa-install";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { type ConnectionState, DEFAULT_CONNECTION } from "drishti-common";
@@ -64,61 +63,7 @@ export function TabStrip(props: {
       </For>
       <AddHostForm onAdd={props.onAdd} />
       <PinAppButton />
-      <IdentityRail />
       <ThemeToggle theme={props.theme} onToggle={props.onToggleTheme} />
-    </div>
-  );
-}
-
-// Always-on identity rail — the same `srv · client` readout kolu carries in its
-// ChromeBar (`packages/client/src/ui/IdentityRail.tsx`), ported here with
-// drishti's tailwind palette. `srv` is the control-plane connection: a liveness
-// dot (from surface-app's headless `status()`) plus the server's build commit;
-// `client` is the commit this browser's bundle was baked from, flagging `≠ srv`
-// (one-tap reload) when the two clean refs provably disagree. Distinct from the
-// per-host SSH `connection` dots on the chips. `ml-auto` right-aligns it next to
-// the theme toggle; unlike the old skew-only badge, it is ALWAYS visible.
-const SRV_DOT: Record<ConnectionStatus, string> = {
-  live: "bg-emerald-500",
-  reconnecting: "bg-amber-500 animate-pulse",
-  restarted: "bg-amber-500 animate-pulse",
-  down: "bg-red-500",
-};
-
-function IdentityRail() {
-  const pwa = useSurfaceApp();
-  return (
-    <div class="ml-auto mr-1 inline-flex items-stretch self-center rounded-lg border border-gray-200 bg-gray-100/60 p-0.5 font-mono text-xs dark:border-gray-700 dark:bg-gray-800/60">
-      <span class="inline-flex items-center gap-1.5 px-2 py-0.5">
-        <span class="text-[9px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
-          srv
-        </span>
-        <span
-          title="Server connection"
-          data-ws-status={pwa.status()}
-          class={`inline-block h-[7px] w-[7px] rounded-full ${SRV_DOT[pwa.status()]}`}
-        />
-        <Commit sha={pwa.server()?.commit} />
-      </span>
-      <span class="mx-0.5 h-4 w-px self-center bg-gray-300 dark:bg-gray-600" />
-      <span class="inline-flex items-center gap-1.5 px-2 py-0.5">
-        <span class="text-[9px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
-          client
-        </span>
-        <span title="This browser's JS build (baked in at build time)">
-          <Commit sha={pwa.clientCommit} />
-        </span>
-        <Show when={pwa.stale()}>
-          <button
-            type="button"
-            title="This client build doesn't match the server — reload to pick up the server's version."
-            onClick={pwa.reload}
-            class="self-center rounded-full border border-amber-400/50 px-1.5 text-[9px] leading-4 text-amber-600 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/30"
-          >
-            ≠ srv
-          </button>
-        </Show>
-      </span>
     </div>
   );
 }
@@ -180,41 +125,14 @@ function PinAppButton() {
   );
 }
 
-const DRISHTI_REPO_URL = "https://github.com/srid/drishti";
-
-// A git-commit cell (kolu's `ui/Commit.tsx`, ported): the short SHA links to
-// its GitHub commit page when the ref is clean and navigable, plain text
-// otherwise (a dirty / dev / absent ref — never a broken `-dirty` link).
-function Commit(props: { sha: string | undefined }) {
-  const linkable = () => isCleanRef(props.sha);
-  return (
-    <Show
-      when={linkable()}
-      fallback={
-        <span class="text-gray-600 dark:text-gray-300">{props.sha || "—"}</span>
-      }
-    >
-      <a
-        href={`${DRISHTI_REPO_URL}/commit/${props.sha}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        class="text-gray-600 underline decoration-dotted underline-offset-2 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100"
-      >
-        {props.sha}
-      </a>
-    </Show>
-  );
-}
-
-// Light/dark switch. Right-alignment is a consequence of following IdentityRail
-// in the flex row — IdentityRail owns the row's single `ml-auto`, which absorbs
-// all free space, so this button needs none of its own. Shows the icon of the
+// Light/dark switch. Owns the row's single `ml-auto`, which absorbs all free
+// space and pins it to the right edge of the strip. Shows the icon of the
 // theme it will switch *to*: a moon while light, a sun while dark.
 function ThemeToggle(props: { theme: Theme; onToggle: () => void }) {
   return (
     <button
       type="button"
-      class="flex items-center px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60"
+      class="ml-auto flex items-center px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60"
       title={`Switch to ${otherTheme(props.theme)} theme`}
       aria-label={`Switch to ${otherTheme(props.theme)} theme`}
       onClick={props.onToggle}
