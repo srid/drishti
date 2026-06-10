@@ -500,11 +500,14 @@ function MultiHostApp() {
   });
 
   return (
-    // The bottom padding reserves room for the viewport-fixed StatusFooter
-    // (plus the phone home-indicator inset it absorbs), so the last table
-    // rows / fleet cards are never hidden under the bar. The baseline is
-    // the shared --status-footer-height constant from styles.css.
-    <div class="min-h-screen bg-gray-50 p-4 pb-[calc(var(--status-footer-height)+env(safe-area-inset-bottom))] font-mono text-sm dark:bg-gray-950">
+    // The app fills exactly one viewport (`h-dvh` + flex column) so the page
+    // itself never scrolls — only the inner process list does, keeping the
+    // host vitals pinned and avoiding a second, page-level scrollbar racing
+    // the table's own. The bottom padding reserves room for the viewport-fixed
+    // StatusFooter (plus the phone home-indicator inset it absorbs), so the
+    // last table rows / fleet cards are never hidden under the bar. The
+    // baseline is the shared --status-footer-height constant from styles.css.
+    <div class="flex h-dvh flex-col bg-gray-50 p-4 pb-[calc(var(--status-footer-height)+env(safe-area-inset-bottom))] font-mono text-sm dark:bg-gray-950">
       {/* Reactive head, kolu's app-shell pattern over `@solidjs/meta`: the tab
           title is the server's own `drishti@<host>` identity (read from the
           served manifest), and the PWA `theme-color` tracks the *chosen* theme
@@ -512,7 +515,7 @@ function MultiHostApp() {
           address-bar tint disagreed with the page when the toggle overrode it. */}
       <Title>{appName() ?? APP_TITLE}</Title>
       <Meta name="theme-color" content={brandColorForTheme(theme())} />
-      <div class="overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
+      <div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
         <TabStrip
           hosts={hostList()}
           activeTab={resolvedView()}
@@ -563,7 +566,7 @@ function FleetView(props: {
   onSelect: (host: string) => void;
 }) {
   return (
-    <div class="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div class="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-4 sm:grid-cols-2 lg:grid-cols-3">
       <For each={props.hosts}>
         {(host) => (
           <HostCard host={host} onSelect={() => props.onSelect(host)} />
@@ -1203,7 +1206,11 @@ function ProcessTable(props: {
   onSort: (k: SortKey) => void;
 }) {
   return (
-    <div class="max-h-[70vh] overflow-y-auto">
+    // `flex-1 min-h-0` makes the table the single scroll region: it grows to
+    // fill whatever the pinned vitals above leave, and `min-h-0` lets it shrink
+    // below its (612-row) content so it — and only it — scrolls. The sibling
+    // vitals keep their intrinsic `min-height: auto`, so they stay pinned.
+    <div class="min-h-0 flex-1 overflow-y-auto">
       <table class="w-full">
         <thead class="sticky top-0 bg-gray-50 text-xs uppercase text-gray-500 dark:bg-gray-900 dark:text-gray-400">
           <tr class="border-b border-gray-200 dark:border-gray-800">
