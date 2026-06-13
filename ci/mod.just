@@ -1,8 +1,13 @@
-# drishti CI pipeline — consumed by github:juspay/justci.
+# drishti CI pipeline — consumed by odu (github.com/juspay/odu).
 #
 # The runner discovers the recipe tagged [metadata("ci")] (exactly one across
 # this justfile and its submodules), expands its reachable dependency subgraph,
-# and fans every (recipe × platform) pair out into a process-compose node.
+# and fans every (recipe × platform) pair out as a pipeline node odu holds as
+# live state on `.ci/odu.sock` (attach with `nix run github:juspay/odu -- attach`).
+# odu ships its own generic lane runner, so this repo re-exports nothing. Lane
+# hosts come from hosts.json ($ODU_HOSTS → ~/.config/odu/hosts.json →
+# ~/.config/justci/hosts.json); a `localhost` lane runs against the HEAD
+# snapshot, remote lanes `git fetch` the pushed SHA into a per-SHA workspace.
 
 set working-directory := '..'
 

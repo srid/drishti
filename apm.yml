@@ -14,7 +14,7 @@ target: claude
 dependencies:
   apm:
     - srid/agency#master
-    - juspay/justci#main
+    - juspay/odu
     - anthropics/claude-code/plugins/frontend-design/skills/frontend-design#main
     - juspay/skills/skills/nix-for-dev
     - juspay/skills/skills/nix-justfile

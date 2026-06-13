@@ -204,7 +204,7 @@ The client bundler is a hand-rolled `Bun.build` pipeline (`packages/app/src/serv
 
 ### CI
 
-CI runs via [`juspay/justci`](https://github.com/juspay/justci). The canonical pipeline lives in `ci/mod.just`; runners are configured in `~/.config/justci/hosts.json`.
+CI runs via [odu](https://github.com/juspay/odu) — "a CI runner you attach to" — invoked straight from upstream (`nix run github:juspay/odu -- run`). odu ships its own generic lane runner (`nix copy`d to remote lanes), so this repo re-exports nothing. The canonical pipeline is the `[metadata("ci")]` DAG in `ci/mod.just`; it builds every flake output, type-checks, checks formatting + `bun.nix` freshness, asserts agent `.drv` stability, and boots the home-manager example. Lane hosts come from `~/.config/odu/hosts.json` (falling back to `~/.config/justci/hosts.json`); a live run is attachable (`nix run github:juspay/odu -- attach`) and agents drive it through odu's MCP server (`mcp__odu__*`).
 
 One upstream issue currently shapes how CI runs:
 

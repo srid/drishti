@@ -1,132 +1,182 @@
 ---
 name: ci
-description: Reference for the `justci` runner — how to invoke a full pipeline, a single recipe, or a platform-pinned node from a project that depends on `juspay/justci`. Trigger when the user asks to "run justci", "run the pipeline", "re-run a check", or names a specific recipe by `<recipe>@<platform>`.
+description: Reference for the `odu` runner — how to invoke a full pipeline, a single recipe, or a platform-pinned node, and how to attach to a live run, from a project whose CI odu runs. Trigger when the user asks to "run CI", "run the pipeline", "re-run a check", or names a specific recipe by `<recipe>@<platform>`.
 ---
 
-# justci
+# odu
 
-`justci` translates a project's `just` recipe DAG into a `process-compose` pipeline and runs it. Multi-platform lanes fan out via SSH; commit statuses get posted (in strict mode) under `<recipe>@<platform>` contexts. Full background in the [repo README](https://github.com/juspay/justci/blob/main/README.md); the subcommand surface below is what you'll reach for most often.
+[`odu`](https://github.com/juspay/odu) (Tamil ஓடு — "run") runs the `just`
+recipe DAG tagged `[metadata("ci")]` across platforms and posts GitHub
+commit statuses per `<recipe>@<platform>` context. Unlike batch runners,
+the run is **live state you attach to**: the coordinator serves a typed
+surface on `.ci/odu.sock`, so `status`/`logs`/`attach` are in-band — no
+process-compose, no separately-versioned socket client.
+
+> **Prefer the MCP face for runs.** When the `odu-mcp` skill is present (the
+> `mcp__odu__*` tools — check for an odu MCP server before shelling out), drive
+> runs through it — `run` → `wait_for_settle` (fail-fast) → read the red node's
+> log → `node_rerun`, with `cancel` / `run({supersede})` to call off or replace
+> a run. It spawns the same coordinator but gives you structured results and the
+> fail-fast loop instead of scraping terminal output. The `nix run … -- run`
+> CLI below is the reference and the fallback when no MCP server is wired.
+>
+> **Logs are a resource, not a tool.** Don't look for a log-tail tool — there
+> isn't one. A node's output is the MCP **resource** `surface://collections/logs/{id}`
+> (`{id}` is the node, e.g. `ci::unit@aarch64-darwin`), read with
+> `ReadMcpResourceTool`: the live buffered tail while the run is up, else the
+> durable per-SHA log on disk. So when `wait_for_settle` returns a red node, the
+> "read the log" step is `ReadMcpResourceTool` on that node's
+> `surface://collections/logs/{id}` — subscribe for push updates, or just re-read
+> to poll. (`surface://streams/nodes` is the pipeline snapshot resource alongside
+> it.)
 
 ## Invoking
 
-Always invoke via the flake — the consumer may not have `justci` installed on PATH:
-
 ```sh
-nix run github:juspay/justci -- <subcommand> [args]
+nix run github:juspay/odu -- <subcommand> [args]
 ```
 
-Pin to a tag (e.g. `github:juspay/justci/v0.2.0`) for reproducibility, or omit the ref to follow `main`. Every command in this skill is shown in the `nix run` form; substitute a pinned ref if your project requires one.
+Pin a ref for reproducibility, or — if the consuming repo npins-pins odu
+and re-exports it (kolu does) — prefer its own flake output so the version
+is repo-controlled:
+
+```sh
+nix run .#odu -- <subcommand> [args]
+```
 
 ## Modes
 
-| Variable | Effect |
-| --- | --- |
-| `CI` unset (default) | **Local mode.** Runs against the live working tree. No GitHub status posts, no clean-tree refuse. Use for iterating. |
-| `CI=true` | **Strict mode.** Refuses a dirty tree, snapshots `HEAD` via `git worktree`, posts commit statuses, splits per-recipe logs into `.ci/<sha>/<plat>/<recipe>.log`. Use for "real" CI runs. |
+**Strict by default** — `odu run` refuses a dirty tree, pins `HEAD` via
+`git worktree`, posts commit statuses, and splits per-recipe logs into
+`.ci/<sha>/<plat>/<recipe>.log`. Three flags relax that policy:
 
-Both modes share the same verdict-summary at the end (`── ci run summary ──`) and exit non-zero if any node failed.
+| Flags | Tree | HEAD pin | Status posts | Use for |
+| --- | --- | --- | --- | --- |
+| _(none — default)_ | clean (refuses dirty) | `git worktree` at HEAD | posted | "real" CI runs |
+| `--no-post` | clean | `git worktree` at HEAD | _none_ | non-GitHub strict consumers; debugging strict without writing the PR's check list |
+| `--no-snapshot` (implies `--no-post`) | live working tree | none | _none_ | strict-mode dev iteration without clean-tree refuse |
+| `--no-strict` (meta — same as `--no-snapshot --no-post`) | live working tree | none | _none_ | dev iteration; the one-flag opt-out for "just run the pipeline" |
+
+Every mode ends with the same `── ci run summary @ <sha7> ──` verdict block
+(the sha reads `<sha7>+dirty` for a live-tree run on uncommitted changes)
+and exits non-zero if any node failed or errored.
 
 ## Common invocations
 
 ```sh
-# Full pipeline (canonical [metadata("ci")] root, every platform in the fanout)
-nix run github:juspay/justci -- run                # local mode
-CI=true nix run github:juspay/justci -- run        # strict mode
+# Full pipeline (the [metadata("ci")] root, every configured platform).
+nix run github:juspay/odu -- run
 
-# Re-run a single failed recipe on a specific lane — overwrites the same
-# GitHub commit-status context the full run wrote (closes the red check).
-nix run github:juspay/justci -- run e2e@x86_64-linux
+# Dev iteration on a dirty tree: no clean-tree refuse, no HEAD pin, no posts.
+nix run github:juspay/odu -- run --no-strict
 
-# Re-run a single recipe across every pipeline platform.
-nix run github:juspay/justci -- run e2e
+# Re-run a single failed recipe on one lane — overwrites the same GitHub
+# commit-status context the full run wrote (closes the red check).
+nix run github:juspay/odu -- run e2e@x86_64-linux
 
-# Multiple positional selectors compose — `e2e` AND `lint` both run.
-nix run github:juspay/justci -- run e2e lint
+# One recipe across every pipeline platform; selectors compose.
+nix run github:juspay/odu -- run e2e lint
 
-# Skip the dependency closure; run ONLY the named nodes. Setup nodes
-# auto-ride for remote-platform recipes regardless.
-nix run github:juspay/justci -- run --no-deps e2e@aarch64-darwin
+# Restrict the WHOLE fanout to one platform (repeatable).
+nix run github:juspay/odu -- run --platform x86_64-linux
 
-# Use a different DAG root instead of the [metadata("ci")] recipe.
-nix run github:juspay/justci -- run --root release-pipeline
+# Skip the dependency closure; run ONLY the named nodes (_ci-setup still rides).
+nix run github:juspay/odu -- run --no-deps e2e@aarch64-darwin
 
-# One-shot redirect of a platform to a throwaway host (LXC container,
-# alternate SSH alias). Repeatable per platform.
-nix run github:juspay/justci -- run --host x86_64-linux=root@lxc-foo
+# A different DAG root instead of the [metadata("ci")] recipe.
+nix run github:juspay/odu -- run --root ci::e2e
 
-# Drive process-compose's interactive TUI instead of headless logs.
-nix run github:juspay/justci -- run --tui
+# One-shot redirect of a platform's host (how a pool-lease wrapper pins a box).
+nix run github:juspay/odu -- run --host x86_64-linux=my-build-box
 
-# Forward arbitrary args to `process-compose up` after --.
-nix run github:juspay/justci -- run -- -t=false
+# One NDJSON line per node transition, for agents/tools driving CI:
+# {"node":"ci::e2e@x86_64-linux","recipe":"ci::e2e","platform":"x86_64-linux",
+#  "status":"running|success|failed|skipped|errored","exit_code":1,
+#  "log":".ci/<sha7>/x86_64-linux/ci::e2e.log"}
+nix run github:juspay/odu -- run --progress json
 ```
+
+Without `--progress json`, output adapts to where stdout points: a live
+colour lane-matrix with a log-tail footer on a TTY; quiet transition lines
+plus a once-a-minute "… still running" heartbeat when piped.
 
 ## Inspection subcommands (no side effects)
 
 ```sh
-# Print the assembled process-compose YAML — no host prompts, no git
-# rev-parse, works offline.
-nix run github:juspay/justci -- dump-yaml
-
-# Print the dependency graph in Mermaid flowchart syntax.
-nix run github:juspay/justci -- graph
-
-# PATCH GitHub branch-protection's required_status_checks to the
-# (recipe, platform) contexts the canonical DAG produces. --dry-run
-# prints what would be PATCHed without touching the API.
-nix run github:juspay/justci -- protect --dry-run
-nix run github:juspay/justci -- protect                  # writes to default branch
-nix run github:juspay/justci -- protect --branch develop
+nix run github:juspay/odu -- dump            # resolved pipeline as JSON
+nix run github:juspay/odu -- graph           # dependency graph (Mermaid)
+nix run github:juspay/odu -- protect --dry-run   # the (recipe × platform) contexts
+nix run github:juspay/odu -- protect             # PATCH branch protection to them
 ```
 
-## Live introspection (during a backgrounded run)
+## Live introspection (attach to a run in progress)
 
-When `justci run` is in progress — typically because the agent backgrounded it (e.g. `loop until /ci passes`) — these subcommands report fine-grained per-node state without disturbing the run. Each resolves the socket and process-compose binary from the same source `justci run` itself uses, so the client version never drifts from the server.
+While `odu run` is live in a checkout, these attach to its surface over
+`.ci/odu.sock`:
 
 ```sh
-# Snapshot every node's current state. Pipe `-o json` into jq for
-# fields like name / status / exit_code / restarts.
-nix run github:juspay/justci -- status
-nix run github:juspay/justci -- status -o json
-
-# Live state-transition stream — one line per (recipe, platform)
-# transition, no polling. `-o json` emits one event per line.
-nix run github:juspay/justci -- monitor
-
-# Tail one node's stdout/stderr; `-f` follows.
-nix run github:juspay/justci -- logs ci::e2e@aarch64-darwin
-nix run github:juspay/justci -- logs -f ci::e2e@aarch64-darwin
+nix run github:juspay/odu -- status          # snapshot; -o json for tooling
+nix run github:juspay/odu -- attach          # live TUI dashboard on a tty
+                                             # (digits attach · n/p cycle ·
+                                             #  r rerun · q quit); -o json
+                                             # = transition stream
+nix run github:juspay/odu -- logs -f e2e@x86_64-linux
+nix run github:juspay/odu -- cancel          # stop the live run, cleanly
 ```
 
-If no run is in progress in this checkout, the subcommand exits non-zero with `no justci run in progress in this checkout (no socket at .ci/pc.sock)`.
+No run in progress ⇒ exit non-zero with `no run in progress in this
+checkout (no live socket at .ci/odu.sock)`. One run per checkout — a
+second `odu run` refuses while the socket is live.
 
-### Anti-pattern: do not reach for raw process-compose
-
-If you find yourself typing `nix run nixpkgs#process-compose --` or hunting through `/nix/store/...-process-compose-*/bin/` for a binary, stop — that path is not guaranteed to match the version the running pipeline uses, and the JSON shapes (e.g. `process list -o json`) may disagree. Always go through `nix run github:juspay/justci -- {status,logs,monitor}` so client and server stay version-pinned.
-
-## Decision flow
-
-1. **Full canonical run?** → `nix run github:juspay/justci -- run` (or `CI=true …` for strict mode).
-2. **Flaky check on a PR, only one lane is red?** → `nix run github:juspay/justci -- run <recipe>@<platform>` — same status context, overwrites the failure.
-3. **Iterating on one recipe locally?** → `nix run github:juspay/justci -- run <recipe>` (no platform pin = fans out to every pipeline platform; `<recipe>@<localPlat>` if you only want the local lane).
-4. **Investigating "what would this run?"** → `nix run github:juspay/justci -- dump-yaml` or `… -- graph`.
-5. **Setting up a new repo?** → run `… -- protect --dry-run` after at least one full run, verify the contexts look right, then `… -- protect` to lock them in.
-6. **Checking on a backgrounded run?** → `nix run github:juspay/justci -- status` for a snapshot, `… -- logs -f <recipe>@<platform>` to follow one node, `… -- monitor` for the live event stream.
+**Cancel / supersede / linger.** `odu cancel` drives the live run's teardown
+from a second process (finalize posted statuses, close lanes, drop the socket)
+and waits until it's gone — no need to wait out a doomed run or `pkill` the
+coordinator. `odu run --supersede` cancels whatever's live here first, then
+starts ("stop this, run the fixed commit"). By default a run exits the instant
+it drains; `odu run --linger` keeps it serving past settle so a node can be
+rerun later (retry a flake), self-reaping after an idle period or on `cancel`.
 
 ## Hosts config
 
-`justci` reads `~/.config/justci/hosts.json`:
+`$ODU_HOSTS` (a file path) → `~/.config/odu/hosts.json` → fallback
+`~/.config/justci/hosts.json` (zero-config migration from justci):
 
 ```json
 {
-  "x86_64-linux":   "srid1",
-  "aarch64-darwin": "sincereintent"
+  "x86_64-linux": "my-linux-builder",
+  "aarch64-darwin": "me@mac-mini.local"
 }
 ```
 
-Keys are full Nix system tuples (`x86_64-linux`, `aarch64-linux`, `aarch64-darwin`). Values are anything `ssh` knows how to dial — bare hostname, `user@host`, alias from `~/.ssh/config`. Missing platforms silently drop from the fanout (the user opts in by adding the entry). Override per-run with `--host PLATFORM=ADDR`.
+Keys are Nix system tuples; values are anything ssh dials, or `localhost`
+(runs directly against the snapshot, no closure copy). Missing platforms
+silently drop from the fanout. `--host PLAT=ADDR` overrides per run.
+
+A lane host needs only **ssh + Nix + outbound https**: the runner ships as
+a Nix closure (`nix copy` → realise on the host), and the source arrives by
+`git fetch` of the **pushed** SHA — remote lanes cannot test unpushed
+commits (no git-bundle transport; push first). The lane host's own nix is
+used on the runner's PATH (never a pinned client — version skew against the
+host daemon corrupts CA-derivation handling).
+
+## Semantics worth knowing
+
+- **Lanes are one-shot**: a lane whose ssh link dies mid-run fails as
+  `errored` (GitHub state `error`, `Errored (<dur>)` description); live
+  state does not survive a runner restart — the per-SHA log files do.
+- **Skipped nodes post no status**: an absent required context is what
+  blocks the merge.
+- The coordinator resolves the lane runner via
+  `nix eval <snapshot>#packages.<platform>.odu-runner.drvPath` — the
+  consuming repo's flake must expose `odu-runner` (re-export odu's, as
+  kolu does) until odu threads its own runner derivation.
 
 ## When NOT to use this skill
 
-- The user is asking *about* justci's internals (how the YAML is shaped, what the setup node does, why `[metadata("ci")]` matters) — that's a docs question, point them at the [repo README](https://github.com/juspay/justci/blob/main/README.md).
-- The user wants the runner to do something it doesn't support (parallel cross-platform within one recipe, mid-run config reload) — those are not supported today; check the README's Roadmap section.
+- Questions about odu's internals or design history — read the
+  [README](https://github.com/juspay/odu/blob/master/README.md) and the
+  kolu Atlas note
+  [*A CI runner you attach to*](https://github.com/juspay/kolu/blob/master/docs/atlas/dist/mini-ci-vs-justci.html).
+- Project-specific CI operations (warm pools, host leases, banned flags)
+  — that's the consuming repo's operational docs, layered on top of this
+  reference.

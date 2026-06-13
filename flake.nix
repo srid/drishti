@@ -61,8 +61,11 @@
     in
     {
       packages = eachSystem ({ pkgs, b2n }:
-        let drvs = import ./default.nix { inherit pkgs b2n agentDrvBySystem rev; };
-        in {
+        let
+          drvs = import ./default.nix { inherit pkgs b2n agentDrvBySystem rev; };
+
+        in
+        {
           # `nix run github:srid/drishti -- user@host` → the monitor.
           default = drvs.drishti;
           inherit (drvs) drishti drishti-agent drishti-client drishtiBuilt drishtiAgentBuilt;
