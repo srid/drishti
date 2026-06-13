@@ -96,9 +96,10 @@ let
         makeWrapper ${resolvedPkgs.bun}/bin/bun $out/bin/drishti \
           --add-flags "${drishtiBuilt}/lib/drishti/packages/app/src/server/main.ts" \
           --set DRISHTI_DIST_DIR "${drishti-client}" \
-          `# Same build commit baked into the client bundle (above), so the` \
-          `# server's buildInfo cell and the client's __SURFACE_APP_COMMIT__` \
-          `# agree — the freshness rail reads one consistent commit.` \
+          `# Same build commit injected onto the client's no-store HTML shell` \
+          `# (above) as window.__SURFACE_APP_COMMIT__, so the server's buildInfo` \
+          `# cell and the client's shellCommit() agree — the freshness rail` \
+          `# reads one consistent commit.` \
           --set ${stamp.envVar} "${rev}" \
           `# DRISHTI_AGENT_DRVS_JSON: {system -> drvPath} JSON map. flake.nix` \
           `# pre-evaluates one entry per system in its 'systems' list; the` \
