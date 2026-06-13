@@ -10,8 +10,9 @@
 // calls that break at runtime. Bun.build accepts a `plugins` array
 // directly, so we drive the build ourselves.
 //
-// The freshness contract — content-hashed `/assets/*` naming, the
-// `__SURFACE_APP_COMMIT__` define, the no-store shell rewrite, the public
+// The freshness contract — content-hashed `/assets/*` naming, the no-store
+// shell rewrite, the `window.__SURFACE_APP_COMMIT__` commit injected onto that
+// shell (kolu#1319 — not a bundler define inside a hashed asset), the public
 // copy — is owned by `@kolu/surface-app/bun`'s `buildSurfaceClient`. This
 // file *composes* it, supplying only what is genuinely drishti's own: the
 // Solid JSX plugin and the Tailwind CSS toolchain.

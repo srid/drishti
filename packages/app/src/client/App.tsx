@@ -16,6 +16,7 @@
 
 import { streamCall } from "@kolu/surface/client";
 import { STALE_PROCESS_CLOSE_CODE } from "@kolu/surface-app";
+import { shellCommit } from "@kolu/surface-app/lifecycle";
 import { SurfaceAppProvider, surfaceAppProbe } from "@kolu/surface-app/solid";
 import { Meta, Title } from "@solidjs/meta";
 import {
@@ -310,8 +311,10 @@ function projectHistory(
 //    rides drishti's one global, always-open connection as a SIBLING surface
 //    (kolu#1197/#1201). It carries the `buildInfo` cell + the `identity.info`
 //    probe; the admin surface (host set) is its sibling on the same wire.
-//  - clientCommit = the commit baked into THIS bundle by build.ts's Bun.build
-//    define (`__SURFACE_APP_COMMIT__`); the same value `surfaceAppServer()` reads
+//  - clientCommit = the commit this client was built at, read off the no-store
+//    HTML shell via `shellCommit()` (the global `surfaceApp()`/`buildSurfaceClient`
+//    injects as `window.__SURFACE_APP_COMMIT__`, NOT a bundler define inside a
+//    content-hashed asset — kolu#1319). The same value `surfaceAppServer()` reads
 //    server-side, so skew is a real comparison.
 //  - ws + probe = the admin socket's open/close paired with the shared
 //    `surfaceAppProbe` helper (the scoped `surface.identity.info` probe), so a
@@ -327,7 +330,7 @@ export default function App() {
   return (
     <SurfaceAppProvider
       controlPlane={surfaceAppClient()}
-      clientCommit={__SURFACE_APP_COMMIT__}
+      clientCommit={shellCommit()}
       ws={adminSocket()}
       probe={() => surfaceAppProbe(surfaceAppClient())}
       onProcessId={rememberServerProcessId}
