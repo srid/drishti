@@ -14,7 +14,7 @@
 # `nix flake update` in this directory makes standalone evaluation work.
 {
   inputs = {
-    # In CI, justci builds this with --override-input drishti pointing to the repo root.
+    # In CI, odu builds this with --override-input drishti pointing to the repo root.
     drishti.url = "github:srid/drishti";
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
     home-manager.url = "github:nix-community/home-manager";

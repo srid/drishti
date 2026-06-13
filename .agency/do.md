@@ -10,11 +10,25 @@ just fmt
 bun test
 
 ## CI command
-Use the `/ci` skill.
+The runner is **odu** (`github:juspay/odu`, which replaced justci — it ships
+its own lane runner, so this repo re-exports nothing). Prefer odu's MCP server
+to start and watch runs —
+`mcp__odu__run` then `mcp__odu__wait_for_settle` (fail-fast), drilling into a
+red node's log and `mcp__odu__rerun_node` to close a check. Use the `/ci` skill
+for the underlying CLI, flags, and run mechanics.
 
-<!-- Host routing comes from `~/.config/justci/hosts.json`
-(aarch64-darwin → rasam). For the x86_64-linux lane, provision a fresh Linux
-box with `pu create <NAME>` and route the platform to it. -->
+<!-- Host routing: `$ODU_HOSTS` → `~/.config/odu/hosts.json` (falls back to
+`~/.config/justci/hosts.json`). aarch64-darwin → rasam. For the x86_64-linux
+lane, route the platform to one of the `pu` boxes (`pu create <NAME>` to
+provision a fresh one if none is warm). -->
+
+<!-- Push before CI: odu's remote lanes `git fetch` the pushed HEAD SHA from
+origin (no git-bundle transport), so an unpushed commit can't run on rasam or a
+pu box. The /do flow pushes before the CI step — keep it that way. -->
+
+<!-- Never pass `--no-post` / `--no-strict` / `--no-snapshot` for a real CI run:
+those skip the GitHub status posts that update the PR's checks. -->
+
 
 
 ## Documentation
