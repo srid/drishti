@@ -29,7 +29,7 @@ dependencies:
   content_hash: sha256:51308bd8cc8b6ae24781a77b67a7c8140bdea5d793e35427e7b8fcbeb0662074
 - repo_url: juspay/odu
   host: github.com
-  resolved_commit: 5929073bc87bb447f0180722d34c094f5c0eb50c
+  resolved_commit: 2dc6be008b64f1c02e96a3798b05fc8114cb1c80
   package_type: apm_package
   deployed_files:
   - .claude/skills/ci
@@ -38,10 +38,10 @@ dependencies:
   - .claude/skills/odu-mcp/SKILL.md
   - .claude/skills/odu-mcp/bin/serve
   deployed_file_hashes:
-    .claude/skills/ci/SKILL.md: sha256:a06a58c057a3d19e03e44725ba7454fc154851381d707b93293a2b4197fad8ca
+    .claude/skills/ci/SKILL.md: sha256:017232b5ec61da86ecc36babef51ff99477ccded0052f97d396825819b1461fb
     .claude/skills/odu-mcp/SKILL.md: sha256:25cd14d47aa082fb4061e793d3b74095eeb6749672356eea6b9acde9f9de6863
     .claude/skills/odu-mcp/bin/serve: sha256:6152e8fc4d3478b70a5cd547c172be596787e600b5757233fb82b307186b9e26
-  content_hash: sha256:b2fb52475f4a6f8fb550378355980f10e4e9b10eb23fc08b0a075a70d198625d
+  content_hash: sha256:02caa03100102d54c6ff9a7e90a630d5f2e6bdde1127f06823f9cbf0f09d34d3
 - repo_url: juspay/skills
   host: github.com
   resolved_commit: e5791cf388499456c8083a1667ecc1bd6c35fe2c
