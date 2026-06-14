@@ -59,6 +59,13 @@ let
   # the fetch `src` carries no package SOURCE, a client/server edit can't rotate
   # this FOD's `.drv` — so it is safe to share between the monitor and the agent
   # without reintroducing the agent drv churn issue #38 exists to prevent.
+  #
+  # This is deliberately MORE conservative than juspay/odu, whose fetchPnpmDeps
+  # `src` includes `./src`: odu has a single build derivation and no
+  # cross-derivation drv-stability constraint, so source in its dep FOD is
+  # harmless. drishti shares ONE pnpmDeps across the monitor AND the narrow
+  # agent derivation, so the FOD must be source-free or the agent would churn
+  # on every app edit — the manifests-only fetch is what makes the sharing safe.
   pnpmSrc = lib.fileset.toSource {
     root = ./.;
     # MAINTENANCE INVARIANT: every workspace member's package.json must be
