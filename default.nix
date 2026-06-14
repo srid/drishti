@@ -61,6 +61,12 @@ let
   # without reintroducing the agent drv churn issue #38 exists to prevent.
   pnpmSrc = lib.fileset.toSource {
     root = ./.;
+    # MAINTENANCE INVARIANT: every workspace member's package.json must be
+    # listed here. `fetchPnpmDeps` runs `pnpm install --frozen-lockfile`, which
+    # validates each lockfile importer against a present manifest — add a new
+    # `packages/*` member without adding its package.json here and the FOD fetch
+    # fails in the sandbox. (Manifests ONLY: no package SOURCE belongs in this
+    # fileset — that source-freedom is what keeps the FOD drv-stable; see above.)
     fileset = lib.fileset.unions [
       ./package.json
       ./pnpm-lock.yaml
