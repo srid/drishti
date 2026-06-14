@@ -74,6 +74,14 @@ stdenv.mkDerivation {
     # pnpmConfigHook's install populated it (otherwise pnpm's frozen install
     # would treat them as extraneous and prune them) and BEFORE the Vite build
     # reads them.
+    #
+    # NB: hydration lives in `buildPhase` here, but in `preInstall` for the
+    # agent derivation — the asymmetry is forced, not an oversight. The Vite
+    # build below (`tsx build.ts`) imports @kolu/surface-app/vite and the client
+    # tree imports @kolu/* at bundle time, so the hydrated tree must exist before
+    # this phase's build runs. The agent has no build (`dontBuild = true`), so
+    # nothing consumes the hydration until `cp -r node_modules` in installPhase —
+    # there `preInstall` is the natural seam. Placement tracks the consumer.
     sh scripts/hydrate-kolu-packages.sh \
       ${kolu-surface} @kolu/surface \
       ${kolu-surface-nix-host} @kolu/surface-nix-host \
