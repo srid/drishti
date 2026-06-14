@@ -169,7 +169,6 @@ drishti/
    ├─ common/src/surface.ts                     # per-host wire contract — agent + monitor share it
    ├─ agent/src/{main.ts, proc.ts}              # remote-side agent (its own scoped build)
    └─ app/
-      ├─ vite.config.ts                       # Vite config (Solid + Tailwind + surfaceApp)
       └─ src/
          ├─ common/{metrics.ts, history.ts, admin-surface.ts}  # monitor-internal shared (admin surface + metric math)
          ├─ server/                             # parent server
@@ -202,7 +201,7 @@ nix shell nixpkgs#npins -c npins update kolu
 
 ### Client build (Vite)
 
-The browser client is bundled by Vite (`packages/app/vite.config.ts`): `vite-plugin-solid` for the Solid JSX transform, `@tailwindcss/vite` for Tailwind v4, and `@kolu/surface-app/vite`'s `surfaceApp()` plugin for the freshness contract (the build commit published on the `no-store` shell as `window.__SURFACE_APP_COMMIT__`, never a hashed-asset define; kolu#1319). Vite content-hashes `/assets/*` and rewrites the shell to name them. One build path, two callers: the dev server invokes `buildClient()` (`src/server/build.ts`) at startup when `DRISHTI_DIST_DIR` is unset, and the Nix build derivation runs the same `buildClient` via `tsx` during `buildPhase`.
+The browser client is bundled by Vite, configured inline in `packages/app/src/server/build.ts`'s `buildClient()`: `vite-plugin-solid` for the Solid JSX transform, `@tailwindcss/vite` for Tailwind v4, and `@kolu/surface-app/vite`'s `surfaceApp()` plugin for the freshness contract (the build commit published on the `no-store` shell as `window.__SURFACE_APP_COMMIT__`, never a hashed-asset define; kolu#1319). Vite content-hashes `/assets/*` and rewrites the shell to name them. One build path, two callers: the dev server invokes `buildClient()` at startup when `DRISHTI_DIST_DIR` is unset, and the Nix build derivation runs the same `buildClient` via `tsx` during `buildPhase`. (The config is inline rather than a `vite.config.ts` file because drishti never invokes the `vite` CLI, and a config file would be loaded by Vite's config loader — which externalizes the raw-`.ts` `@kolu/surface-app/vite` import to Node, where type-stripping under `node_modules` is unsupported.)
 
 ### CI
 

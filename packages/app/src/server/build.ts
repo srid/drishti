@@ -4,13 +4,22 @@
 // and `buildClient(distDir)` from the dev server when DRISHTI_DIST_DIR is
 // unset.
 //
-// The bundle is driven by Vite (packages/app/vite.config.ts): vite-plugin-solid
-// for the Solid JSX transform, @tailwindcss/vite for the stylesheet, and
-// @kolu/surface-app/vite's `surfaceApp()` for the freshness contract — the
-// build commit published on the no-store shell as `window.__SURFACE_APP_COMMIT__`
-// (kolu#1319, never a hashed-asset define). Vite owns the rest of the contract
-// natively: content-hashed `/assets/*` and the index.html rewrite that names
-// them. This replaced the hand-rolled `@kolu/surface-app/bun` (Bun.build) path.
+// The bundle is driven by Vite: vite-plugin-solid for the Solid JSX transform,
+// @tailwindcss/vite for the stylesheet, and @kolu/surface-app/vite's
+// `surfaceApp()` for the freshness contract — the build commit published on the
+// no-store shell as `window.__SURFACE_APP_COMMIT__` (kolu#1319, never a
+// hashed-asset define). Vite owns the rest natively: content-hashed `/assets/*`
+// and the index.html rewrite that names them. This replaced the hand-rolled
+// `@kolu/surface-app/bun` (Bun.build) path.
+//
+// The config is built INLINE here rather than in a standalone vite.config.ts:
+// drishti only ever bundles through this function (there is no `vite` CLI), and
+// a config FILE would be loaded by Vite's config loader, which externalizes the
+// bare `@kolu/surface-app/vite` import to Node — and Node refuses to strip types
+// from a `.ts` under node_modules, which breaks the vitest `build.test.ts` path.
+// Importing the plugins here keeps the whole config inside the caller's own
+// transform pipeline (tsx in prod/Nix; vite-node's inline @kolu transform in
+// tests), where the raw-.ts @kolu sources are handled.
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,20 +27,24 @@ import { makeLogger } from "./log";
 
 const log = makeLogger("build");
 
-// packages/app — this file is at packages/app/src/server/build.ts, so two
-// levels up from src/server is the package root where vite.config.ts lives.
-const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+// packages/app/src/client — the Vite root (holds index.html + main.tsx).
+const CLIENT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "client");
 
 export async function buildClient(distDir: string): Promise<void> {
-  // Dynamic import so the production server (DRISHTI_DIST_DIR set → prebuilt
+  // Dynamic imports so the production server (DRISHTI_DIST_DIR set → prebuilt
   // dist, no build) never loads Vite and its plugin graph; only the dev-build
   // path and the Nix buildPhase pay for it.
   const { build } = await import("vite");
+  const { default: solid } = await import("vite-plugin-solid");
+  const { default: tailwindcss } = await import("@tailwindcss/vite");
+  const { surfaceApp } = await import("@kolu/surface-app/vite");
   await build({
-    // The config file owns root (src/client) and the plugin set; we override
-    // only the dynamic outDir (dev: the server's local dist; Nix: packages/app/dist).
-    configFile: resolve(APP_DIR, "vite.config.ts"),
-    build: { outDir: resolve(distDir), emptyOutDir: true },
+    root: CLIENT_DIR,
+    plugins: [solid(), tailwindcss(), surfaceApp()],
+    // outDir is the dynamic destination (dev: the server's local dist; Nix
+    // buildPhase: packages/app/dist). Vite content-hashes /assets/* and
+    // rewrites index.html to name them under it.
+    build: { target: "esnext", outDir: resolve(distDir), emptyOutDir: true },
   });
 }
 
