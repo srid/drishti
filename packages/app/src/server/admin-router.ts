@@ -47,9 +47,10 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   //
   // `surfaceAppServer()` supplies surface-app's whole server side in one call:
   // the build-identity cell store (commit resolved once: SURFACE_APP_COMMIT env
-  // → git → "dev"; the same commit is baked into the client bundle via
-  // build.ts's Bun.build define, so client and server stamp one value and skew
-  // is detectable across deploys) AND the `identity.info` probe impl (one
+  // → git → "dev"; the same commit is published on the client's no-store shell
+  // by surfaceApp() — the Vite plugin, never a hashed-asset define (kolu#1319) —
+  // so client and server stamp one value and skew is detectable across deploys)
+  // AND the `identity.info` probe impl (one
   // processId per process — restart the parent → new id → the control-plane
   // status flips to "restarted"). The buildInfo cell's async republish is fired
   // by the surface runtime — no app-visible connect.

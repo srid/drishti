@@ -4,49 +4,60 @@
 # used to share ONE build derivation (`drishtiBuilt`), so every client/server
 # edit rotated the agent's `.drv` hash and every remote paid a full cross-arch
 # `nix copy` + realise on the next reconnect. This derivation scopes the agent
-# to ONLY its own inputs, so a client/server-only rebuild leaves the agent
+# to ONLY its own SOURCE, so a client/server-only rebuild leaves the agent
 # `.drv` byte-identical and every remote's cached agent stays warm.
 #
-# Two churn edges are cut here, both necessary:
+# Two churn edges are cut, both necessary:
 #
 #   1. `src` — a narrow fileset of packages/agent + packages/common (the wire
-#      contract) + the workspace metadata. packages/app (client + server) is
-#      deliberately absent, so editing it cannot rehash `src`.
+#      contract) + the workspace metadata. packages/app's SOURCE is deliberately
+#      absent; only its `package.json` rides along, because the pnpm
+#      `--frozen-lockfile` install validates every workspace importer's manifest
+#      against the lockfile and would fail if `packages/app` vanished entirely.
+#      Editing app SOURCE (client/server) leaves this fileset byte-identical;
+#      only an app DEPENDENCY change (its package.json) — which also moves the
+#      lockfile — legitimately rotates the agent.
 #
-#   2. `bunDeps` — `fetchBunDeps` builds a `symlinkJoin` over every entry in
-#      `bun.nix`, INCLUDING `"drishti-app" = copyPathToStore ./packages/app`
-#      (bun2nix bakes each workspace member's source into the dep cache). That
-#      FOD takes packages/app's source as a direct Nix input, so a naive reuse
-#      of the full `bun.nix` would still churn the agent on client edits even
-#      with a narrow `src`. We pass a `bun.nix` with the `drishti-app` entry
-#      removed; the agent depends only on drishti-common + npm tarballs, none
-#      of which move when client/server source changes.
+#   2. `pnpmDeps` — the shared offline store fetched in ../../../default.nix from
+#      the MANIFESTS + lockfile only (no package source). Its FOD `.drv` is
+#      invariant to source edits, so sharing it with the monitor doesn't
+#      reintroduce churn. (Under bun2nix this required filtering the `drishti-app`
+#      workspace FOD out of bun.nix; pnpm's manifests-only fetch needs no such
+#      surgery.)
 #
 # Acceptance test (`just drv-stability`, also a CI node): a committed client
 # edit must leave `drishti-agent.drvPath` unchanged.
 #
 # `@kolu/surface` is hydrated post-install exactly as in the monitor build
-# (it is a Nix-store source, not a bun.lock entry). Because it's hydrated, its
-# support deps must be declared by consumers so the hoisted node_modules
-# resolves them — and this build excludes packages/app, so it can't lean on the
-# monitor's declarations. The split mirrors the import graph: the wire
-# contract's needs (@orpc/contract, zod) live on drishti-common; the
-# server/peer-server deps the agent serves (@orpc/server, @orpc/client — the
-# latter pulled by peer-server's stdio-codec) live on drishti-agent. No agent-
-# reachable @kolu/surface entrypoint imports solid-js, so it is not declared.
-{ stdenv, lib, bun, bun2nix, kolu-surface }:
+# (it is a Nix-store source, not a lockfile entry). The agent needs only
+# @kolu/surface (not surface-nix-host, the parent's provisioning lib, nor
+# surface-app, the client). Its support deps (@orpc/contract, zod on
+# drishti-common; @orpc/server, @orpc/client on drishti-agent) are declared by
+# those manifests so the hoisted node_modules resolves them.
+{ stdenv
+, lib
+, nodejs
+, pnpm
+, pnpmConfigHook
+, pnpmDeps
+, kolu-surface
+}:
 let
   src = lib.fileset.toSource {
     root = ../../..;
     fileset = lib.fileset.unions [
       ../../../package.json
-      ../../../bun.lock
-      ../../../bunfig.toml
+      ../../../pnpm-lock.yaml
+      ../../../pnpm-workspace.yaml
+      ../../../.npmrc
       ../../../tsconfig.base.json
-      ../../../bun.nix
+      # packages/app's MANIFEST only (not its source) — keeps the frozen pnpm
+      # workspace install valid without dragging client/server source into the
+      # agent's drv. See churn-edge note #1 in the header.
+      ../../../packages/app/package.json
       ../../../packages/agent
       ../../../packages/common
-      # @kolu/* hydration script — invoked from postBunNodeModulesInstallPhase.
+      # @kolu/* hydration script — invoked from preInstall below.
       ../../../scripts
     ];
   };
@@ -54,47 +65,18 @@ in
 stdenv.mkDerivation {
   pname = "drishti-agent-built";
   version = "0.1.0";
-  inherit src;
+  inherit src pnpmDeps;
 
-  # Listing our npins-pinned `bun` first wins on PATH over bun2nix.hook's
-  # propagated bun (same reproducibility reason as the monitor build).
-  nativeBuildInputs = [ bun bun2nix.hook ];
+  nativeBuildInputs = [ nodejs pnpm pnpmConfigHook ];
 
-  # The agent's dep cache, with the `drishti-app` workspace FOD filtered out
-  # (see the churn-edge note in the header). `fetchBunDeps` calls
-  # `pkgs.callPackage bunNix { ... }`, so a function with bun.nix's signature
-  # that forwards its args and drops one attr is a drop-in replacement.
-  bunDeps = bun2nix.fetchBunDeps {
-    bunNix =
-      { copyPathToStore, fetchFromGitHub, fetchgit, fetchurl, ... }@bunNixArgs:
-      # Exclude-list of workspace-member FODs the agent does NOT depend on.
-      # MAINTENANCE INVARIANT: every non-agent `packages/*` member must appear
-      # here, or its source silently re-enters the cache and reintroduces the
-      # drv churn this build exists to prevent. Today that's just drishti-app
-      # (client + server); a future member the agent doesn't use must be added.
-      # `just drv-stability` guards the client-edit case but can't see a member
-      # that didn't exist when it was written.
-      builtins.removeAttrs (import ../../../bun.nix bunNixArgs) [ "drishti-app" ];
-  };
-
-  # hoisted linker matches `bunfig.toml`: hydrated @kolu/surface must resolve
-  # its transitive deps (@orpc/*, zod, solid-js) from the workspace-root
-  # node_modules, not from an isolated per-package tree.
-  bunInstallFlags = [ "--linker=hoisted" ];
-
-  # Pure overhead for a Bun app — no shebangs we care about, no native binaries.
+  # tsx runs the source directly — no fixup, and no client bundle to build.
   dontFixup = true;
-  dontPatchShebangs = true;
-
-  # No client bundle: the agent never reads dist, and dropping the build step
-  # keeps the churniest output out of the agent's closure entirely.
-  dontUseBunBuild = true;
   dontBuild = true;
 
-  # @kolu/surface is a Nix-store source, not a bun.lock entry — drop it in
-  # after bun install populates node_modules. The agent needs only
-  # @kolu/surface (not surface-nix-host, which is the parent's provisioning lib).
-  postBunNodeModulesInstallPhase = ''
+  # @kolu/surface is a Nix-store source, not a lockfile entry — drop it into
+  # node_modules AFTER pnpmConfigHook's install (so the frozen install doesn't
+  # prune it) and BEFORE the installPhase copies node_modules into $out.
+  preInstall = ''
     sh scripts/hydrate-kolu-packages.sh \
       ${kolu-surface} @kolu/surface
   '';
@@ -104,7 +86,7 @@ stdenv.mkDerivation {
     mkdir -p $out/lib/drishti
     cp -r packages $out/lib/drishti/
     cp -r node_modules $out/lib/drishti/
-    cp package.json bunfig.toml tsconfig.base.json $out/lib/drishti/
+    cp package.json pnpm-workspace.yaml .npmrc tsconfig.base.json $out/lib/drishti/
     # Guard: the wrapper in ../../../default.nix hard-codes this entry-point
     # path. Fail the build (not runtime) if it moves.
     entry="$out/lib/drishti/packages/agent/src/main.ts"

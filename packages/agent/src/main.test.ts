@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { serveAgent } from "./main";
 import type { ProcReader } from "./proc";
 

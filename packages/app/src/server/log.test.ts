@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { installStderrTimestamps, makeLogger } from "./log";
 
 /** Run `fn` with `process.stderr.write` swapped for a capturing stub,

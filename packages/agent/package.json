@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "//": "@orpc/server + @orpc/client satisfy the hydrated @kolu/surface/{server,peer-server} the agent serves over stdio (peer-server's stdio-codec imports @orpc/client). @kolu/surface is hydrated from the Nix store, not bun.lock — so the agent build, which excludes packages/app, must declare these itself.",
+  "//": "@orpc/server + @orpc/client satisfy the hydrated @kolu/surface/{server,peer-server} the agent serves over stdio (peer-server's stdio-codec imports @orpc/client). @kolu/surface is hydrated from the Nix store, not pnpm-lock.yaml — so the agent build, which excludes packages/app, must declare these itself.",
   "scripts": {
     "typecheck": "tsc --noEmit"
   },

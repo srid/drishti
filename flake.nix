@@ -1,28 +1,19 @@
-# IMPORTANT: zero flake inputs *except* `bun2nix` — anywhen convention.
-# nixpkgs and kolu (for @kolu/surface, @kolu/surface-nix-host) are pinned
-# via npins (see npins/sources.json), bypassing the flake input system to
-# keep `nix develop` cold-eval fast (~1.0s vs ~7s per input). DO NOT add
-# further flake inputs.
+# IMPORTANT: this flake intentionally has ZERO inputs (the kolu/odu
+# convention). nixpkgs and the kolu pin (for @kolu/surface, @kolu/surface-app,
+# @kolu/surface-nix-host) are managed by npins (see npins/sources.json) and
+# imported via fetchTarball, keeping `nix develop` cold-eval fast (~1.0s vs ~7s
+# per flake input). DO NOT add flake inputs — deps come through npins.
 #
-# `bun2nix` is the documented exception: there is no fetchBunDeps /
-# buildBunPackage in nixpkgs, and bun2nix's nix layer is flake-parts-
-# shaped — it cannot be cleanly imported from a non-flake-parts context.
-# juspay/bun2nix's `rawflake` branch exposes `lib.mkBun2nix { pkgs }` so
-# we feed it OUR npins-pinned pkgs (no transitive nixpkgs eval in our
-# flake). The input is only realized when the `packages.*` attrset is
-# evaluated — `nix develop` cold eval stays unchanged.
+# The Node toolchain (pnpm + tsx + vite) is packaged with nixpkgs' own
+# `fetchPnpmDeps` / `pnpmConfigHook` (see default.nix), the way juspay/odu does
+# it — so there is no bun2nix input to special-case anymore.
 {
-  inputs.bun2nix.url = "github:juspay/bun2nix/rawflake";
-
-  outputs = { self, bun2nix, ... }:
+  outputs = { self, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       perSystem = system:
-        let
-          pkgs = import ./nix/nixpkgs.nix { inherit system; };
-          b2n = bun2nix.lib.mkBun2nix { inherit pkgs; };
-        in
-        { inherit pkgs b2n; };
+        let pkgs = import ./nix/nixpkgs.nix { inherit system; };
+        in { inherit pkgs; };
       perSystemAttrs = builtins.listToAttrs (map
         (system: { name = system; value = perSystem system; })
         systems);
@@ -54,16 +45,15 @@
       # need an aarch64-linux builder — defeating the whole point of
       # deferring agent realisation to the remote host.
       agentDrvBySystem = builtins.mapAttrs
-        (_: { pkgs, b2n }:
+        (_: { pkgs }:
           builtins.unsafeDiscardStringContext
-            (import ./default.nix { inherit pkgs b2n; }).drishti-agent.drvPath)
+            (import ./default.nix { inherit pkgs; }).drishti-agent.drvPath)
         perSystemAttrs;
     in
     {
-      packages = eachSystem ({ pkgs, b2n }:
+      packages = eachSystem ({ pkgs }:
         let
-          drvs = import ./default.nix { inherit pkgs b2n agentDrvBySystem rev; };
-
+          drvs = import ./default.nix { inherit pkgs agentDrvBySystem rev; };
         in
         {
           # `nix run github:srid/drishti -- user@host` → the monitor.
@@ -73,9 +63,6 @@
           # realizes the store path used by the dev shell's hydrate hook.
           kolu-surface = pkgs.kolu-surface;
           kolu-surface-nix-host = pkgs.kolu-surface-nix-host;
-          # bun2nix CLI — `nix run .#bun2nix -- -l bun.lock -o bun.nix`
-          # regenerates the lockfile-derived nix expression.
-          bun2nix = b2n.bun2nix;
         });
 
       # Top-level (system-independent) — the JSON shape the monitor reads
@@ -90,9 +77,9 @@
       homeManagerModules.default = import ./nix/home/module.nix;
 
       # `nix fmt` — format *.nix files only.
-      formatter = eachSystem ({ pkgs, ... }: pkgs.nixpkgs-fmt);
+      formatter = eachSystem ({ pkgs }: pkgs.nixpkgs-fmt);
 
-      devShells = eachSystem ({ pkgs, b2n }:
+      devShells = eachSystem ({ pkgs }:
         {
           default = import ./shell.nix { inherit pkgs; };
         });

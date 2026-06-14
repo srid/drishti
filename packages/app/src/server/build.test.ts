@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it } from "vitest";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,15 +26,19 @@ const read = (rel: string) => readFileSync(join(dist, rel), "utf8");
 const PNG_MAGIC = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
 describe("buildClient — hashed assets (immutable-caching prerequisite)", () => {
+  // Vite names the entry chunk and its extracted CSS after the HTML entry
+  // (index.html → `index-<hash>.{js,css}`), where the old Bun build used
+  // `main-`/`styles-`. The contract is the content hash + the shell rewrite,
+  // not the basename — so assert the hashed `/assets/index-*` pair.
   it("emits a content-hashed JS bundle under /assets/", () => {
     const assets = readdirSync(join(dist, "assets"));
-    const js = assets.filter((f) => /^main-[A-Za-z0-9]+\.js$/.test(f));
+    const js = assets.filter((f) => /^index-[A-Za-z0-9_-]+\.js$/.test(f));
     expect(js.length).toBe(1);
   });
 
   it("emits a content-hashed CSS file under /assets/", () => {
     const assets = readdirSync(join(dist, "assets"));
-    const css = assets.filter((f) => /^styles-[A-Za-z0-9]+\.css$/.test(f));
+    const css = assets.filter((f) => /^index-[A-Za-z0-9_-]+\.css$/.test(f));
     expect(css.length).toBe(1);
   });
 
@@ -42,8 +46,8 @@ describe("buildClient — hashed assets (immutable-caching prerequisite)", () =>
     const html = read("index.html");
     // the entry script and stylesheet now point at hashed /assets/ paths,
     // never the source .tsx or the old root-level ./styles.css
-    expect(html).toMatch(/src="\/assets\/main-[A-Za-z0-9]+\.js"/);
-    expect(html).toMatch(/href="\/assets\/styles-[A-Za-z0-9]+\.css"/);
+    expect(html).toMatch(/src="\/assets\/index-[A-Za-z0-9_-]+\.js"/);
+    expect(html).toMatch(/href="\/assets\/index-[A-Za-z0-9_-]+\.css"/);
     expect(html).not.toContain("main.tsx");
     expect(html).not.toContain('href="./styles.css"');
   });
@@ -65,7 +69,7 @@ describe("buildClient — static PWA assets at the dist root", () => {
       const bytes = readFileSync(join(dist, png));
       expect(bytes.subarray(0, 8).equals(PNG_MAGIC)).toBe(true);
     }
-    expect(read("icons/icon.svg").trimStart()).toStartWith("<svg");
+    expect(read("icons/icon.svg").trimStart()).toMatch(/^<svg/);
   });
 
   it("wires the manifest link and icons into index.html", () => {

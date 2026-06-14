@@ -20,29 +20,23 @@ nix_shell := if env('IN_NIX_SHELL', '') != '' { '' } else { 'nix develop --accep
 [macos]
 [parallel]
 [metadata("ci")]
-default: nix typecheck fmt-check bun-nix-fresh home-manager drv-stability
+default: nix typecheck unit fmt-check home-manager drv-stability
 
-# Single per-platform `bun install`. Funnel every bun consumer through this
-# node so concurrent `bun install` runs against the same workspace don't race.
+# Single per-platform `pnpm install`. Funnel every consumer through this
+# node so concurrent installs against the same workspace don't race.
 # The hydrate call is wrapped in `sh -c '...'` so `$DRISHTI_KOLU_*` is
 # expanded inside the nix-develop shell that exports it, not by just's outer
 # shell (which runs under `set -u`).
 install:
-    {{ nix_shell }} bun install
+    {{ nix_shell }} pnpm install --frozen-lockfile
     {{ nix_shell }} sh -c 'sh scripts/hydrate-kolu-packages.sh \
       "$DRISHTI_KOLU_SURFACE" @kolu/surface \
       "$DRISHTI_KOLU_SURFACE_NIX_HOST" @kolu/surface-nix-host \
-      "$DRISHTI_KOLU_SURFACE_APP" @kolu/surface-app'
-
-# Pre-populate the nix store with crates.io tarballs that nixpkgs' fetchurl
-# can't download (crates.io returns 403 for curl/* User-Agent). Idempotent;
-# once crates are cached this is a few nix-store metadata lookups. Drop this
-# recipe once upstream fetchurl / bun2nix sidesteps the UA filter.
-_prefetch-crates:
-    {{ nix_shell }} sh scripts/ci-prefetch-crates.sh
+      "$DRISHTI_KOLU_SURFACE_APP" @kolu/surface-app \
+      "$DRISHTI_KOLU_SOLID_PWA_INSTALL" @kolu/solid-pwa-install'
 
 # Build all flake outputs via devour-flake.
-nix: _prefetch-crates
+nix:
     nix build github:srid/devour-flake -L --no-link --print-out-paths --override-input flake .
 
 # Build the home-manager example flake (nix/home/example) against THIS repo:
@@ -54,7 +48,12 @@ home-manager: nix
 
 # TypeScript type checking (every workspace member: common, agent, app)
 typecheck: install
-    {{ nix_shell }} bun run typecheck
+    {{ nix_shell }} pnpm typecheck
+
+# Unit tests (vitest, every workspace member). build.test.ts runs a real Vite
+# client build, so this needs the install node's node_modules + hydrated @kolu/*.
+unit: install
+    {{ nix_shell }} pnpm test:unit
 
 # Acceptance guard for issue #38: a client/server-only edit must NOT change the
 # agent's .drv hash — otherwise every remote re-copies + rebuilds the agent on
@@ -90,20 +89,3 @@ drv-stability:
 # argument and recurses, so `.` covers every *.nix at any depth.
 fmt-check:
     {{ nix_shell }} nixpkgs-fmt --check .
-
-# bun.nix freshness — regenerate from bun.lock into a tmpdir and diff
-# against the committed file. Fails the pipeline if bun.lock has moved
-# without `just regenerate-bun-nix` being run.
-bun-nix-fresh:
-    {{ nix_shell }} sh -c '\
-      set -eu; \
-      tmp=$(mktemp -d); \
-      trap "rm -rf $tmp" EXIT; \
-      nix run .#bun2nix -- -l bun.lock -o "$tmp/bun.nix"; \
-      nixpkgs-fmt "$tmp/bun.nix" >/dev/null; \
-      diff -u bun.nix "$tmp/bun.nix" || { \
-        echo; \
-        echo "bun.nix is stale relative to bun.lock."; \
-        echo "Run: just regenerate-bun-nix && git add bun.nix"; \
-        exit 1; \
-      }'

@@ -1,6 +1,7 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { APP_NAME, APP_TITLE, appNameForHost } from "./title";
 
 describe("appNameForHost", () => {
@@ -21,7 +22,7 @@ describe("appNameForHost", () => {
 // formed from APP_NAME via appNameForHost — so only the static placeholder
 // manifest, which keeps the bare brand, is pinned here.)
 describe("un-importable name sites stay in sync with the title constants", () => {
-  const here = import.meta.dir;
+  const here = dirname(fileURLToPath(import.meta.url));
   const read = (p: string) => readFileSync(join(here, p), "utf8");
   const html = read("index.html");
   const manifest = JSON.parse(read("public/manifest.webmanifest"));

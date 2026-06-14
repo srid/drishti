@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S tsx
 /**
  * drishti PWA icon generator — the single source of truth for the app icon.
  *
@@ -14,7 +14,7 @@
  *   - `apple-touch-icon.png`     iOS home-screen icon (180, full-bleed bg)
  *
  * Re-run after editing the geometry: `just gen-pwa-icons` (or
- * `bun scripts/gen-pwa-icons.ts`). The emitted files are committed as
+ * `tsx scripts/gen-pwa-icons.ts`). The emitted files are committed as
  * source assets so the Nix build only has to copy them — it pulls in no
  * image toolchain. PNGs are encoded by hand (zlib + CRC32) to keep that
  * dependency footprint at zero rather than add a rasteriser/image library.
