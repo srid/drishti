@@ -20,7 +20,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { isValidHost } from "../common/admin-surface";
+import { isValidHost } from "../common/host";
 import { makeLogger } from "./log";
 
 const log = makeLogger("hosts");

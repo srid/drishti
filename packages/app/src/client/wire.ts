@@ -17,11 +17,8 @@ import {
   createProcessIdEcho,
   createSurfaceSocket,
 } from "@kolu/surface-app/connect";
-import {
-  ADMIN_HOST_SENTINEL,
-  adminContract,
-  adminSurfaces,
-} from "../common/admin-surface";
+import { adminContract, adminSurfaces } from "../common/admin-surface";
+import { ADMIN_HOST_SENTINEL } from "../common/host";
 import { surface } from "drishti-common";
 
 // ONE shared `pid` echo across every socket (per-host + admin). The parent mints

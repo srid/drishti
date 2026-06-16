@@ -33,7 +33,7 @@ import {
   installSurfaceApp,
   startWsHeartbeat,
 } from "@kolu/surface-app/server";
-import { ADMIN_HOST_SENTINEL, isValidHost } from "../common/admin-surface";
+import { ADMIN_HOST_SENTINEL, isValidHost } from "../common/host";
 import { BRAND_DARK } from "../client/brand";
 import { appNameForHost } from "../client/title";
 import { buildAdminRouter } from "./admin-router";
