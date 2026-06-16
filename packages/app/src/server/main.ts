@@ -213,8 +213,6 @@ async function main(): Promise<void> {
   // `--bind 0.0.0.0` (behind a firewall/proxy) and may allowlist extra
   // browser origins via `DRISHTI_ALLOWED_ORIGINS` for the reverse-proxy case.
   const bindHost = argv.flags.bind;
-  const isLoopbackBind =
-    bindHost === "127.0.0.1" || bindHost === "localhost" || bindHost === "::1";
   const allowedOrigins = parseAllowedOrigins(
     process.env.DRISHTI_ALLOWED_ORIGINS,
   );
@@ -227,7 +225,7 @@ async function main(): Promise<void> {
     },
     (info) => {
       log(`listening on http://${info.address}:${info.port}`);
-      if (isLoopbackBind) {
+      if (["127.0.0.1", "localhost", "::1"].includes(bindHost)) {
         log(`open http://localhost:${info.port}/`);
       } else {
         log(
