@@ -8,8 +8,8 @@
  * grow procedures (auth, alerts, renaming) without churning the data
  * primitives.
  *
- * Served at `/rpc/ws?host=__admin__` — the reserved sentinel; see
- * `ADMIN_HOST_SENTINEL` below and the upgrade handler in
+ * Served at `/rpc/ws?host=__admin__` — the reserved sentinel
+ * (`ADMIN_HOST_SENTINEL`, defined in `./host`) and the upgrade handler in
  * `server/main.ts`.
  *
  * The admin connection is also drishti's CONTROL PLANE: the one
@@ -26,11 +26,7 @@ import { composeSurfaceContracts, defineSurface } from "@kolu/surface/define";
 import type { SurfaceTypes } from "@kolu/surface/define";
 import { surfaceAppSurface } from "@kolu/surface-app/surface";
 import { z } from "zod";
-
-/** Reserved string used as the `host=` query value for the admin
- *  surface. Rejected by `addHost` validation so it can't collide with a
- *  real host name. */
-export const ADMIN_HOST_SENTINEL = "__admin__";
+import { isValidHost } from "./host";
 
 const HostEntrySchema = z.object({
   host: z.string().min(1),
@@ -38,10 +34,9 @@ const HostEntrySchema = z.object({
 
 const HostInputSchema = z
   .string()
-  .min(1)
   .refine(
-    (s) => s !== ADMIN_HOST_SENTINEL && !/\s/.test(s),
-    "host must be non-empty, have no whitespace, and not be the admin sentinel",
+    isValidHost,
+    "host must be non-empty, have no whitespace, not start with '-', and not be the admin sentinel",
   );
 
 /** drishti's OWN admin surface — just the host set + the host-lifecycle

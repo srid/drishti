@@ -2,24 +2,32 @@
 let
   cfg = config.services.drishti;
 
-  # drishti's CLI surface (packages/app/src/server/main.ts): a single
-  # `--port` flag plus positional `[host...]` args. There is no `--host`
-  # (the server binds 0.0.0.0 hardcoded), no `--tls`, no `--verbose`.
+  # drishti's CLI surface (packages/app/src/server/main.ts): `--port` and
+  # `--bind` flags plus positional `[host...]` args. The server binds
+  # 127.0.0.1 (loopback) unless `--bind` overrides it; there is no `--tls`,
+  # no `--verbose`. `--bind` is omitted when `cfg.bind` is null so drishti's
+  # own loopback default applies.
   args = [
     (lib.getExe cfg.package)
     "--port"
     (toString cfg.port)
   ]
+  ++ lib.optionals (cfg.bind != null) [ "--bind" cfg.bind ]
   ++ cfg.hosts;
 
   # Shared by both supervisors. systemd wants `[ "KEY=val" ]`; launchd wants
   # the attrset as a plist dict — converted at each call site. drishti's
   # monitor wrapper already bakes DRISHTI_DIST_DIR / DRISHTI_AGENT_DRVS_JSON
-  # and prefixes openssh+nix onto PATH, so the only env we ever set here is
-  # the optional hosts-file override.
-  envAttrs = lib.optionalAttrs (cfg.hostsFile != null) {
-    DRISHTI_HOSTS_FILE = cfg.hostsFile;
-  };
+  # and prefixes openssh+nix onto PATH, so the only env we set here is the
+  # optional hosts-file override and the optional WebSocket origin allowlist.
+  envAttrs =
+    lib.optionalAttrs (cfg.hostsFile != null)
+      {
+        DRISHTI_HOSTS_FILE = cfg.hostsFile;
+      }
+    // lib.optionalAttrs (cfg.allowedOrigins != [ ]) {
+      DRISHTI_ALLOWED_ORIGINS = lib.concatStringsSep "," cfg.allowedOrigins;
+    };
 in
 {
   options.services.drishti = {
@@ -33,7 +41,35 @@ in
     port = lib.mkOption {
       type = lib.types.port;
       default = 7720;
-      description = "Port the HTTP+WebSocket server listens on (binds 0.0.0.0).";
+      description = "Port the HTTP+WebSocket server listens on.";
+    };
+
+    bind = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "0.0.0.0";
+      description = ''
+        Interface the HTTP+WebSocket server binds to (the `--bind` flag).
+        `null` uses drishti's default, `127.0.0.1` (loopback-only). The RPC
+        surface is UNAUTHENTICATED, so set `0.0.0.0` (all interfaces) only
+        behind a firewall or a trusted reverse proxy. For a proxied setup
+        where the browser origin differs from the forwarded `Host` header,
+        also set `allowedOrigins`.
+      '';
+    };
+
+    allowedOrigins = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = lib.literalExpression ''[ "https://box.tailnet.ts.net" ]'';
+      description = ''
+        Extra browser origins allowed to open the WebSocket RPC surface (the
+        `DRISHTI_ALLOWED_ORIGINS` env var — a Cross-Site WebSocket Hijacking
+        defense). Same-origin requests are always allowed; list additional
+        origins here when a reverse proxy (e.g. `tailscale serve`) serves the
+        UI from a different origin than the `Host` drishti receives. Empty
+        leaves only the same-origin rule.
+      '';
     };
 
     hosts = lib.mkOption {

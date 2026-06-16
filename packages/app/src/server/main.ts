@@ -28,12 +28,13 @@ import { Hono } from "hono";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
 import { destroyAllSessions } from "@kolu/surface-nix-host";
+import { gateWsOrigin, parseAllowedOrigins } from "@kolu/surface/ws-origin";
 import {
   gateStaleSocket,
   installSurfaceApp,
   startWsHeartbeat,
 } from "@kolu/surface-app/server";
-import { ADMIN_HOST_SENTINEL } from "../common/admin-surface";
+import { ADMIN_HOST_SENTINEL, isValidHost } from "../common/host";
 import { BRAND_DARK } from "../client/brand";
 import { appNameForHost } from "../client/title";
 import { buildAdminRouter } from "./admin-router";
@@ -59,6 +60,12 @@ const argv = cli({
       type: Number,
       description: "HTTP+WebSocket port",
       default: Number(process.env.PORT ?? 7720),
+    },
+    bind: {
+      type: String,
+      description:
+        "Network interface to bind (default 127.0.0.1, loopback-only). Set 0.0.0.0 to expose on all interfaces — the RPC surface is UNAUTHENTICATED, so only do this behind a firewall or a trusted proxy. Env: DRISHTI_BIND.",
+      default: process.env.DRISHTI_BIND ?? "127.0.0.1",
     },
   },
 });
@@ -88,6 +95,16 @@ async function main(): Promise<void> {
 
   const hostsFile = resolveHostsFile();
   const cliHosts = argv._.host;
+  // Validate CLI host args at the same boundary as the admin surface and the
+  // persisted file — a host that ssh would parse as an option must never
+  // reach the spawn, whatever channel it arrived on. Fail fast and loud.
+  const badCliHost = cliHosts.find((h) => !isValidHost(h));
+  if (badCliHost !== undefined) {
+    log(
+      `invalid host argument ${JSON.stringify(badCliHost)} — a host must be non-empty, contain no whitespace, and not start with '-' (a leading '-' is parsed by ssh as an option). Aborting.`,
+    );
+    process.exit(1);
+  }
   let initialHosts: string[];
   if (cliHosts.length > 0) {
     initialHosts = [...cliHosts];
@@ -184,16 +201,31 @@ async function main(): Promise<void> {
     },
   });
 
+  // Loopback by default: the RPC surface is unauthenticated, so binding all
+  // interfaces would hand any LAN neighbor the admin control plane (read
+  // fleet metrics, add ssh hosts). Operators opt into wider exposure with
+  // `--bind 0.0.0.0` (behind a firewall/proxy) and may allowlist extra
+  // browser origins via `DRISHTI_ALLOWED_ORIGINS` for the reverse-proxy case.
+  const bindHost = argv.flags.bind;
+  const allowedOrigins = parseAllowedOrigins(
+    process.env.DRISHTI_ALLOWED_ORIGINS,
+  );
+
   const httpServer = serve(
     {
       fetch: app.fetch,
       port: argv.flags.port,
-      hostname: "0.0.0.0",
+      hostname: bindHost,
     },
     (info) => {
-      log(
-        `listening on http://${info.address}:${info.port} (open http://localhost:${info.port}/)`,
-      );
+      log(`listening on http://${info.address}:${info.port}`);
+      if (["127.0.0.1", "localhost", "::1"].includes(bindHost)) {
+        log(`open http://localhost:${info.port}/`);
+      } else {
+        log(
+          `WARNING: bound to ${bindHost} (not loopback) — the RPC surface is unauthenticated; anyone who can reach this port can read fleet metrics and add ssh hosts. Prefer the default 127.0.0.1 unless this port is firewalled or behind a trusted proxy.`,
+        );
+      }
     },
   );
 
@@ -227,7 +259,10 @@ async function main(): Promise<void> {
       ) => void;
     }
   ).on("upgrade", (req, socket, head) => {
-    const r = req as { url?: string };
+    const r = req as {
+      url?: string;
+      headers?: { origin?: string | string[]; host?: string | string[] };
+    };
     const s = socket as { destroy: () => void };
     if (r.url === undefined) {
       s.destroy();
@@ -236,6 +271,20 @@ async function main(): Promise<void> {
     const url = new URL(r.url, "ws://localhost");
     if (url.pathname !== "/rpc/ws") {
       s.destroy();
+      return;
+    }
+    // CSWSH gate (shared @kolu/surface gate): reject a cross-site browser
+    // Origin before the RPC handler (admin or per-host) ever sees the socket.
+    // Non-browser clients send no Origin and pass; same-origin UI traffic
+    // passes. `gateWsOrigin` reads the headers, `destroy()`s the socket on a
+    // reject, and returns true so we return without upgrading.
+    if (
+      gateWsOrigin({ headers: r.headers ?? {} }, s, {
+        allowedOrigins,
+        onReject: (o) =>
+          log(`rejecting ws upgrade: disallowed Origin ${JSON.stringify(o)}`),
+      })
+    ) {
       return;
     }
     const host = url.searchParams.get("host");

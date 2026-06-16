@@ -71,6 +71,31 @@ describe("hostsStore", () => {
     }
   });
 
+  it("drops persisted hosts that fail validation (ssh option injection)", async () => {
+    // A tampered or exploit-written state file must not re-seed a host that
+    // ssh would parse as an option. The leading-dash entries are dropped;
+    // the legitimate interior-dash alias survives.
+    const dir = scratchDir();
+    const file = join(dir, "hosts.json");
+    try {
+      await writeFile(
+        file,
+        JSON.stringify({
+          hosts: [
+            "good-host",
+            "-oProxyCommand=touch$IFS/tmp/pwned",
+            "user@host-b",
+            "-Fnone",
+          ],
+        }),
+        "utf-8",
+      );
+      expect(await loadHosts(file)).toEqual(["good-host", "user@host-b"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("resolveHostsFile honors DRISHTI_HOSTS_FILE override", () => {
     const prev = process.env.DRISHTI_HOSTS_FILE;
     process.env.DRISHTI_HOSTS_FILE = "/tmp/explicit/hosts.json";
