@@ -20,6 +20,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { isValidHost } from "../common/admin-surface";
 import { makeLogger } from "./log";
 
 const log = makeLogger("hosts");
@@ -59,10 +60,19 @@ export async function loadHosts(file: string): Promise<string[]> {
   ) {
     return [];
   }
-  const raw = (parsed as { hosts: unknown[] }).hosts.filter(
+  const strings = (parsed as { hosts: unknown[] }).hosts.filter(
     (h): h is string => typeof h === "string" && h.length > 0,
   );
-  return dedupe(raw);
+  // Re-validate on load — the same boundary check the admin surface applies
+  // to new hosts. A persisted file is attacker-reachable state (a prior
+  // exploit, or hand-tampering), and these entries are re-seeded into the
+  // registry at boot and handed to `ssh`; a value like `-oProxyCommand=...`
+  // must not survive a restart just because it once reached disk.
+  const valid = strings.filter(isValidHost);
+  for (const h of strings) {
+    if (!isValidHost(h)) log(`dropping invalid persisted host: ${h}`);
+  }
+  return dedupe(valid);
 }
 
 export async function saveHosts(

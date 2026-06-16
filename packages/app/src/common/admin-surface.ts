@@ -36,12 +36,39 @@ const HostEntrySchema = z.object({
   host: z.string().min(1),
 });
 
+/** Is `host` safe to use as an ssh destination?
+ *
+ *  This is the one place that decides "what may become a host", shared by
+ *  every ingestion boundary — the admin `hosts.add` wire input
+ *  (`HostInputSchema`), the persisted-file load (`hostsStore`), and the CLI
+ *  args (`server/main.ts`). Centralising it keeps the boundaries from
+ *  drifting: a string that one path admits, all paths admit.
+ *
+ *  The load-bearing rule is `!startsWith("-")`. drishti hands the host
+ *  string to `ssh` as a *bare positional* (`ssh <opts> <host> <cmd>`), so a
+ *  value beginning with `-` is parsed by ssh as an *option*, not a
+ *  destination — e.g. `-oProxyCommand=<cmd>` makes ssh run `<cmd>` via
+ *  `/bin/sh` to "establish the connection". A no-whitespace filter does not
+ *  stop that: a single-token payload (`-oProxyCommand=reboot`) has no
+ *  whitespace, and the `$IFS` form reintroduces argument separation at ssh's
+ *  own shell. Rejecting a leading `-` closes the injection at the boundary,
+ *  independent of whether the ssh argv ever gains a `--` separator. A real
+ *  ssh destination never starts with `-` (interior dashes — `db-internal`,
+ *  `a.lan` — are fine), so this rejects no legitimate target. */
+export function isValidHost(host: string): boolean {
+  return (
+    host.length > 0 &&
+    host !== ADMIN_HOST_SENTINEL &&
+    !/\s/.test(host) &&
+    !host.startsWith("-")
+  );
+}
+
 const HostInputSchema = z
   .string()
-  .min(1)
   .refine(
-    (s) => s !== ADMIN_HOST_SENTINEL && !/\s/.test(s),
-    "host must be non-empty, have no whitespace, and not be the admin sentinel",
+    isValidHost,
+    "host must be non-empty, have no whitespace, not start with '-', and not be the admin sentinel",
   );
 
 /** drishti's OWN admin surface — just the host set + the host-lifecycle
