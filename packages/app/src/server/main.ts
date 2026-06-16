@@ -28,6 +28,7 @@ import { Hono } from "hono";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
 import { destroyAllSessions } from "@kolu/surface-nix-host";
+import { gateWsOrigin, parseAllowedOrigins } from "@kolu/surface/ws-origin";
 import {
   gateStaleSocket,
   installSurfaceApp,
@@ -43,7 +44,6 @@ import { buildHostRegistry } from "./hostRegistry";
 import { loadHosts, resolveHostsFile, saveHosts } from "./hostsStore";
 import { installStderrTimestamps, makeLogger } from "./log";
 import { startWakeMonitor } from "./wakeMonitor";
-import { isAllowedWsOrigin, parseAllowedOrigins } from "./wsOrigin";
 
 // Stamp every stderr line (drishti's, kolu's, and the forwarded remote
 // agent's) with a timestamp before anything logs — the connection
@@ -69,12 +69,6 @@ const argv = cli({
     },
   },
 });
-
-/** Request headers are typed `string | string[] | undefined`; `Origin` and
- *  `Host` are single-valued in practice — collapse to the first value. */
-function firstHeader(v: string | string[] | undefined): string | undefined {
-  return Array.isArray(v) ? v[0] : v;
-}
 
 async function main(): Promise<void> {
   const drvsJson = process.env.DRISHTI_AGENT_DRVS_JSON;
@@ -267,7 +261,7 @@ async function main(): Promise<void> {
   ).on("upgrade", (req, socket, head) => {
     const r = req as {
       url?: string;
-      headers?: Record<string, string | string[] | undefined>;
+      headers?: { origin?: string | string[]; host?: string | string[] };
     };
     const s = socket as { destroy: () => void };
     if (r.url === undefined) {
@@ -279,19 +273,18 @@ async function main(): Promise<void> {
       s.destroy();
       return;
     }
-    // CSWSH gate: reject a cross-site browser Origin before the RPC handler
-    // (admin or per-host) ever sees the socket. Non-browser clients send no
-    // Origin and pass; same-origin UI traffic passes; see wsOrigin.ts.
-    const origin = firstHeader(r.headers?.origin);
+    // CSWSH gate (shared @kolu/surface gate): reject a cross-site browser
+    // Origin before the RPC handler (admin or per-host) ever sees the socket.
+    // Non-browser clients send no Origin and pass; same-origin UI traffic
+    // passes. `gateWsOrigin` reads the headers, `destroy()`s the socket on a
+    // reject, and returns true so we return without upgrading.
     if (
-      !isAllowedWsOrigin({
-        origin,
-        host: firstHeader(r.headers?.host),
+      gateWsOrigin({ headers: r.headers ?? {} }, s, {
         allowedOrigins,
+        onReject: (o) =>
+          log(`rejecting ws upgrade: disallowed Origin ${JSON.stringify(o)}`),
       })
     ) {
-      log(`rejecting ws upgrade: disallowed Origin ${JSON.stringify(origin)}`);
-      s.destroy();
       return;
     }
     const host = url.searchParams.get("host");

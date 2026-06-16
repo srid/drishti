@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "master",
+      "branch": "security/harden-surface-ws-origin-and-ssh-argv",
       "submodules": false,
-      "revision": "c303abcf90656d04709fe2db462e22ad79ad93c1",
-      "url": "https://github.com/juspay/kolu/archive/c303abcf90656d04709fe2db462e22ad79ad93c1.tar.gz",
-      "hash": "sha256-xSr5uqdS37bRnlqpkYJXH3jhEqfDeiSDnl9RABQhJG4="
+      "revision": "28d1ede473d07239fdaac52d1cfaeca15de47f84",
+      "url": "https://github.com/juspay/kolu/archive/28d1ede473d07239fdaac52d1cfaeca15de47f84.tar.gz",
+      "hash": "sha256-t5TPH1rH2XcTnWHlJF2tRIy7VsFEizL3gRFbrnlCcMs="
     },
     "nixpkgs": {
       "type": "Git",
