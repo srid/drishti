@@ -68,9 +68,10 @@ export async function loadHosts(file: string): Promise<string[]> {
   // exploit, or hand-tampering), and these entries are re-seeded into the
   // registry at boot and handed to `ssh`; a value like `-oProxyCommand=...`
   // must not survive a restart just because it once reached disk.
-  const valid = strings.filter(isValidHost);
+  const valid: string[] = [];
   for (const h of strings) {
-    if (!isValidHost(h)) log(`dropping invalid persisted host: ${h}`);
+    if (isValidHost(h)) valid.push(h);
+    else log(`dropping invalid persisted host: ${h}`);
   }
   return dedupe(valid);
 }
