@@ -57,8 +57,7 @@ export function isAllowedWsOrigin({
 /** Parse the `DRISHTI_ALLOWED_ORIGINS` env value (comma-separated exact
  *  origins) into a trimmed, non-empty list. `undefined`/blank → `[]`. */
 export function parseAllowedOrigins(raw: string | undefined): string[] {
-  if (raw === undefined) return [];
-  return raw
+  return (raw ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
