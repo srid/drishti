@@ -1,13 +1,13 @@
 # /do config
 
 ## Check command
-bun run typecheck
+pnpm typecheck
 
 ## Format command
 just fmt
 
 ## Test command
-bun test
+pnpm test:unit
 
 ## CI command
 The runner is **odu** (`github:juspay/odu`, which replaced justci — it ships

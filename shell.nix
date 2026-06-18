@@ -6,10 +6,11 @@ in
 pkgs.mkShell {
   name = "drishti-shell";
 
-  # `@tailwindcss/cli` transitively dlopen()s `@parcel/watcher`'s native
-  # binding, which requires `libstdc++.so.6` at runtime. Expose stdenv's
-  # libstdc++ on LD_LIBRARY_PATH for both `bun install` (lifecycle
-  # scripts) and the dev server's `buildClient` shell-out.
+  # `@tailwindcss/vite` (and the Vite client build it drives) transitively
+  # loads native bindings (`@tailwindcss/oxide`, `lightningcss`) that need
+  # `libstdc++.so.6` at runtime. Expose stdenv's libstdc++ on LD_LIBRARY_PATH
+  # for both `pnpm install` (lifecycle scripts) and the dev server's
+  # `buildClient` (Vite) build.
   env = drishtiEnv // {
     LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib";
   };
@@ -32,7 +33,9 @@ pkgs.mkShell {
   packages = with pkgs; [
     just
     jq
-    bun
+    nodejs
+    pnpm
+    tsx
     nixpkgs-fmt
     openssh
     nix

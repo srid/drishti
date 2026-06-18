@@ -25,6 +25,7 @@
  * entirely for clarity.
  */
 
+import { pathToFileURL } from "node:url";
 import { implement } from "@orpc/server";
 import {
   implementSurface,
@@ -360,7 +361,9 @@ async function main(): Promise<void> {
 
 // Guard the entrypoint so importing this module (e.g. from main.test.ts to
 // exercise `serveAgent` directly) doesn't spawn the agent. Mirrors build.ts.
-if (import.meta.main) {
+// `import.meta.main` is Bun-only; under Node (tsx) compare this module's URL
+// to the invoked script.
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   main().catch((err) => {
     log(`fatal: ${(err as Error).message}\n${(err as Error).stack ?? ""}`);
     process.exit(1);

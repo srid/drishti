@@ -9,7 +9,7 @@ mod ci 'ci/mod.just'
 default:
     @just --list
 
-# Install dependencies (bun) and hydrate @kolu/* packages from the nix store.
+# Install dependencies (pnpm) and hydrate @kolu/* packages from the nix store.
 # The hydrate call is wrapped in `sh -c '...'` so `$DRISHTI_KOLU_SURFACE*`
 # expand *inside* the nix-develop shell that exports them, not by just's
 # outer shell (which runs under `set -u` and errors on the unset vars if
@@ -22,7 +22,7 @@ default:
 # this recipe copies it into node_modules. The raw .ts is consumed directly
 # (no build step).
 install:
-    {{ nix_shell }} bun install
+    {{ nix_shell }} pnpm install --frozen-lockfile
     {{ nix_shell }} sh -c 'sh scripts/hydrate-kolu-packages.sh \
       "$DRISHTI_KOLU_SURFACE" @kolu/surface \
       "$DRISHTI_KOLU_SURFACE_NIX_HOST" @kolu/surface-nix-host \
@@ -39,11 +39,15 @@ dev host='localhost' *args: install
     drvs_json=$(nix eval --raw "{{ justfile_directory() }}#agentDrvsJson")
     echo "» agent drvs: $drvs_json"
     DRISHTI_AGENT_DRVS_JSON="$drvs_json" \
-    {{ nix_shell }} bun --cwd packages/app dev {{ host }} {{ args }}
+    {{ nix_shell }} pnpm --filter drishti-app exec tsx watch src/server/main.ts {{ host }} {{ args }}
 
 # TypeScript type checking (every workspace member: common, agent, app)
 typecheck: install
-    {{ nix_shell }} bun run typecheck
+    {{ nix_shell }} pnpm typecheck
+
+# Unit tests (vitest, every workspace member)
+test: install
+    {{ nix_shell }} pnpm test:unit
 
 # Format all *.nix files (and any future biome target — drishti doesn't
 # bring biome in by default; add when JS formatting becomes a chore).
@@ -54,15 +58,10 @@ fmt:
 fmt-check:
     {{ nix_shell }} nixpkgs-fmt --check .
 
-# Regenerate bun.nix from bun.lock. Run this after any change to bun.lock
-# (i.e. after `bun install`/`bun add`).
-regenerate-bun-nix:
-    {{ nix_shell }} sh -c 'nix run .#bun2nix -- -l bun.lock -o bun.nix && nixpkgs-fmt bun.nix'
-
 # Regenerate the committed PWA icons (manifest icons, favicon, apple-touch)
 # from scripts/gen-pwa-icons.ts. Run this after editing the icon geometry.
 gen-pwa-icons:
-    {{ nix_shell }} bun scripts/gen-pwa-icons.ts
+    {{ nix_shell }} tsx scripts/gen-pwa-icons.ts
 
 # Build the wrapped monitor binary and print its store path.
 nix-build:

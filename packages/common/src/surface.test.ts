@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { surface } from "./surface";
 
 // drishti is a read-only monitor: the per-host surface must expose

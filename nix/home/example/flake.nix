@@ -114,7 +114,7 @@
           # Poll until drishti's HTTP listener binds — systemd reports
           # "active" before the port is open. 120s headroom for hosts
           # without KVM acceleration (qemu TCG fallback inflates the
-          # bun/node startup substantially).
+          # node startup substantially).
           machine.wait_until_succeeds(
               "curl --fail --silent http://127.0.0.1:${toString testPort}/ > /dev/null",
               timeout=120,

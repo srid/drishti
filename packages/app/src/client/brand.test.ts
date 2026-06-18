@@ -1,6 +1,7 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { BRAND_DARK, BRAND_LIGHT, brandColorForTheme } from "./brand";
 
 // The brand colors have one canonical home (brand.ts). TypeScript sites import
@@ -12,7 +13,7 @@ import { BRAND_DARK, BRAND_LIGHT, brandColorForTheme } from "./brand";
 // THEME_KEY string. (index.html no longer carries a theme-color meta: App.tsx
 // drives it reactively from the chosen theme, importing BRAND_* directly.)
 describe("brand colors stay consistent across un-importable sites", () => {
-  const here = import.meta.dir;
+  const here = dirname(fileURLToPath(import.meta.url));
   const read = (p: string) => readFileSync(join(here, p), "utf8");
   const css = read("styles.css");
   const manifest = JSON.parse(read("public/manifest.webmanifest"));

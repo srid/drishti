@@ -2,7 +2,7 @@
 
 **htop for your whole fleet — with nothing installed on the remote.** If you can `ssh` into a host and its Nix daemon trusts you, you can watch its live processes, CPU, memory, disk, and network. drishti ships its own agent *over the SSH connection* on first connect — no package to install, no inbound port to open, no daemon to configure on the far end.
 
-Browser (SolidJS) ↔ local parent server (Bun) ↔ remote agent over `ssh` stdio, on the typed reactive transport [`@kolu/surface`](https://kolu.dev/blog/surface-framework/) + [oRPC over ssh](https://kolu.dev/blog/orpc-over-ssh/).
+Browser (SolidJS) ↔ local parent server (Node) ↔ remote agent over `ssh` stdio, on the typed reactive transport [`@kolu/surface`](https://kolu.dev/blog/surface-framework/) + [oRPC over ssh](https://kolu.dev/blog/orpc-over-ssh/).
 
 ## Demo
 
@@ -69,7 +69,7 @@ Mixed-architecture host sets are supported: the monitor wrapper bakes a `{system
 Browser (SolidJS UI, tab strip)
    │  one WebSocket per host  ─────────┐
    ▼                                   ▼
-Parent server (Bun, drishti)    Admin surface (host set)
+Parent server (Node, drishti)   Admin surface (host set)
    │  ssh stdio (oRPC) ×N
    ▼
 Host 1: drishti-agent     Host 2: drishti-agent     …
@@ -109,12 +109,12 @@ just dev                          # parent server :7720, host=localhost
 just dev user@somehost            # any ssh target with passwordless access
 just dev localhost a.lan b.lan    # multiple hosts (per-host arch probe)
 just typecheck                    # tsc --noEmit across the workspace
+just test                         # vitest across the workspace
 just fmt                          # nixpkgs-fmt everything *.nix
 just nix-build                    # build the wrapped monitor binary
-just regenerate-bun-nix           # after any bun.lock change
 ```
 
-`just dev` exports `DRISHTI_AGENT_DRVS_JSON` (the per-system `.drv` map from the flake's `agentDrvsJson` attribute) and boots Bun in watch mode. The parent probes each host's nix-system as part of bringing the host up — asking the host's own Nix for `builtins.currentSystem` — and picks the matching `.drv` from the map, so one dev session can mix architectures. The probe runs inside the connection's spawn cycle, so a host that's unreachable when the probe fires (offline remote, stale ssh-agent) folds into the same retry path as any other connection failure rather than aborting startup. The dev server invokes `buildClient()` at startup so a single `bun --watch` covers both server-TS and client-bundle rebuilds. Browser refresh is manual — there's no HMR.
+`just dev` exports `DRISHTI_AGENT_DRVS_JSON` (the per-system `.drv` map from the flake's `agentDrvsJson` attribute) and boots the server under `tsx` in watch mode. The parent probes each host's nix-system as part of bringing the host up — asking the host's own Nix for `builtins.currentSystem` — and picks the matching `.drv` from the map, so one dev session can mix architectures. The probe runs inside the connection's spawn cycle, so a host that's unreachable when the probe fires (offline remote, stale ssh-agent) folds into the same retry path as any other connection failure rather than aborting startup. The dev server invokes `buildClient()` (a Vite build) at startup, so a single `tsx watch` covers server-TS reloads; the client bundle is rebuilt on server restart. Browser refresh is manual — there's no HMR.
 
 The first connect to a fresh remote ships the agent closure over `ssh` (`nix copy --derivation` then `nix-store --realise`); subsequent connects reuse it. The realised closure is pinned behind a per-host GC root on the remote, so a `nix-collect-garbage` there can't delete the agent out from under a live session or force a rebuild on the next reconnect. The progress is streamed to the browser via the `connection` cell, and the overlay shows how long the current phase has been running ("Connecting… 18s") so a slow connect reads as abnormal. A dropped link reconnects automatically (the tab pulses amber, "Reconnecting…"), and what happens next depends on *why* it's down. If the host is simply **unreachable** — offline, asleep, or you've roamed onto a different network — drishti keeps retrying indefinitely at a capped backoff (the overlay reads "Host unreachable — retrying…"), so the link comes back on its own once the host is reachable again, no clicking. Only a **remote rejection** — the host answered but its `nix-daemon` won't accept the closure because your user isn't in `trusted-users` — is treated as terminal: after a few attempts the host enters a **failed** state, since retrying can't fix a misconfiguration. drishti then shows the underlying error, the captured connection log (the real `nix copy`/`ssh` output — not a guess at the cause), and a **Reconnect** button that re-arms the session in place, so you don't have to restart the parent. A connect that comes up but never completes its first RPC — transport alive, handshake wedged — is timed out by a watchdog rather than hanging in "connecting" forever. A host that's unreachable from the very start — offline when the monitor launches — just keeps retrying while every reachable host is monitored normally, instead of one bad host crashing the monitor before its HTTP port is even bound.
 
@@ -146,12 +146,13 @@ On macOS, the LaunchAgent writes stdout to `~/Library/Logs/drishti.out.log` and 
 
 ```
 drishti/
-├─ flake.nix                  # one input: juspay/bun2nix (rawflake)
+├─ flake.nix                  # zero flake inputs (npins-pinned nixpkgs + kolu)
 ├─ default.nix                # composer — exposes drishti, drishti-agent, drishti-client
-├─ shell.nix                  # mkShell + hydrate-script shellHook
-├─ package.json               # bun workspaces ["packages/*"]
-├─ bunfig.toml                # [install] linker = "hoisted"
-├─ bun.nix                    # generated by bun2nix
+├─ shell.nix                  # mkShell (node + pnpm + tsx) + hydrate-script shellHook
+├─ package.json               # workspace root + scripts (pnpm/tsx/vitest)
+├─ pnpm-workspace.yaml        # workspace members ["packages/*"]
+├─ .npmrc                     # node-linker=hoisted (one root node_modules)
+├─ pnpm-lock.yaml             # pnpm lockfile (→ Nix via fetchPnpmDeps)
 ├─ justfile
 ├─ npins/sources.json         # nixpkgs + kolu pins
 ├─ nix/
@@ -167,7 +168,7 @@ drishti/
 │     └─ example/             # example config — CI-built (VM + launchd checks)
 ├─ scripts/
 │  └─ hydrate-kolu-packages.sh
-└─ packages/                  # bun workspace members ["packages/*"]
+└─ packages/                  # pnpm workspace members ["packages/*"]
    ├─ common/src/surface.ts                     # per-host wire contract — agent + monitor share it
    ├─ agent/src/{main.ts, proc.ts}              # remote-side agent (its own scoped build)
    └─ app/
@@ -180,7 +181,7 @@ drishti/
          │  ├─ hostRegistry.ts                  #   per-host session pool
          │  ├─ archMap.ts                       #   compose kolu's resolveSystem with the drv map
          │  ├─ hostsStore.ts                    #   $XDG_STATE_HOME/drishti/hosts.json
-         │  └─ build.ts                         #   client bundler
+         │  └─ build.ts                         #   client build (drives Vite)
          └─ client/                             # SolidJS UI
             ├─ App.tsx                          #   MultiHostApp + TabStrip + HostView
             ├─ wire.ts                          #   surfaceForHost(host) + adminClient()
@@ -193,7 +194,7 @@ drishti/
 
 > **Draft-PR note (this branch):** the **Pin app** install affordance depends on in-flight kolu work on branch `welcome`: the `canInstallPwa` / `isInstalled` signals on `useSurfaceApp()`, and the `@kolu/solid-pwa-install` package's source. Until the kolu pin in `npins/sources.json` tracks the merged `welcome` revision, the button stays off behind the `PWA_INSTALL_WIRED` guard in `src/client/TabStrip.tsx` and the `@kolu/solid-pwa-install` import stays commented. The nix wiring to hydrate the package is already in place; landing it is a pin bump + flipping the guard + uncommenting the import.
 
-> **Draft-PR note:** `@kolu/surface-app` is not yet pinned via npins. While this lands, `just install` hydrates it from a **local kolu worktree** (`DRISHTI_KOLU_SURFACE_APP`, defaulted in the `install` recipe). For the merge: add surface-app to `npins/sources.json` (the existing kolu source already carries it) + `nix/env.nix` exactly like the other two `@kolu/*` packages, drop the local default, and regenerate `bun.nix`.
+> **Draft-PR note:** `@kolu/surface-app` is not yet pinned via npins. While this lands, `just install` hydrates it from a **local kolu worktree** (`DRISHTI_KOLU_SURFACE_APP`, defaulted in the `install` recipe). For the merge: add surface-app to `npins/sources.json` (the existing kolu source already carries it) + `nix/env.nix` exactly like the other two `@kolu/*` packages, drop the local default, and regenerate `pnpm-lock.yaml`.
 
 To bump the kolu pin:
 
@@ -201,17 +202,13 @@ To bump the kolu pin:
 nix shell nixpkgs#npins -c npins update kolu
 ```
 
-### Why Bun.build, not Vite
+### Client build (Vite)
 
-The client bundler is a hand-rolled `Bun.build` pipeline (`packages/app/src/server/build.ts`) with a small `solidJsxPlugin` (babel-preset-solid + babel-preset-typescript). Same bundle code path runs in dev (server invokes it at startup) and Nix (build derivation runs it during `buildPhase`). Tailwind v4 compiles via `@tailwindcss/cli` as part of the same pipeline.
+The browser client is bundled by Vite, configured inline in `packages/app/src/server/build.ts`'s `buildClient()`: `vite-plugin-solid` for the Solid JSX transform, `@tailwindcss/vite` for Tailwind v4, and `@kolu/surface-app/vite`'s `surfaceApp()` plugin for the freshness contract (the build commit published on the `no-store` shell as `window.__SURFACE_APP_COMMIT__`, never a hashed-asset define; kolu#1319). Vite content-hashes `/assets/*` and rewrites the shell to name them. One build path, two callers: the dev server invokes `buildClient()` at startup when `DRISHTI_DIST_DIR` is unset, and the Nix build derivation runs the same `buildClient` via `tsx` during `buildPhase`. (The config is inline rather than a `vite.config.ts` file because drishti never invokes the `vite` CLI, and a config file would be loaded by Vite's config loader — which externalizes the raw-`.ts` `@kolu/surface-app/vite` import to Node, where type-stripping under `node_modules` is unsupported.)
 
 ### CI
 
-CI runs via [odu](https://github.com/juspay/odu) — "a CI runner you attach to" — invoked straight from upstream (`nix run github:juspay/odu -- run`). odu ships its own generic lane runner (`nix copy`d to remote lanes), so this repo re-exports nothing. The canonical pipeline is the `[metadata("ci")]` DAG in `ci/mod.just`; it builds every flake output, type-checks, checks formatting + `bun.nix` freshness, asserts agent `.drv` stability, and boots the home-manager example. Lane hosts come from `~/.config/odu/hosts.json` (falling back to `~/.config/justci/hosts.json`); a live run is attachable (`nix run github:juspay/odu -- attach`) and agents drive it through odu's MCP server (`mcp__odu__*`).
-
-One upstream issue currently shapes how CI runs:
-
-- **crates.io blocks `curl/*` User-Agent.** Every `crate-*.tar.gz` fetched by `bun2nix`'s rust dep tree fails its `pkgs.fetchurl` with HTTP 403. `ci/mod.just`'s `_prefetch-crates` recipe (`scripts/ci-prefetch-crates.sh`) sidesteps this by fetching missing crates with a Mozilla UA and injecting them via `nix-store --add-fixed`. Idempotent and content-addressed, so the workaround disappears the first time upstream fetchurl learns to set a non-curl UA — or once bun2nix's Rust deps fetch from `static.crates.io` directly. Tracking issue: TBD.
+CI runs via [odu](https://github.com/juspay/odu) — "a CI runner you attach to" — invoked straight from upstream (`nix run github:juspay/odu -- run`). odu ships its own generic lane runner (`nix copy`d to remote lanes), so this repo re-exports nothing. The canonical pipeline is the `[metadata("ci")]` DAG in `ci/mod.just`; it builds every flake output, type-checks, runs the vitest suite, checks formatting, asserts agent `.drv` stability, and boots the home-manager example. Lane hosts come from `~/.config/odu/hosts.json` (falling back to `~/.config/justci/hosts.json`); a live run is attachable (`nix run github:juspay/odu -- attach`) and agents drive it through odu's MCP server (`mcp__odu__*`).
 
 ### License
 

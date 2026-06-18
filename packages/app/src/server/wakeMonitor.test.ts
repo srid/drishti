@@ -1,5 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { startWakeMonitor } from "./wakeMonitor";
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * The wake monitor's whole job is to tell a normal tick (the event loop
@@ -29,7 +32,7 @@ describe("startWakeMonitor", () => {
 
     // The process was "suspended" ~2 minutes: the next tick sees a huge gap.
     clock.advance(120_000);
-    await Bun.sleep(60); // let the probe timer fire at least once
+    await sleep(60); // let the probe timer fire at least once
 
     expect(gaps.length).toBeGreaterThanOrEqual(1);
     expect(gaps[0]).toBeGreaterThanOrEqual(120_000);
@@ -50,7 +53,7 @@ describe("startWakeMonitor", () => {
     // never past the threshold.
     for (let i = 0; i < 3; i++) {
       clock.advance(20);
-      await Bun.sleep(40);
+      await sleep(40);
     }
 
     expect(gaps.length).toBe(0);
@@ -69,7 +72,7 @@ describe("startWakeMonitor", () => {
 
     stop();
     clock.advance(120_000);
-    await Bun.sleep(60);
+    await sleep(60);
 
     expect(gaps.length).toBe(0);
   });

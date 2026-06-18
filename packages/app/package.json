@@ -3,23 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "//": "@kolu/surface-app is NOT a bun dependency — like @kolu/surface and @kolu/surface-nix-host it is hydrated into node_modules/@kolu/surface-app (its raw .ts sources are consumed directly: no build step). It is sourced hermetically from the npins-pinned kolu tree (npins/sources.json → kolu): nix/overlay.nix extracts it as a nix-store path, nix/env.nix exports it as $DRISHTI_KOLU_SURFACE_APP, and the dev shell / install recipe / build derivation copy it into node_modules exactly like the other @kolu/* packages. @kolu/solid-pwa-install (the PWA install-card adapter) is hydrated the same way; src/client/TabStrip.tsx's Pin-app button consumes it (createPwaInstall + installInstructions), gated on the canInstallPwa/isInstalled signals from useSurfaceApp(). The kolu pin tracks master (juspay/kolu#1199 merged) which ships both the package source and those signals.",
+  "//": "@kolu/surface-app is NOT a registry dependency — like @kolu/surface and @kolu/surface-nix-host it is hydrated into node_modules/@kolu/surface-app (its raw .ts sources are consumed directly: no build step). It is sourced hermetically from the npins-pinned kolu tree (npins/sources.json → kolu): nix/overlay.nix extracts it as a nix-store path, nix/env.nix exports it as $DRISHTI_KOLU_SURFACE_APP, and the dev shell / install recipe / build derivation copy it into node_modules exactly like the other @kolu/* packages. @kolu/solid-pwa-install (the PWA install-card adapter) is hydrated the same way; src/client/TabStrip.tsx's Pin-app button consumes it (createPwaInstall + installInstructions), gated on the canInstallPwa/isInstalled signals from useSurfaceApp(). The kolu pin tracks master (juspay/kolu#1199 merged) which ships both the package source and those signals.",
   "scripts": {
-    "dev": "bun --watch src/server/main.ts",
-    "start": "bun src/server/main.ts",
+    "dev": "tsx watch src/server/main.ts",
+    "start": "tsx src/server/main.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@babel/core": "^7.25.0",
-    "@babel/preset-typescript": "^7.25.0",
     "@hono/node-server": "^1.19.13",
     "@orpc/client": "^1.13.13",
     "@orpc/contract": "^1.13.13",
     "@orpc/server": "^1.13.13",
     "@solid-primitives/scheduled": "^1.5.3",
     "@solidjs/meta": "^0.29.4",
-    "@tailwindcss/cli": "^4.1.0",
-    "babel-preset-solid": "^1.9.0",
     "cleye": "^2.3.0",
     "drishti-common": "workspace:*",
     "hono": "^4.12.16",
@@ -29,10 +25,11 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/babel__core": "^7.20.5",
-    "@types/bun": "^1.2.0",
+    "@tailwindcss/vite": "^4.1.0",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.18.1",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "vite": "^6.4.2",
+    "vite-plugin-solid": "^2.11.0"
   }
 }

@@ -18,6 +18,7 @@
  * which persists back to the same file so UI changes survive restart.
  */
 
+import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -153,7 +154,7 @@ async function main(): Promise<void> {
     log(`building client bundle into ${distDir}`);
     await buildClient(distDir);
   } else {
-    if (!(await Bun.file(resolve(distDir, "index.html")).exists())) {
+    if (!existsSync(resolve(distDir, "index.html"))) {
       log(
         `DRISHTI_DIST_DIR=${distDir} is set but index.html is missing — the wrapper points at an unbuilt dist.`,
       );

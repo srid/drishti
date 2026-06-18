@@ -1,6 +1,7 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { otherTheme, parseTheme, THEME_KEY } from "./theme";
 
 describe("parseTheme", () => {
@@ -30,7 +31,10 @@ describe("THEME_KEY", () => {
     // THEME_KEY — this canary fails if the constant is renamed without
     // updating index.html in lockstep (the one duplication that can't be
     // collapsed away).
-    const html = readFileSync(join(import.meta.dir, "index.html"), "utf8");
+    const html = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "index.html"),
+      "utf8",
+    );
     expect(html).toContain(`"${THEME_KEY}"`);
   });
 });

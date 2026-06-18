@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
 
 describe("connection STATE presentation", () => {

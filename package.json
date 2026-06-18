@@ -2,18 +2,20 @@
   "name": "drishti-workspaces",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "packages/*"
-  ],
   "scripts": {
-    "typecheck": "bun --cwd packages/common typecheck && bun --cwd packages/agent typecheck && bun --cwd packages/app typecheck",
-    "dev": "bun --cwd packages/app dev"
+    "typecheck": "pnpm -r typecheck",
+    "test:unit": "vitest run",
+    "dev": "pnpm --filter drishti-app dev"
   },
   "devDependencies": {
-    "@types/bun": "^1.2.0",
-    "typescript": "^5.8.0"
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.0"
   },
-  "overrides": {
-    "@babel/helper-module-imports": "^7.29.7"
+  "pnpm": {
+    "overrides": {
+      "@babel/helper-module-imports": "^7.29.7"
+    }
   }
 }
