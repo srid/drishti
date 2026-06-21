@@ -27,11 +27,11 @@ import {
   inMemoryChannelByName,
   inMemoryStore,
 } from "@kolu/surface/server";
+import { mirrorRemoteSurface } from "@kolu/surface/mirror";
 import {
   type AgentClient,
   type HostSession,
   makeClientCursor,
-  mirrorRemoteCollection,
 } from "@kolu/surface-nix-host";
 import {
   type ConnectionInfo,
@@ -218,12 +218,11 @@ export function buildRouter(opts: BuildRouterOptions) {
   // Start a background pump that pins the session, then loops over each
   // successive AgentClient the session produces — each time the agent
   // process is respawned (after a transport drop), the bridge fetches
-  // the new client and restarts all pumps against it. The framework's
-  // `ClientRetryPlugin` is NOT load-bearing here: stdio links don't
-  // recover mid-stream (the underlying streams die with the process), so
-  // the only reliable recovery is to re-issue the subscriptions on the
-  // *new* client. The outer loop is what implements "reconnect → state
-  // reconciles, no ghosts".
+  // the new client and re-issues ONE `mirrorRemoteSurface` against it. The
+  // framework's `ClientRetryPlugin` is NOT load-bearing here: stdio links
+  // don't recover mid-stream (the underlying streams die with the process),
+  // so the only reliable recovery is to re-mirror on the *new* client. The
+  // outer loop is what implements "reconnect → state reconciles, no ghosts".
   void bridgeAgentToParent(
     log,
     session,
@@ -273,17 +272,25 @@ type FragmentCtx = {
   };
 };
 
-/** Pin the session, then loop: fetch the current AgentClient, run all
- *  pumps against it concurrently, wait for them to end (which happens
- *  when the link errors — stdio process death), then wait for the
- *  session to provide a fresh client (post-reconnect) and repeat.
+/** Pin the session, then loop: fetch the current AgentClient, mirror the
+ *  WHOLE agent surface into the parent with one `mirrorRemoteSurface` call,
+ *  wait for it to settle (which happens when the link errors — stdio process
+ *  death), then wait for the session to provide a fresh client
+ *  (post-reconnect) and repeat.
  *
  *  Each loop iteration owns one client — a fresh ssh subprocess. The
  *  `clientSeq` counter labels them (`#1`, `#2`, …) so the otherwise
  *  identical per-reconnect log lines can be traced to a specific spawn:
- *  if `system.get` against `#2` never yields while the agent on the far
- *  end logged `serving surface over stdio`, the handoff — not the remote
- *  — is where a stuck reconnect lives. */
+ *  if the mirror against `#2` never yields a `system` frame while the agent
+ *  on the far end logged `serving surface over stdio`, the handoff — not the
+ *  remote — is where a stuck reconnect lives.
+ *
+ *  The four hand-rolled pumps (system cell, cpuCores + networkInterfaces
+ *  collections, processesSnapshot stream) collapse into one declarative sink
+ *  — the consume-side dual of the `implementSurface` call that built the
+ *  parent's own surface above. The reconnect-loop primitive
+ *  (`makeClientCursor`) and the per-client re-mirror stay the bridge's job,
+ *  because stdio links don't recover mid-stream. */
 async function bridgeAgentToParent(
   log: Logger,
   session: HostSession<typeof surface.contract>,
@@ -315,146 +322,74 @@ async function bridgeAgentToParent(
       break;
     }
     clientSeq += 1;
-    log(`agent client ready (client #${clientSeq}); starting pumps`);
-    await Promise.allSettled([
-      pumpSystemCell(log, clientSeq, client, session, fragment, recordSample),
-      pumpProcessesSnapshot(
-        log,
-        client,
-        fragment,
-        processCache,
-        browserSnapshotBus,
-      ),
-      pumpCpuCores(log, client, fragment),
-      pumpNetworkInterfaces(log, client, fragment),
-    ]);
+    const seq = clientSeq;
+    log(`agent client ready (client #${seq}); starting mirror`);
+    // Per-client mirror state — the agent leads each (re)connect with a fresh
+    // `system` snapshot, so the first-frame handshake markers and the frame
+    // counter reset with the client.
+    let firstSystemFrame = true;
+    let frames = 0;
+    const issuedAt = Date.now();
+    await mirrorRemoteSurface(
+      surface,
+      client,
+      {
+        cells: {
+          // The agent's `system` cell → the parent's. The first yield is also
+          // the connection handshake: it flips the session to `connected`
+          // (idempotent thereafter). Every tick is the parent's authoritative
+          // metric-history sampling point (it sees every tick, browser or not).
+          system: (remoteSystem) => {
+            if (firstSystemFrame) {
+              firstSystemFrame = false;
+              log(
+                `system: first snapshot → marking connected (client #${seq}, ${Date.now() - issuedAt}ms to first RPC)`,
+              );
+            }
+            session.markConnected();
+            fragment.ctx.cells.system.set(remoteSystem);
+            recordSample(remoteSystem);
+          },
+        },
+        collections: {
+          // Small-N per-key collections — the path the private collection
+          // engine drives (keys stream + per-key value streams).
+          cpuCores: {
+            upsert: (key, value) =>
+              fragment.ctx.collections.cpuCores.upsert(key, value),
+            remove: (key) => fragment.ctx.collections.cpuCores.remove(key),
+          },
+          networkInterfaces: {
+            upsert: (key, value) =>
+              fragment.ctx.collections.networkInterfaces.upsert(key, value),
+            remove: (key) =>
+              fragment.ctx.collections.networkInterfaces.remove(key),
+          },
+        },
+        streams: {
+          // Bulk discriminated-union stream — ONE long-lived stream regardless
+          // of process count (vs. keys-stream + N per-key subscribes, a drip
+          // over a high-latency ssh link). Each frame is a full keyed-snapshot
+          // (first, or on reconnect) or a per-tick delta; `applySnapshotMessage`
+          // applies both, and the parent re-publishes the frame verbatim to its
+          // browser bus.
+          processesSnapshot: {
+            input: {},
+            onFrame: (msg) => {
+              frames += 1;
+              applySnapshotMessage(log, msg, processCache, fragment, frames);
+              browserSnapshotBus.publish(msg);
+            },
+          },
+        },
+      },
+      { log },
+    );
     log(
-      `bridge: pumps ended for client #${clientSeq} (link likely died) — awaiting next client`,
+      `bridge: mirror ended for client #${seq} (link likely died) — awaiting next client`,
     );
   }
   log("bridge: session destroyed — exiting reconnect loop");
-}
-
-/** Mirror the agent's `cpuCores` collection — small-N showcase of
- *  `mirrorRemoteCollection`. */
-function pumpCpuCores(
-  log: Logger,
-  client: DrishtiAgent,
-  fragment: FragmentCtx,
-): Promise<void> {
-  return mirrorRemoteCollection<CoreId, CpuCore>({
-    label: "cpuCores",
-    log,
-    keys: client.surface.cpuCores.keys({}) as Promise<
-      AsyncIterable<readonly CoreId[]>
-    >,
-    get: (key, signal) =>
-      client.surface.cpuCores.get({ key }, { signal }) as Promise<
-        AsyncIterable<CpuCore>
-      >,
-    onUpsert: (key, value) =>
-      fragment.ctx.collections.cpuCores.upsert(key, value),
-    onRemove: (key) => fragment.ctx.collections.cpuCores.remove(key),
-  });
-}
-
-/** Mirror the agent's `networkInterfaces` collection — same
- *  `mirrorRemoteCollection` shape as cpuCores, keyed by NIC name. */
-function pumpNetworkInterfaces(
-  log: Logger,
-  client: DrishtiAgent,
-  fragment: FragmentCtx,
-): Promise<void> {
-  return mirrorRemoteCollection<IfaceName, NetInterface>({
-    label: "networkInterfaces",
-    log,
-    keys: client.surface.networkInterfaces.keys({}) as Promise<
-      AsyncIterable<readonly IfaceName[]>
-    >,
-    get: (key, signal) =>
-      client.surface.networkInterfaces.get({ key }, { signal }) as Promise<
-        AsyncIterable<NetInterface>
-      >,
-    onUpsert: (key, value) =>
-      fragment.ctx.collections.networkInterfaces.upsert(key, value),
-    onRemove: (key) => fragment.ctx.collections.networkInterfaces.remove(key),
-  });
-}
-
-/** Mirror the agent's system cell into the parent's local cell. The
- *  `system.get` subscription is also the connection handshake: its first
- *  yield is what flips the session to `connected`. So the two log lines
- *  bracketing the `for await` — "issuing" before, elapsed-to-first-yield
- *  on `n === 1` — are the parent-side view of the handshake. A reconnect
- *  that logs "issuing … (client #N)" but never reaches the first yield is
- *  a subscription that never roundtripped on the new client, distinct
- *  from one where the bridge never got a new client to issue against. */
-async function pumpSystemCell(
-  log: Logger,
-  clientSeq: number,
-  client: DrishtiAgent,
-  session: HostSession<typeof surface.contract>,
-  fragment: FragmentCtx,
-  recordSample: (system: SystemInfo) => void,
-): Promise<void> {
-  let n = 0;
-  const issuedAt = Date.now();
-  log(`system: issuing system.get subscription (client #${clientSeq})`);
-  try {
-    for await (const remoteSystem of await client.surface.system.get({})) {
-      n += 1;
-      if (n === 1) {
-        log(
-          `system: first snapshot → marking connected (client #${clientSeq}, ${Date.now() - issuedAt}ms to first RPC)`,
-        );
-      }
-      session.markConnected();
-      fragment.ctx.cells.system.set(remoteSystem);
-      // One history sample per system tick — the parent's authoritative
-      // sampling point (it sees every tick, browser or not).
-      recordSample(remoteSystem);
-    }
-    log(`system: stream closed cleanly after ${n} yields (client #${clientSeq})`);
-  } catch (err) {
-    log(
-      `system: stream error after ${n} yields (client #${clientSeq}): ${(err as Error).message}`,
-    );
-  }
-}
-
-/** Mirror the agent's processes via the BULK `processesSnapshot`
- *  stream — ONE long-lived stream, regardless of process count. Each
- *  yield is either a full keyed-snapshot (first frame on subscribe,
- *  or on every reconnect) or a per-tick delta. Both shapes apply to
- *  the parent's local collection in a single batch.
- *
- *  This replaces the older "keys-stream + N per-key subscribes"
- *  bridge — fine over local stdio but a noticeable drip over a
- *  high-latency `ssh` link (600 PIDs × ~10ms RTT ≈ 6 seconds of
- *  one-row-at-a-time fill). With the bulk stream, cold-start is O(1)
- *  RPCs regardless of process count. */
-async function pumpProcessesSnapshot(
-  log: Logger,
-  client: DrishtiAgent,
-  fragment: FragmentCtx,
-  processCache: Map<Pid, Process>,
-  browserSnapshotBus: Channel<ProcessesSnapshotMsg>,
-): Promise<void> {
-  let frames = 0;
-  try {
-    for await (const msg of await client.surface.processesSnapshot.get({})) {
-      frames += 1;
-      applySnapshotMessage(log, msg, processCache, fragment, frames);
-      // Independent activity: re-publish to browser subscribers via
-      // the parent's local bus. Verbatim forward — no inspection of
-      // frame contents here; the mirror logic above is the only
-      // place that knows the discriminated-union shape.
-      browserSnapshotBus.publish(msg);
-    }
-    log(`processes: snapshot stream closed (${frames} frames total)`);
-  } catch (err) {
-    log(`processes: snapshot stream error: ${(err as Error).message}`);
-  }
 }
 
 /** Apply one `processesSnapshot` frame to the parent's local
