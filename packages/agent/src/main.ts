@@ -229,6 +229,23 @@ export async function serveAgent(
         },
       },
     },
+    // The one PROCEDURE on this surface — `kill` runs HERE, on the host that owns
+    // the pids (the parent has none; it forwards through the mirror's stub, kolu
+    // #1505 R7). `process.kill` raising (ESRCH gone, EPERM not permitted) is a
+    // normal, reportable outcome, not a crash — caught and returned as
+    // `{ ok: false, error }` so the browser can surface it.
+    procedures: {
+      process: {
+        kill: ({ input }) => {
+          try {
+            process.kill(input.pid, `SIG${input.signal}`);
+            return { ok: true };
+          } catch (err) {
+            return { ok: false, error: (err as Error).message };
+          }
+        },
+      },
+    },
   });
 
   // Poll loop: refresh system + processes, diff against current
