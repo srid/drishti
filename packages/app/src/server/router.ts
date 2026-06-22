@@ -27,7 +27,10 @@ import {
   inMemoryChannelByName,
   inMemoryStore,
 } from "@kolu/surface/server";
-import { mirrorRemoteSurface } from "@kolu/surface/mirror";
+import {
+  mirrorRemoteSurface,
+  type ProcedureForwarders,
+} from "@kolu/surface/mirror";
 import {
   type AgentClient,
   type HostSession,
@@ -101,6 +104,16 @@ export function buildRouter(opts: BuildRouterOptions) {
   let historyRing: MetricSample[] = [];
   const historyBus: Channel<MetricHistoryMsg> =
     inMemoryChannel<MetricHistoryMsg>();
+
+  // R7 (kolu #1505): the browser's `process.kill` is forwarded to the agent
+  // through the MIRROR's procedure stub — the first forwarded procedure on a
+  // mirrored surface. The mirror is re-issued per spawn (stdio doesn't recover
+  // mid-stream), so the live stub set lives in this holder: the bridge sets it
+  // on each connect and clears it when the link dies. A kill with no live agent
+  // reports `{ ok: false }` rather than silently no-op'ing.
+  const liveProcedures: {
+    current: ProcedureForwarders<typeof surface.spec> | null;
+  } = { current: null };
 
   const fragment = implementSurface(surface, {
     // Name-keyed in-memory channel factory — publish/subscribe sites
@@ -179,6 +192,21 @@ export function buildRouter(opts: BuildRouterOptions) {
         },
       },
     },
+    // The browser-facing `kill` is a pure FORWARD: the parent owns no pids, so it
+    // relays to the agent through the live mirror's procedure stub (the R7 proof).
+    // No live link → an honest `{ ok: false }`, surfaced to the user; a stub call
+    // against a just-dropped link rejects and the rejection reaches the browser.
+    procedures: {
+      process: {
+        kill: async ({ input }) => {
+          const procs = liveProcedures.current;
+          if (!procs) {
+            return { ok: false, error: "no live agent connection" };
+          }
+          return procs.process.kill(input);
+        },
+      },
+    },
   });
 
   // Compile-time guard for the least-privilege narrowing: the real
@@ -230,6 +258,7 @@ export function buildRouter(opts: BuildRouterOptions) {
     processCache,
     browserSnapshotBus,
     recordSample,
+    liveProcedures,
   );
 
   // `implementSurface` returns a router *fragment* — `{ surface: ... }`
@@ -298,6 +327,9 @@ async function bridgeAgentToParent(
   processCache: Map<Pid, Process>,
   browserSnapshotBus: Channel<ProcessesSnapshotMsg>,
   recordSample: (system: SystemInfo) => void,
+  liveProcedures: {
+    current: ProcedureForwarders<typeof surface.spec> | null;
+  },
 ): Promise<void> {
   log("pinning HostSession (parent-lifetime ref)…");
   // Pin once. Swallow the initial promise — we'll fetch a fresh client
@@ -330,7 +362,13 @@ async function bridgeAgentToParent(
     let firstSystemFrame = true;
     let frames = 0;
     const issuedAt = Date.now();
-    await mirrorRemoteSurface(
+    // R7 (kolu #1505): `mirrorRemoteSurface` returns the total-dual handle
+    // `{ procedures, done }`, no longer `Promise<void>`. The streaming sinks
+    // fold below; the procedure stubs are published to `liveProcedures` so the
+    // parent's `kill` handler can forward through them, and the loop blocks on
+    // `.done` until the link dies (a bare `await mirrorRemoteSurface(...)` would
+    // await a non-thenable handle and resolve at once, spinning the loop).
+    const mirror = mirrorRemoteSurface(
       surface,
       client,
       {
@@ -385,6 +423,15 @@ async function bridgeAgentToParent(
       },
       { log },
     );
+    // Publish this spawn's forwarding stubs for the parent's `kill` handler;
+    // clear them the instant the link dies so a kill in the gap fails honestly
+    // rather than calling into a dead client.
+    liveProcedures.current = mirror.procedures;
+    try {
+      await mirror.done;
+    } finally {
+      liveProcedures.current = null;
+    }
     log(
       `bridge: mirror ended for client #${seq} (link likely died) — awaiting next client`,
     );

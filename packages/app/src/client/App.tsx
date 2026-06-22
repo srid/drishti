@@ -939,6 +939,9 @@ function HostView(props: { host: string }) {
                   ? () => setSelectedPid(s().proc.ppid)
                   : null
               }
+              onKill={(signal) =>
+                app.rpc.surface.process.kill({ pid: s().pid, signal })
+              }
             />
           )}
         </Show>
@@ -1364,8 +1367,24 @@ function ProcessDetail(props: {
   // close. It's a prop (not SelectionContext) because `ProcessDetail` is a
   // sibling of the table, rendered before the context provider in the tree.
   onSelectParent: (() => void) | null;
+  // R7 (kolu #1505): signal this process. Forwarded browser → parent → (mirror
+  // procedure stub) → agent → kill(pid). Resolves with the agent's `{ ok, error }`.
+  onKill: (signal: "TERM" | "KILL") => Promise<{ ok: boolean; error?: string }>;
 }) {
   const p = () => props.process;
+  // Kill-action state: "idle" | "killing" | <error message to show inline>.
+  const [killState, setKillState] = createSignal<string>("idle");
+  const runKill = async (signal: "TERM" | "KILL"): Promise<void> => {
+    setKillState("killing");
+    try {
+      const r = await props.onKill(signal);
+      // On success the process leaves the live set and this panel unmounts; if it
+      // lingers (EPERM, already gone), surface the agent's reason — never silent.
+      setKillState(r.ok ? "idle" : (r.error ?? "kill failed"));
+    } catch (err) {
+      setKillState((err as Error).message);
+    }
+  };
   // Resident memory as a share of host RAM — the same guarded "part of a
   // total" formula `memPct` uses for the host header.
   const memShare = () => pctOf(p().rssBytes, props.memTotal);
@@ -1448,6 +1467,31 @@ function ProcessDetail(props: {
           )}
         </Show>
       </dl>
+      <div class="mt-2 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => runKill("TERM")}
+          disabled={killState() === "killing"}
+          class="cursor-pointer rounded border border-red-300 px-2 py-0.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20"
+          title="Send SIGTERM to this process"
+        >
+          {killState() === "killing" ? "Killing…" : "Kill"}
+        </button>
+        <button
+          type="button"
+          onClick={() => runKill("KILL")}
+          disabled={killState() === "killing"}
+          class="cursor-pointer rounded px-2 py-0.5 text-xs text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+          title="Send SIGKILL (force kill)"
+        >
+          Force
+        </button>
+        <Show when={killState() !== "idle" && killState() !== "killing"}>
+          <span class="text-xs text-red-600 dark:text-red-400">
+            {killState()}
+          </span>
+        </Show>
+      </div>
     </div>
   );
 }

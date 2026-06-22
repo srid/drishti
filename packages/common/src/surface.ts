@@ -7,9 +7,11 @@
  *   - `system`     — singleton cell with load averages, memory, uptime.
  *   - `processes`  — keyed collection (PID → per-process snapshot).
  *
- * The surface is **strictly read-only**: it exposes cells, collections,
- * and streams, but no procedures — there is no way to mutate the
- * monitored host through it.
+ * One imperative escape hatch: the `process.kill` **procedure** — the
+ * first *forwarded procedure* on a mirrored surface (kolu #1505, R7). It
+ * runs on the agent (the host that owns the pids) and the parent forwards
+ * the browser's call to it through `mirrorRemoteSurface`'s total-dual
+ * procedure stub; everything else is read-only cells/collections/streams.
  *
  * Plus a `connection` cell so the parent can stream "copying agent to
  * remote…" lifecycle to the browser while `nix copy` is in flight.
@@ -284,6 +286,23 @@ export const surface = defineSurface({
     metricHistory: {
       inputSchema: z.object({}),
       outputSchema: MetricHistoryMessage,
+    },
+  },
+  procedures: {
+    process: {
+      // Signal a process on the monitored host. The agent owns the pids, so the
+      // handler lives there; the parent forwards the browser's call through the
+      // mirror's procedure stub (kolu #1505 R7). `signal` is the bare name; the
+      // agent maps it to `SIG<name>`. Returns `{ ok }`, with `error` carrying the
+      // reason on failure (ESRCH gone / EPERM not permitted) — surfaced to the
+      // user, never silently swallowed.
+      kill: {
+        input: z.object({
+          pid: PidSchema,
+          signal: z.enum(["TERM", "KILL", "HUP", "INT"]).default("TERM"),
+        }),
+        output: z.object({ ok: z.boolean(), error: z.string().optional() }),
+      },
     },
   },
 });
