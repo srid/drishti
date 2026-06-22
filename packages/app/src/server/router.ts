@@ -330,6 +330,12 @@ async function bridgeAgentToParent(
     let firstSystemFrame = true;
     let frames = 0;
     const issuedAt = Date.now();
+    // R7 (kolu #1505): `mirrorRemoteSurface` returns the total-dual handle
+    // `{ procedures, done }`, no longer `Promise<void>`. The bridge loop must
+    // block until the link dies, so await `.done` — a bare `await
+    // mirrorRemoteSurface(...)` would await a non-thenable handle and resolve
+    // at once, spinning the reconnect loop. (This consumer mirrors streaming
+    // sinks only; `.procedures` is unused here.)
     await mirrorRemoteSurface(
       surface,
       client,
@@ -384,7 +390,7 @@ async function bridgeAgentToParent(
         },
       },
       { log },
-    );
+    ).done;
     log(
       `bridge: mirror ended for client #${seq} (link likely died) — awaiting next client`,
     );
