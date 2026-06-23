@@ -133,12 +133,16 @@ export function surfaceForHost(host: string): HostSurfaceClient {
 /** Close the host's socket and drop the cached client. Call when the
  *  admin collection signals the host was removed — otherwise the
  *  PartySocket keeps trying to reconnect into a server slot that no
- *  longer exists. */
+ *  longer exists. `dispose()` stops the liveness watchdog `connectSurface`
+ *  started: unlike a page-lifetime socket, a removed host's socket is torn
+ *  down mid-session, so the heartbeat's interval/probe timers must be
+ *  cleared here or they leak (and keep probing a closed socket). */
 export function disposeHostSurface(host: string): void {
   const entry = hostCache.get(host);
   if (entry === undefined) return;
   hostCache.delete(host);
   try {
+    entry.dispose();
     entry.ws.close();
   } catch {
     /* best-effort */
