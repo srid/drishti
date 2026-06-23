@@ -17,12 +17,26 @@
  *
  * Insertion order is preserved (JavaScript `Map` semantics) so the
  * tab strip displays hosts in the order the user added them.
+ *
+ * R7 keystone (kolu #1505): the keyed `Map<host, {session, handler}>`
+ * mechanism + its add/remove/reconnect/recheckAll + per-host socket
+ * eviction lifecycle now live in `@kolu/surface-nix-host`'s
+ * `buildHostRegistry` — lifted verbatim-in-shape from this very file, so
+ * pulam-web's terminal-awareness server can share it. drishti keeps a
+ * THIN wrapper here: it owns only the app-specific knowledge the shared
+ * registry deliberately doesn't hold — how a host becomes a `{ session,
+ * handler }` (`buildEntry`: `getHostSession` + `buildRouter` + `new
+ * RPCHandler`), where the host set persists (`saveHosts`), and the
+ * admin-surface wire-shape projection (`snapshot()`). The wrapper's async
+ * signature and `resolveDrvPath`/`hostsFile` options are preserved so
+ * `main.ts` and `admin-router.ts` call it exactly as before.
  */
 
 import { RPCHandler } from "@orpc/server/ws";
 import {
+  buildHostRegistry as buildSharedHostRegistry,
   getHostSession,
-  type HostSession,
+  type HostRegistry as SharedHostRegistry,
 } from "@kolu/surface-nix-host";
 import type { WebSocket as WsConn } from "ws";
 import type { HostEntry } from "../common/admin-surface";
@@ -45,19 +59,18 @@ const log = makeLogger("registry");
 // it answers to, rather than buried in the library's default.
 const CONNECT_TIMEOUT_MS = 30_000;
 
-interface HostHandle {
-  session: HostSession<typeof surface.contract>;
-  // biome-ignore lint/suspicious/noExplicitAny: matches existing router-handler cast (see implementSurface fragment shape).
-  handler: RPCHandler<any>;
-}
+// The shared registry stores a generic handler `H`; drishti's is the
+// oRPC ws `RPCHandler`. Pin `H` to that here so `getHandler` hands back a
+// concrete handler at the upgrade dispatch in `main.ts`.
+// biome-ignore lint/suspicious/noExplicitAny: matches existing router-handler cast (see implementSurface fragment shape).
+type DrishtiHandler = RPCHandler<any>;
 
 export interface HostRegistry {
   has(host: string): boolean;
   /** Project the live host set into the admin surface's wire shape.
    *  Called by the admin router's `readAll` on every new subscriber. */
   snapshot(): Map<string, HostEntry>;
-  // biome-ignore lint/suspicious/noExplicitAny: matches existing router-handler cast.
-  getHandler(host: string): RPCHandler<any> | undefined;
+  getHandler(host: string): DrishtiHandler | undefined;
   /** Spawn a new host session and persist the host set. Throws if the
    *  host already exists. The admin router publishes the per-key channel
    *  update AFTER this resolves, so a new subscriber never sees a host
@@ -99,96 +112,65 @@ export interface HostRegistryOptions {
 export async function buildHostRegistry(
   opts: HostRegistryOptions,
 ): Promise<HostRegistry> {
-  const entries = new Map<string, HostHandle>();
-  const wsConnectionsByHost = new Map<string, Set<WsConn>>();
-
-  const buildEntry = (host: string): HostHandle => {
-    const session = getHostSession<typeof surface.contract>({
-      host,
-      // Resolve the agent .drv lazily, inside the session's spawn cycle,
-      // rather than awaiting the arch probe here. A host that's
-      // unreachable at probe time makes the resolver reject, which the
-      // session treats as an ordinary connection failure (disconnected →
-      // backoff → failed, re-armable via Reconnect) — so it can't throw
-      // out of here before the session exists. That's what keeps one
-      // unreachable initial host from crashing the whole server at boot.
-      resolveDrvPath: () => opts.resolveDrvPath(host),
-      binary: "drishti-agent",
-      connectTimeoutMs: CONNECT_TIMEOUT_MS,
+  // The shared registry owns the keyed map + its full lifecycle. drishti
+  // supplies only `buildEntry` (how a host becomes a session + handler)
+  // and `persist` (where the host set lands on disk). Both stay SYNC for
+  // `buildEntry`: `getHostSession` defers the spawn into the session's own
+  // reconnect machinery, so a host unreachable at boot surfaces as a
+  // per-host `failed` connection state — never a throw that takes the
+  // whole registry (and with it the parent's HTTP port, never bound until
+  // this resolves) down.
+  const shared: SharedHostRegistry<typeof surface.contract, DrishtiHandler> =
+    buildSharedHostRegistry({
+      initialHosts: opts.initialHosts,
+      buildEntry: (host) => {
+        const session = getHostSession<typeof surface.contract>({
+          host,
+          // Resolve the agent .drv lazily, inside the session's spawn
+          // cycle, rather than awaiting the arch probe here. A host that's
+          // unreachable at probe time makes the resolver reject, which the
+          // session treats as an ordinary connection failure (disconnected
+          // → backoff → failed, re-armable via Reconnect) — so it can't
+          // throw out of here before the session exists. That's what keeps
+          // one unreachable initial host from crashing the whole server at
+          // boot.
+          resolveDrvPath: () => opts.resolveDrvPath(host),
+          binary: "drishti-agent",
+          connectTimeoutMs: CONNECT_TIMEOUT_MS,
+        });
+        const { router } = buildRouter({ host, session });
+        // biome-ignore lint/suspicious/noExplicitAny: implementSurface's Lazy<Router> spread isn't accepted by oRPC's Router<any, T> input type; runtime shape is valid.
+        const handler = new RPCHandler(router as any);
+        return { session, handler };
+      },
+      // Persist after every add/remove, awaited before the call resolves
+      // (the shared registry guarantees the ordering) — so the admin
+      // router's announce never races ahead of the on-disk store.
+      persist: (hosts) => saveHosts(opts.hostsFile, hosts),
+      log: (line) => log(line),
     });
-    const { router } = buildRouter({ host, session });
-    // biome-ignore lint/suspicious/noExplicitAny: implementSurface's Lazy<Router> spread isn't accepted by oRPC's Router<any, T> input type; runtime shape is valid.
-    const handler = new RPCHandler(router as any);
-    return { session, handler };
-  };
-
-  // Seed every configured host synchronously. `buildEntry` no longer
-  // awaits anything — the per-host arch probe it used to run up front now
-  // lives inside the session's spawn cycle — so seeding can't reject, and
-  // a host that's unreachable at boot surfaces as a per-host `failed`
-  // connection state instead of taking the whole registry (and with it
-  // the parent's HTTP port, never bound until this resolves) down. The
-  // old code awaited `Promise.all`, whose first rejection propagated to
-  // `main()`'s top-level catch and exited the process before `serve()`.
-  for (const host of opts.initialHosts) entries.set(host, buildEntry(host));
 
   return {
-    has: (host) => entries.has(host),
+    has: (host) => shared.has(host),
+    // The admin surface's wire shape is `Map<host, { host }>`; the shared
+    // registry exposes only the host strings (`hosts()`), so project them
+    // back into the keyed map here. Same projection the old in-file
+    // registry did — admin and registry still can't diverge, because both
+    // read the one `entries` map inside the shared registry.
     snapshot: () => {
       const out = new Map<string, HostEntry>();
-      for (const host of entries.keys()) out.set(host, { host });
+      for (const host of shared.hosts()) out.set(host, { host });
       return out;
     },
-    getHandler: (host) => entries.get(host)?.handler,
-
-    async add(host) {
-      if (entries.has(host)) {
-        throw new Error("host already exists");
-      }
-      entries.set(host, buildEntry(host));
-      await saveHosts(opts.hostsFile, [...entries.keys()]);
-      log(`added host: ${host} (total ${entries.size})`);
-    },
-
-    async remove(host) {
-      const entry = entries.get(host);
-      if (entry === undefined) return;
-      const sockets = wsConnectionsByHost.get(host);
-      if (sockets !== undefined) {
-        for (const ws of sockets) {
-          try {
-            ws.close(1000, "host removed");
-          } catch {
-            /* best-effort */
-          }
-        }
-        wsConnectionsByHost.delete(host);
-      }
-      entry.session.destroy();
-      entries.delete(host);
-      await saveHosts(opts.hostsFile, [...entries.keys()]);
-      log(`removed host: ${host} (total ${entries.size})`);
-    },
-
-    reconnect(host) {
-      entries.get(host)?.session.reconnect();
-    },
-
-    recheckAll() {
-      for (const entry of entries.values()) entry.session.recheck();
-    },
-
-    registerConnection(host, ws) {
-      let set = wsConnectionsByHost.get(host);
-      if (set === undefined) {
-        set = new Set();
-        wsConnectionsByHost.set(host, set);
-      }
-      set.add(ws);
-    },
-
-    unregisterConnection(host, ws) {
-      wsConnectionsByHost.get(host)?.delete(ws);
-    },
+    getHandler: (host) => shared.getHandler(host),
+    add: (host) => shared.add(host),
+    remove: (host) => shared.remove(host),
+    reconnect: (host) => shared.reconnect(host),
+    recheckAll: () => shared.recheckAll(),
+    // `WsConn` (ws's WebSocket) structurally satisfies the shared
+    // registry's `ClosableSocket` (`close(code, reason?)`), so it passes
+    // through without a cast.
+    registerConnection: (host, ws) => shared.registerConnection(host, ws),
+    unregisterConnection: (host, ws) => shared.unregisterConnection(host, ws),
   };
 }
