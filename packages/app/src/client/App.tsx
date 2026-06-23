@@ -21,7 +21,6 @@ import { SurfaceAppProvider, surfaceAppProbe } from "@kolu/surface-app/solid";
 import { Meta, Title } from "@solidjs/meta";
 import {
   type Accessor,
-  batch,
   createContext,
   createEffect,
   createMemo,
@@ -33,9 +32,10 @@ import {
   onCleanup,
   Show,
   type Signal,
+  untrack,
   useContext,
 } from "solid-js";
-import { createStore, reconcile } from "solid-js/store";
+import { createStore } from "solid-js/store";
 import {
   type ConnectionInfo,
   type ConnectionState,
@@ -65,6 +65,7 @@ import {
   pctOf,
 } from "./metrics";
 import { isActiveNic } from "./nic";
+import { applyProcessesMessage } from "./processesStream";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import {
   DEFAULT_HISTORY_WINDOW,
@@ -735,48 +736,36 @@ function HostView(props: { host: string }) {
   // Which PID is expanded into the detail panel (null = none). Ephemeral —
   // not a per-host persisted pref: it's a transient focus, not a setting to
   // restore across reloads. Cleared at the source when its process exits (the
-  // delta `removes` loop below) so the panel never has to special-case a
-  // vanished pid — the same "resolve focus against the live set" shape the
-  // app-level `resolvedView` uses when a host disappears.
+  // `onRemoved` callback the snapshot effect below hands `applyProcessesMessage`)
+  // so the panel never has to special-case a vanished pid — the same "resolve
+  // focus against the live set" shape the app-level `resolvedView` uses when a
+  // host disappears.
   const [selectedPid, setSelectedPid] = createSignal<Pid | null>(null);
   const toggleSelected = (pid: Pid) =>
     setSelectedPid((cur) => (cur === pid ? null : pid));
 
-  const ctl = new AbortController();
-  onCleanup(() => ctl.abort());
-  void (async () => {
-    try {
-      const stream = await streamCall(
-        app.rpc.surface.processesSnapshot.get,
-        {},
-        { signal: ctl.signal },
-      );
-      for await (const msg of stream) {
-        if (msg.kind === "snapshot") {
-          const next: Record<Pid, Process> = {};
-          for (const [pid, value] of msg.entries) next[pid] = value;
-          setProcesses(reconcile(next));
-        } else {
-          // Wrap the per-PID setProcesses calls in a single batch so the
-          // downstream visiblePids memo, the <For> reconciler, and every
-          // per-cell reactive read fire ONCE per delta, not once per PID.
-          // Without batch(), a 470-PID tick re-runs each dependent up to
-          // 470 times, leaving Solid's <For> shuffling tr nodes through
-          // a long sequence of intermediate orderings before settling.
-          batch(() => {
-            for (const [pid, value] of msg.upserts) setProcesses(pid, value);
-            for (const pid of msg.removes) {
-              setProcesses(pid, undefined!);
-              if (selectedPid() === pid) setSelectedPid(null);
-            }
-          });
-        }
-      }
-    } catch (err) {
-      if (!ctl.signal.aborted)
-        console.error("processesSnapshot stream failed", err);
-    }
-  })();
+  // The live process table, consumed through the declarative reactive stream
+  // hook: `.streams.use()` owns the subscription lifecycle (re-subscribe on a
+  // transport drop, teardown on unmount), replacing the hand-rolled
+  // AbortController + `for await` loop this used to be. This is the same
+  // `.streams.use()` + `reconcile` consumer kolu's Code tab and
+  // remote-terminals R8b ride on (see docs/atlas pulam-web — Step 0). The
+  // snapshot|delta union is still folded into the store here — the stream
+  // isn't value-bearing — with the batch + reconcile reasoning kept in
+  // `applyProcessesMessage`.
+  const snapshot = app.streams.processesSnapshot.use(() => ({}), {
+    onError: (err) => console.error("processesSnapshot stream failed", err),
+  });
+  createEffect(() => {
+    const msg = snapshot();
+    if (msg === undefined) return;
+    applyProcessesMessage(msg, setProcesses, (pid) => {
+      // `untrack`: this effect must depend ONLY on `snapshot()`. Reading
+      // `selectedPid` reactively would re-run the fold on every selection
+      // change, re-applying the last delta; the setter never tracks.
+      if (untrack(selectedPid) === pid) setSelectedPid(null);
+    });
+  });
 
   // Escape closes the panel — the conventional dismiss key, wired once for the
   // host body and torn down with it.
@@ -875,11 +864,13 @@ function HostView(props: { host: string }) {
     );
   const windowMs = createMemo(() => windowMsFor(historyWindow()));
 
-  // Reuses `ctl` so the metricHistory stream shares this HostView's
-  // mount/cleanup lifecycle with processesSnapshot — one controller tears
-  // both down on unmount. The fleet card runs the same two steps off its own
-  // controller (see `subscribeMetricHistory` / `projectHistory`).
-  const { history, streamError } = subscribeMetricHistory(app, ctl.signal);
+  // metricHistory is still consumed imperatively (Step 0 graduates only the
+  // process list); its own AbortController tears the stream down on unmount.
+  // The fleet card runs the same step off its own controller (see
+  // `subscribeMetricHistory` / `projectHistory`).
+  const metricsCtl = new AbortController();
+  onCleanup(() => metricsCtl.abort());
+  const { history, streamError } = subscribeMetricHistory(app, metricsCtl.signal);
   const { latest: latestSample, points } = projectHistory(history, windowMs);
 
   // The currently-selected process resolved against the live store: null when

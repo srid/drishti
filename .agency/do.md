@@ -7,7 +7,14 @@ bun run typecheck
 just fmt
 
 ## Test command
-bun test
+just test
+
+<!-- `just test` runs `bun test --conditions=browser` so solid-js resolves to
+its client build — under the default `node` condition solid's SSR build makes
+createEffect/createStore reactivity a silent no-op, so reactive client tests
+pass vacuously. Not wired into the odu CI pipeline (typecheck + nix/fmt only);
+tests are run locally / by reviewers. NOTE: surface.test.ts fails on master
+independently of this change (pre-existing). -->
 
 ## CI command
 The runner is **odu** (`github:juspay/odu`, which replaced justci — it ships
