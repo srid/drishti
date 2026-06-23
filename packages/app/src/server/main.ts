@@ -30,9 +30,8 @@ import { z } from "zod";
 import { destroyAllSessions } from "@kolu/surface-nix-host";
 import { gateWsOrigin, parseAllowedOrigins } from "@kolu/surface/ws-origin";
 import {
-  gateStaleSocket,
+  acceptSurfaceSocket,
   installSurfaceApp,
-  startWsHeartbeat,
 } from "@kolu/surface-app/server";
 import { ADMIN_HOST_SENTINEL, isValidHost } from "../common/host";
 import { BRAND_DARK } from "../client/brand";
@@ -239,14 +238,29 @@ async function main(): Promise<void> {
     maxPayload: 8 * 1024 * 1024,
   });
 
-  // Liveness heartbeat (@kolu/surface-app): ping accepted sockets and terminate
-  // any that stop ponging, reaping the server-side zombie a half-open browser
-  // (laptop sleep, Wi-Fi roam, a NAT/proxy dropping an idle connection) would
-  // otherwise leak. Covers BOTH the admin control-plane socket and every per-host
-  // socket — each registers below, after the stale-tab gate. The browser's own
-  // recovery is automatic: the admin socket rides `<SurfaceAppProvider>`'s turnkey
-  // source, which now starts a `createHeartbeat` watchdog itself.
-  const heartbeat = startWsHeartbeat(wss);
+  // Acceptance seam (@kolu/surface-app, kolu#1545): `acceptSurfaceSocket` owns the
+  // liveness reaper AND sequences stale-gate → enrol → dispatch in one
+  // `accept(ws, requestUrl, onAccepted)` call. The reaper pings accepted sockets
+  // and terminates any that stop ponging, reaping the server-side zombie a
+  // half-open browser (laptop sleep, Wi-Fi roam, a NAT/proxy dropping an idle
+  // connection) would otherwise leak — covering BOTH the admin control-plane
+  // socket and every per-host socket. `liveProcessId` is the id the
+  // `identity.info` probe reports, so the stale-tab gate and the probe
+  // single-source. `onError`/`onReject` receive the upgrade `requestUrl` so we
+  // re-derive `?host=` for the per-host log line. The browser's own recovery is
+  // automatic: the admin socket rides `<SurfaceAppProvider>`'s turnkey source,
+  // which starts a `createHeartbeat` watchdog itself; the per-host sockets now
+  // carry `connectSurface`'s default-on watchdog (see client/wire.ts).
+  const acceptor = acceptSurfaceSocket({
+    server: wss,
+    liveProcessId: admin.processId,
+    onError: (err, url) =>
+      log(`browser ws error (host=${url.searchParams.get("host")}): ${err.message}`),
+    onReject: (_pid, url) =>
+      log(
+        `rejecting stale browser ws (host=${url.searchParams.get("host")}) — parent restarted`,
+      ),
+  });
 
   // ── WebSocket upgrade: parse ?host=<id>, then dispatch directly ──────
   // The `host` variable is closed over in the handleUpgrade callback so
@@ -301,60 +315,45 @@ async function main(): Promise<void> {
       socket as Parameters<typeof wss.handleUpgrade>[1],
       head as Parameters<typeof wss.handleUpgrade>[2],
       (ws) => {
-        // Stale-tab handshake gate (@kolu/surface-app): a tab that reconnects
-        // after a PARENT restart still carries the previous process's `pid`.
-        // `gateStaleSocket` installs the `error` listener FIRST (the one crash-free
-        // order), reads the claimed `pid` off the request URL, and on a stale tab
-        // closes with STALE_PROCESS_CLOSE_CODE before the oRPC handler upgrades —
-        // so its live subscriptions never replay against a process that never had
-        // them. An absent `pid` (the first-ever connect) always passes.
-        // `admin.processId` is the live id the `identity.info` probe reports, so
-        // the gate and the probe single-source. The installed `error` listener
-        // persists for the connection lifetime — so the per-branch handlers below
-        // no longer re-install one.
-        if (
-          gateStaleSocket(ws, url, admin.processId, {
-            onError: (err) =>
-              log(`browser ws error (host=${host}): ${err.message}`),
-            onReject: () =>
+        // The acceptance seam (@kolu/surface-app, kolu#1545): one call runs the
+        // stale-tab gate (a tab that reconnects after a PARENT restart still
+        // carries the previous process's `pid` — gated and closed before the
+        // oRPC handler upgrades, so its live subscriptions never replay against
+        // a process that never had them; an absent `pid`, the first-ever
+        // connect, always passes), enrols the accepted socket in the liveness
+        // reaper, and only THEN runs the dispatch closure below — sequenced so a
+        // socket can't be dispatched without first being gated and enrolled. A
+        // stale tab is closed and the closure never runs.
+        acceptor.accept(ws, url, () => {
+          if (host === ADMIN_HOST_SENTINEL) {
+            log("browser ws connect (admin)");
+            ws.on("close", (code, reason) =>
               log(
-                `rejecting stale browser ws (host=${host}) — parent restarted`,
+                `browser ws disconnect (admin) (code=${code} reason=${reason.toString() || "<none>"})`,
               ),
-          })
-        )
-          return;
-        // Accepted socket (gate passed): enrol it in the liveness heartbeat so a
-        // half-open client is reaped here. One call covers both branches below;
-        // gate-rejected sockets already returned.
-        heartbeat.register(ws);
-        if (host === ADMIN_HOST_SENTINEL) {
-          log("browser ws connect (admin)");
-          ws.on("close", (code, reason) =>
+            );
+            void adminHandler.upgrade(
+              ws as unknown as Parameters<typeof adminHandler.upgrade>[0],
+            );
+            return;
+          }
+          const handler = registry.getHandler(host);
+          if (handler === undefined) {
+            ws.close(1008, `unknown host: ${host}`);
+            return;
+          }
+          registry.registerConnection(host, ws);
+          log(`browser ws connect (host=${host})`);
+          ws.on("close", (code, reason) => {
+            registry.unregisterConnection(host, ws);
             log(
-              `browser ws disconnect (admin) (code=${code} reason=${reason.toString() || "<none>"})`,
-            ),
-          );
-          void adminHandler.upgrade(
-            ws as unknown as Parameters<typeof adminHandler.upgrade>[0],
-          );
-          return;
-        }
-        const handler = registry.getHandler(host);
-        if (handler === undefined) {
-          ws.close(1008, `unknown host: ${host}`);
-          return;
-        }
-        registry.registerConnection(host, ws);
-        log(`browser ws connect (host=${host})`);
-        ws.on("close", (code, reason) => {
-          registry.unregisterConnection(host, ws);
-          log(
-            `browser ws disconnect (host=${host}) (code=${code} reason=${reason.toString() || "<none>"})`,
+              `browser ws disconnect (host=${host}) (code=${code} reason=${reason.toString() || "<none>"})`,
+            );
+          });
+          void handler.upgrade(
+            ws as unknown as Parameters<typeof handler.upgrade>[0],
           );
         });
-        void handler.upgrade(
-          ws as unknown as Parameters<typeof handler.upgrade>[0],
-        );
       },
     );
   });
@@ -363,7 +362,7 @@ async function main(): Promise<void> {
     log(`${sig}: destroying host sessions`);
     stopWakeMonitor();
     destroyAllSessions();
-    heartbeat.stop();
+    acceptor.stop();
     wss.close();
     for (const ws of wss.clients) {
       try {

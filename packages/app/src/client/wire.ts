@@ -11,15 +11,30 @@
  * from the admin collection so the cache doesn't leak.
  */
 
+import type { ContractRouterClient } from "@orpc/contract";
 import { websocketLink } from "@kolu/surface/links/websocket";
-import { surfaceClient, surfaceClients } from "@kolu/surface/solid";
+import { type SurfaceClient, surfaceClients } from "@kolu/surface/solid";
 import {
   createProcessIdEcho,
   createSurfaceSocket,
 } from "@kolu/surface-app/connect";
+import { connectSurface } from "@kolu/surface-app/solid";
 import { adminContract, adminSurfaces } from "../common/admin-surface";
 import { ADMIN_HOST_SENTINEL } from "../common/host";
 import { surface } from "drishti-common";
+
+// The per-host client's typed imperative `.rpc` — `app.rpc.surface.<prim>.<verb>`
+// for `metricHistory` / `processesSnapshot` / `process.kill`. `connectSurface`
+// builds the link internally and so returns `SurfaceClient<S>` with `.rpc: unknown`
+// (kolu's `SurfaceClient` infers `Rpc` from the link argument, which only a call
+// site that constructs the link can pin — see the typing note on `SurfaceClient`).
+// The runtime `.rpc` IS a `websocketLink<typeof surface.contract>`, so re-pinning
+// the contract type here is sound; the bound `.cells`/`.collections`/`.streams`
+// hooks are already typed off the surface spec and need no help.
+type HostSurfaceClient = SurfaceClient<
+  typeof surface.spec,
+  ContractRouterClient<typeof surface.contract>
+>;
 
 // ONE shared `pid` echo across every socket (per-host + admin). The parent mints
 // a fresh `processId` per boot; the echo threads the last-known one back as the
@@ -42,21 +57,20 @@ function wsBaseFor(host: string): string {
 // `nix copy`, so the connect deadline is bumped well past partysocket's 4s
 // default — without this, the socket flaps repeatedly during the first connect.
 //
-// `retire` controls who tears the socket down on a stale-close: the per-host
-// sockets have no provider lifecycle, so they self-retire on a stale-close
-// (`retire: true`). The admin socket is owned by `<SurfaceAppProvider>`'s turnkey
-// `{ ws, probe }` source, which retires it itself — so it opts out (`retire:
-// false`) to avoid a double-retire.
-function makeSocket(host: string, retire: boolean) {
+// The admin socket does NOT self-retire on a stale-close: it's owned by
+// `<SurfaceAppProvider>`'s turnkey `{ ws, probe }` source, which retires it
+// itself — so `retireOnStaleClose` is omitted here to avoid a double-retire.
+// (The per-host sockets, which have no provider, self-retire — see
+// `buildHostSurface`.)
+function makeAdminSocket() {
   return createSurfaceSocket({
-    url: () => wsBaseFor(host),
+    url: () => wsBaseFor(ADMIN_HOST_SENTINEL),
     echo,
     socketOptions: {
       connectionTimeout: 60_000,
       minReconnectionDelay: 2_000,
       maxReconnectionDelay: 15_000,
     },
-    retireOnStaleClose: retire,
   }).ws;
 }
 
@@ -64,19 +78,33 @@ type HostClient = ReturnType<typeof buildHostSurface>;
 type AdminClient = ReturnType<typeof buildAdminSurface>;
 
 function buildHostSurface(host: string) {
-  // Per-host sockets own their stale-close retirement — no provider watches them.
-  const ws = makeSocket(host, true);
-  const client = surfaceClient(
+  // The per-host seam (kolu#1545): `connectSurface` builds the socket + reactive
+  // client AND a DEFAULT-ON half-open liveness watchdog (probes the framework-
+  // reserved `system.live` round-trip — no probe to supply) in one call. These
+  // per-host sockets are the blind spot the admin socket never had: they had no
+  // client-side half-open detection, so a wedged-but-not-closed link (laptop
+  // sleep, Wi-Fi roam, a NAT dropping an idle connection) went unnoticed until a
+  // user interaction failed. The watchdog now reaps it. They self-retire on a
+  // stale-close (`retireOnStaleClose: true`) — no provider lifecycle watches them.
+  // `status` (connecting / live / reconnecting / down) is available for a
+  // per-host connection indicator if a host card wants one.
+  return connectSurface({
     surface,
-    websocketLink<typeof surface.contract>(ws as unknown as WebSocket),
-  );
-  return { ws, client };
+    url: () => wsBaseFor(host),
+    echo,
+    socketOptions: {
+      connectionTimeout: 60_000,
+      minReconnectionDelay: 2_000,
+      maxReconnectionDelay: 15_000,
+    },
+    retireOnStaleClose: true,
+  });
 }
 
 function buildAdminSurface() {
   // The admin socket is owned by `<SurfaceAppProvider>`'s turnkey source, which
   // retires it on a stale-restart itself (kolu#1231) — so it opts out here.
-  const ws = makeSocket(ADMIN_HOST_SENTINEL, false);
+  const ws = makeAdminSocket();
   // The admin transport multiplexes TWO sibling surfaces (kolu#1197/#1201):
   // drishti's own `admin` surface (the host set + procedures) and surface-app's
   // complete surface (`buildInfo` + the `identity.info` probe). `surfaceClients`
@@ -93,13 +121,13 @@ const hostCache = new Map<string, HostClient>();
 /** Get the (cached) surface client for `host`. The first call opens
  *  the PartySocket; subsequent calls return the same instance so a tab
  *  remount preserves the live connection. */
-export function surfaceForHost(host: string) {
+export function surfaceForHost(host: string): HostSurfaceClient {
   let entry = hostCache.get(host);
   if (entry === undefined) {
     entry = buildHostSurface(host);
     hostCache.set(host, entry);
   }
-  return entry.client;
+  return entry.client as HostSurfaceClient;
 }
 
 /** Close the host's socket and drop the cached client. Call when the
