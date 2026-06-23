@@ -46,6 +46,15 @@ dev host='localhost' *args: install
 typecheck: install
     {{ nix_shell }} bun run typecheck
 
+# Run the test suite. `--conditions=browser` resolves solid-js to its client
+# build (dist/solid.js): under bun's default `node` condition solid resolves to
+# its inert SSR build, where createEffect/createStore reactivity silently
+# no-ops — so a reactive client test (e.g. processesStream.test.ts) would pass
+# vacuously. The flag is safe for the node-side agent/server tests; their
+# resolution is unchanged.
+test *args: install
+    {{ nix_shell }} bun test --conditions=browser {{ args }}
+
 # Format all *.nix files (and any future biome target — drishti doesn't
 # bring biome in by default; add when JS formatting becomes a chore).
 fmt:

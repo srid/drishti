@@ -197,8 +197,12 @@ export const DEFAULT_CONNECTION: z.infer<typeof ConnectionSchema> = {
  *  high-latency `ssh` link; this stream yields the entire keyed map
  *  in one frame (snapshot) then per-tick delta sets. The UI consumes
  *  this for the htop table; the per-key `processes` collection stays
- *  on the surface for "watch one specific PID" use cases. */
-const ProcessesSnapshotMessage = z.discriminatedUnion("kind", [
+ *  on the surface for "watch one specific PID" use cases.
+ *
+ *  Exported so the browser-side consumer's hermetic test can stand up a
+ *  minimal surface carrying this exact wire schema (see
+ *  `app/src/client/processesStream.test.ts`). */
+export const ProcessesSnapshotMessage = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("snapshot"),
     entries: z.array(z.tuple([PidSchema, ProcessSchema])),

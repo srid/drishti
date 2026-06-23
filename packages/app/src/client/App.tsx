@@ -15,13 +15,13 @@
  */
 
 import { streamCall } from "@kolu/surface/client";
+import { createSubscription } from "@kolu/surface/solid";
 import { STALE_PROCESS_CLOSE_CODE } from "@kolu/surface-app";
 import { shellCommit } from "@kolu/surface-app/lifecycle";
 import { SurfaceAppProvider, surfaceAppProbe } from "@kolu/surface-app/solid";
 import { Meta, Title } from "@solidjs/meta";
 import {
   type Accessor,
-  batch,
   createContext,
   createEffect,
   createMemo,
@@ -35,7 +35,6 @@ import {
   type Signal,
   useContext,
 } from "solid-js";
-import { createStore, reconcile } from "solid-js/store";
 import {
   type ConnectionInfo,
   type ConnectionState,
@@ -48,6 +47,7 @@ import {
   type NetInterface,
   type Pid,
   type Process,
+  type ProcessesSnapshotMsg,
   type SystemInfo,
 } from "drishti-common";
 import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
@@ -65,6 +65,7 @@ import {
   pctOf,
 } from "./metrics";
 import { isActiveNic } from "./nic";
+import { foldProcessesMessage } from "./processesStream";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import {
   DEFAULT_HISTORY_WINDOW,
@@ -730,53 +731,55 @@ function HostView(props: { host: string }) {
       .catch((err) => console.error(`reconnect ${props.host} failed`, err));
   };
 
-  const [processes, setProcesses] = createStore<Record<Pid, Process>>({});
+  // The live process table, consumed as a declarative value-bearing reactive
+  // subscription: `createSubscription` folds every snapshot|delta frame in-loop
+  // (via `foldProcessesMessage`) into the full process map, replacing the
+  // hand-rolled `streamCall` + `for await` loop this used to be. The table
+  // renders FINE-GRAINED off `processes()` below (`processes()[pid].cpuPct`),
+  // so an in-place `reconcile` leaf update re-notifies just that cell — reading
+  // the whole map coarsely and copying it into a store would drop same-shape
+  // deltas (the R8b lesson). `.streams.use()` exposes no `reduce`, so this
+  // drops one level to `createSubscription` (same reactive family); the
+  // AbortController stays only to abort the underlying stream on unmount.
+  const processesCtl = new AbortController();
+  onCleanup(() => processesCtl.abort());
+  const processesSub = createSubscription<
+    ProcessesSnapshotMsg,
+    Record<Pid, Process>
+  >(
+    () =>
+      streamCall(
+        app.rpc.surface.processesSnapshot.get,
+        {},
+        { signal: processesCtl.signal },
+      ),
+    {
+      reduce: foldProcessesMessage,
+      initial: {},
+      signal: processesCtl.signal,
+      onError: (err) => console.error("processesSnapshot stream failed", err),
+    },
+  );
+  const processes = (): Record<Pid, Process> => processesSub() ?? {};
 
   // Which PID is expanded into the detail panel (null = none). Ephemeral —
   // not a per-host persisted pref: it's a transient focus, not a setting to
-  // restore across reloads. Cleared at the source when its process exits (the
-  // delta `removes` loop below) so the panel never has to special-case a
-  // vanished pid — the same "resolve focus against the live set" shape the
-  // app-level `resolvedView` uses when a host disappears.
+  // restore across reloads. Cleared when its process exits (the effect just
+  // below) so the panel never has to special-case a vanished pid — the same
+  // "resolve focus against the live set" shape the app-level `resolvedView`
+  // uses when a host disappears.
   const [selectedPid, setSelectedPid] = createSignal<Pid | null>(null);
   const toggleSelected = (pid: Pid) =>
     setSelectedPid((cur) => (cur === pid ? null : pid));
 
-  const ctl = new AbortController();
-  onCleanup(() => ctl.abort());
-  void (async () => {
-    try {
-      const stream = await streamCall(
-        app.rpc.surface.processesSnapshot.get,
-        {},
-        { signal: ctl.signal },
-      );
-      for await (const msg of stream) {
-        if (msg.kind === "snapshot") {
-          const next: Record<Pid, Process> = {};
-          for (const [pid, value] of msg.entries) next[pid] = value;
-          setProcesses(reconcile(next));
-        } else {
-          // Wrap the per-PID setProcesses calls in a single batch so the
-          // downstream visiblePids memo, the <For> reconciler, and every
-          // per-cell reactive read fire ONCE per delta, not once per PID.
-          // Without batch(), a 470-PID tick re-runs each dependent up to
-          // 470 times, leaving Solid's <For> shuffling tr nodes through
-          // a long sequence of intermediate orderings before settling.
-          batch(() => {
-            for (const [pid, value] of msg.upserts) setProcesses(pid, value);
-            for (const pid of msg.removes) {
-              setProcesses(pid, undefined!);
-              if (selectedPid() === pid) setSelectedPid(null);
-            }
-          });
-        }
-      }
-    } catch (err) {
-      if (!ctl.signal.aborted)
-        console.error("processesSnapshot stream failed", err);
-    }
-  })();
+  // Clear a selection whose process has left the set. The `selected` memo
+  // below also resolves to null mid-tick, but clearing the signal here keeps a
+  // later-reused pid from silently re-opening the panel. Tracks only the
+  // selected pid's slot (not its fields), so a cpu/mem tick doesn't re-run it.
+  createEffect(() => {
+    const pid = selectedPid();
+    if (pid !== null && processes()[pid] === undefined) setSelectedPid(null);
+  });
 
   // Escape closes the panel — the conventional dismiss key, wired once for the
   // host body and torn down with it.
@@ -808,7 +811,7 @@ function HostView(props: { host: string }) {
   );
 
   const allPids = createMemo<Pid[]>(() =>
-    Object.keys(processes).map((k) => Number(k)),
+    Object.keys(processes()).map((k) => Number(k)),
   );
 
   const cores = app.collections.cpuCores.use({
@@ -841,13 +844,14 @@ function HostView(props: { host: string }) {
     const pids = allPids();
     const key = sortKey();
     const filtered: Pid[] = [];
+    const procs = processes();
     if (q.length === 0) {
       for (const pid of pids) {
-        if (processes[pid] !== undefined) filtered.push(pid);
+        if (procs[pid] !== undefined) filtered.push(pid);
       }
     } else {
       for (const pid of pids) {
-        const proc = processes[pid];
+        const proc = procs[pid];
         if (proc === undefined) continue;
         if (
           String(pid).includes(q) ||
@@ -858,7 +862,7 @@ function HostView(props: { host: string }) {
           filtered.push(pid);
       }
     }
-    filtered.sort(pidComparator(key, processes));
+    filtered.sort(pidComparator(key, procs));
     return filtered;
   });
 
@@ -875,11 +879,13 @@ function HostView(props: { host: string }) {
     );
   const windowMs = createMemo(() => windowMsFor(historyWindow()));
 
-  // Reuses `ctl` so the metricHistory stream shares this HostView's
-  // mount/cleanup lifecycle with processesSnapshot — one controller tears
-  // both down on unmount. The fleet card runs the same two steps off its own
-  // controller (see `subscribeMetricHistory` / `projectHistory`).
-  const { history, streamError } = subscribeMetricHistory(app, ctl.signal);
+  // metricHistory is still consumed imperatively (Step 0 graduates only the
+  // process list); its own AbortController tears the stream down on unmount.
+  // The fleet card runs the same step off its own controller (see
+  // `subscribeMetricHistory` / `projectHistory`).
+  const metricsCtl = new AbortController();
+  onCleanup(() => metricsCtl.abort());
+  const { history, streamError } = subscribeMetricHistory(app, metricsCtl.signal);
   const { latest: latestSample, points } = projectHistory(history, windowMs);
 
   // The currently-selected process resolved against the live store: null when
@@ -889,7 +895,7 @@ function HostView(props: { host: string }) {
   const selected = createMemo<{ pid: Pid; proc: Process } | null>(() => {
     const pid = selectedPid();
     if (pid === null) return null;
-    const proc = processes[pid];
+    const proc = processes()[pid];
     return proc === undefined ? null : { pid, proc };
   });
 
@@ -935,7 +941,7 @@ function HostView(props: { host: string }) {
               memTotal={currentSystem().memTotal}
               onClose={() => setSelectedPid(null)}
               onSelectParent={
-                processes[s().proc.ppid] !== undefined
+                processes()[s().proc.ppid] !== undefined
                   ? () => setSelectedPid(s().proc.ppid)
                   : null
               }
@@ -1207,7 +1213,7 @@ function FailedCard(props: {
 
 function ProcessTable(props: {
   pids: readonly Pid[];
-  processes: Record<Pid, Process>;
+  processes: Accessor<Record<Pid, Process>>;
   sortKey: SortKey;
   onSort: (k: SortKey) => void;
 }) {
@@ -1268,10 +1274,10 @@ function ProcessTable(props: {
 // per-field via Solid's store proxy.
 function ProcessRow(props: {
   pid: Pid;
-  processes: Record<Pid, Process>;
+  processes: Accessor<Record<Pid, Process>>;
 }) {
   const selection = useContext(SelectionContext);
-  const proc = () => props.processes[props.pid];
+  const proc = () => props.processes()[props.pid];
   const cpu = () => proc()?.cpuPct ?? 0;
   const rssBytes = () => proc()?.rssBytes ?? 0;
   const isSelected = () => selection?.selectedPid() === props.pid;
