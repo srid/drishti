@@ -1,40 +1,36 @@
-import { batch } from "solid-js";
-import { reconcile, type SetStoreFunction } from "solid-js/store";
 import type { Pid, Process, ProcessesSnapshotMsg } from "drishti-common";
 
 /**
- * Fold one `processesSnapshot` frame into the live process store.
+ * Fold one `processesSnapshot` frame into the accumulated process map.
  *
- * The stream is snapshot-then-delta, not value-bearing, so the consumer has
- * to accumulate. A `snapshot` frame `reconcile`s the whole map — the
- * structural diff keeps row identity stable so `<For>` reuses DOM instead of
- * churning every row. A `delta` frame applies its upserts/removes inside a
- * single `batch` so each dependent memo and the `<For>` reconciler fire once
- * per tick, not once per PID (a 470-PID tick would otherwise re-run every
- * dependent up to 470 times, shuffling `<tr>` nodes through intermediate
- * orderings before settling).
+ * The stream is snapshot-then-delta — **delta-accumulate, not value-bearing**:
+ * each frame is a *change*, not the full state, so the consumer must
+ * accumulate. A `snapshot` frame replaces the whole map; a `delta` frame
+ * applies its upserts/removes onto a copy of the previous map.
  *
- * `onRemoved` fires for each removed PID so the caller can drop a selection
- * pointing at a now-gone process. Lives here (rather than inline in
- * `<HostView>`'s `.streams.processesSnapshot.use()` effect) so the fold has a
- * single home and the hermetic test drives the exact production reduction.
+ * Used as `createSubscription`'s `reduce`, so every frame is folded in the
+ * subscription's own `for await` loop (no frame can be coalesced away) and the
+ * accumulated map becomes a value-bearing reactive value the table renders
+ * **fine-grained** — a row reads `processes()[pid].cpuPct`, so an in-place
+ * `reconcile` leaf update re-notifies that one cell. Reading the whole map
+ * coarsely and copying it into a separate store would instead drop a
+ * same-shape delta (a leaf ticking under an unchanged key set never re-fires a
+ * coarse reader) — the bug this fold's call site was rewritten to avoid.
+ *
+ * Kept here (not inline at the call site) so the reduction has a single home
+ * and the hermetic test drives the exact production fold.
  */
-export function applyProcessesMessage(
+export function foldProcessesMessage(
+  acc: Record<Pid, Process>,
   msg: ProcessesSnapshotMsg,
-  setProcesses: SetStoreFunction<Record<Pid, Process>>,
-  onRemoved: (pid: Pid) => void,
-): void {
+): Record<Pid, Process> {
   if (msg.kind === "snapshot") {
     const next: Record<Pid, Process> = {};
     for (const [pid, value] of msg.entries) next[pid] = value;
-    setProcesses(reconcile(next));
-    return;
+    return next;
   }
-  batch(() => {
-    for (const [pid, value] of msg.upserts) setProcesses(pid, value);
-    for (const pid of msg.removes) {
-      setProcesses(pid, undefined!);
-      onRemoved(pid);
-    }
-  });
+  const next = { ...acc };
+  for (const [pid, value] of msg.upserts) next[pid] = value;
+  for (const pid of msg.removes) delete next[pid];
+  return next;
 }
