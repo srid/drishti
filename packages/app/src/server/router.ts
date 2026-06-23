@@ -16,6 +16,15 @@
  * The surface is strictly read-only — it carries no procedures, so the
  * parent only ever mirrors agent data inward; it never forwards a
  * mutation back to the host.
+ *
+ * R7 keystone (kolu #1505): the reconnect-mirror loop that used to live
+ * here as `bridgeAgentToParent` is now `@kolu/surface-nix-host`'s
+ * `pumpRemoteSurface` — lifted verbatim-in-shape from this file so
+ * pulam-web's terminal-awareness server can share it. drishti keeps only
+ * the surface-specific knowledge the pump deliberately doesn't hold: the
+ * per-spawn sink (`makeSink`) that folds the agent's `system` / `cpuCores`
+ * / `networkInterfaces` / `processesSnapshot` frames into the parent's
+ * local surface, and the `liveProcedures` holder the `kill` forward reads.
  */
 
 import { implement } from "@orpc/server";
@@ -27,14 +36,10 @@ import {
   inMemoryChannelByName,
   inMemoryStore,
 } from "@kolu/surface/server";
+import { type ProcedureForwarders } from "@kolu/surface/mirror";
 import {
-  mirrorRemoteSurface,
-  type ProcedureForwarders,
-} from "@kolu/surface/mirror";
-import {
-  type AgentClient,
   type HostSession,
-  makeClientCursor,
+  pumpRemoteSurface,
 } from "@kolu/surface-nix-host";
 import {
   type ConnectionInfo,
@@ -58,8 +63,6 @@ import {
   pushSample,
 } from "../common/history";
 import { type Logger, makeLogger } from "./log";
-
-type DrishtiAgent = AgentClient<typeof surface.contract>;
 
 export interface BuildRouterOptions {
   /** The host this router bridges — used only to tag the bridge's log
@@ -108,7 +111,7 @@ export function buildRouter(opts: BuildRouterOptions) {
   // R7 (kolu #1505): the browser's `process.kill` is forwarded to the agent
   // through the MIRROR's procedure stub — the first forwarded procedure on a
   // mirrored surface. The mirror is re-issued per spawn (stdio doesn't recover
-  // mid-stream), so the live stub set lives in this holder: the bridge sets it
+  // mid-stream), so the live stub set lives in this holder: the pump sets it
   // on each connect and clears it when the link dies. A kill with no live agent
   // reports `{ ok: false }` rather than silently no-op'ing.
   const liveProcedures: {
@@ -210,14 +213,18 @@ export function buildRouter(opts: BuildRouterOptions) {
   });
 
   // Compile-time guard for the least-privilege narrowing: the real
-  // fragment must satisfy the pumps' write-only view. Stated here (not only
-  // implied by the bridgeAgentToParent call) so a refactor of that call
+  // fragment must satisfy the pump sink's write-only view. Stated here (not
+  // only implied by the `makeSink` closure below) so a refactor of that sink
   // can't quietly drop the check — a surface collection rename surfaces as
   // an error on this line.
   const _pumpCtx: FragmentCtx = fragment;
   void _pumpCtx;
 
   // ── Mirror session connection state → parent's `connection` cell ──
+  // Lives OUTSIDE the pump: the connection cell tracks the *session's*
+  // state (copying / connecting / failed), not any frame the agent sends,
+  // so it's wired straight off `session.onState` and never flows through
+  // the mirror sink.
   session.onState((s) => {
     fragment.ctx.cells.connection.set({
       state: s.connection,
@@ -243,135 +250,32 @@ export function buildRouter(opts: BuildRouterOptions) {
   };
 
   // ── Bridge remote agent surface → parent's local surface ──────────
-  // Start a background pump that pins the session, then loops over each
-  // successive AgentClient the session produces — each time the agent
-  // process is respawned (after a transport drop), the bridge fetches
-  // the new client and re-issues ONE `mirrorRemoteSurface` against it. The
-  // framework's `ClientRetryPlugin` is NOT load-bearing here: stdio links
-  // don't recover mid-stream (the underlying streams die with the process),
-  // so the only reliable recovery is to re-mirror on the *new* client. The
-  // outer loop is what implements "reconnect → state reconciles, no ghosts".
-  void bridgeAgentToParent(
-    log,
+  // `pumpRemoteSurface` (R7 keystone) pins the session, then loops over
+  // each successive AgentClient the session produces — each time the agent
+  // process is respawned (after a transport drop), the pump fetches the new
+  // client and re-issues ONE `mirrorRemoteSurface` against the sink built
+  // below. The framework's `ClientRetryPlugin` is NOT load-bearing here:
+  // stdio links don't recover mid-stream (the underlying streams die with
+  // the process), so the only reliable recovery is to re-mirror on the
+  // *new* client. The pump's outer loop is what implements "reconnect →
+  // state reconciles, no ghosts"; drishti supplies only the per-spawn sink.
+  void pumpRemoteSurface({
+    source: surface,
     session,
-    fragment,
-    processCache,
-    browserSnapshotBus,
-    recordSample,
-    liveProcedures,
-  );
-
-  // `implementSurface` returns a router *fragment* — `{ surface: ... }`
-  // wrapping the per-key namespaces. Passing it directly to RPCHandler
-  // produces a `surface/surface/...` double-prefix in the matcher tree
-  // (no procedure matches what the client sends). Wrap once via
-  // `implement(contract).router({...fragment})` to flatten the prefix.
-  const router = implement(surface.contract).router({ ...fragment.router });
-  return { router, session };
-}
-
-/** The write-side methods the bridge pumps are allowed to touch — a
- *  deliberate least-privilege narrowing of `implementSurface(...).ctx`,
- *  not the full ctx. Pumps only ever mirror remote data inward, so they
- *  get `set` / `upsert` / `remove`; `readAll` and the underlying stores
- *  stay out of reach. This is a boundary, not a maintenance chore: the
- *  `_pumpCtx` guard below assigns the real fragment to this type, so a
- *  collection renamed or retyped on the surface becomes a compile error
- *  here rather than silent drift. */
-type FragmentCtx = {
-  ctx: {
-    cells: {
-      system: { set: (v: SystemInfo) => void };
-      connection: { set: (v: ConnectionInfo) => void };
-    };
-    collections: {
-      processes: {
-        upsert: (k: Pid, v: Process) => void;
-        remove: (k: Pid) => void;
-      };
-      cpuCores: {
-        upsert: (k: CoreId, v: CpuCore) => void;
-        remove: (k: CoreId) => void;
-      };
-      networkInterfaces: {
-        upsert: (k: IfaceName, v: NetInterface) => void;
-        remove: (k: IfaceName) => void;
-      };
-    };
-  };
-};
-
-/** Pin the session, then loop: fetch the current AgentClient, mirror the
- *  WHOLE agent surface into the parent with one `mirrorRemoteSurface` call,
- *  wait for it to settle (which happens when the link errors — stdio process
- *  death), then wait for the session to provide a fresh client
- *  (post-reconnect) and repeat.
- *
- *  Each loop iteration owns one client — a fresh ssh subprocess. The
- *  `clientSeq` counter labels them (`#1`, `#2`, …) so the otherwise
- *  identical per-reconnect log lines can be traced to a specific spawn:
- *  if the mirror against `#2` never yields a `system` frame while the agent
- *  on the far end logged `serving surface over stdio`, the handoff — not the
- *  remote — is where a stuck reconnect lives.
- *
- *  The four hand-rolled pumps (system cell, cpuCores + networkInterfaces
- *  collections, processesSnapshot stream) collapse into one declarative sink
- *  — the consume-side dual of the `implementSurface` call that built the
- *  parent's own surface above. The reconnect-loop primitive
- *  (`makeClientCursor`) and the per-client re-mirror stay the bridge's job,
- *  because stdio links don't recover mid-stream. */
-async function bridgeAgentToParent(
-  log: Logger,
-  session: HostSession<typeof surface.contract>,
-  fragment: FragmentCtx,
-  processCache: Map<Pid, Process>,
-  browserSnapshotBus: Channel<ProcessesSnapshotMsg>,
-  recordSample: (system: SystemInfo) => void,
-  liveProcedures: {
-    current: ProcedureForwarders<typeof surface.spec> | null;
-  },
-): Promise<void> {
-  log("pinning HostSession (parent-lifetime ref)…");
-  // Pin once. Swallow the initial promise — we'll fetch a fresh client
-  // (possibly a re-spawned one) in the loop below regardless of whether
-  // this first spawn succeeded.
-  session.pin().catch(() => {
-    /* logged via state cell; loop handles recovery */
-  });
-
-  // A cursor over the session's spawn lifecycle — `next()` blocks until a
-  // genuinely new spawn appears and resolves with its live client (it owns
-  // the stable-clientPromise comparison that keeps the loop from busy-
-  // spinning once a dead link fails fast).
-  const cursor = makeClientCursor(session);
-  let clientSeq = 0;
-  while (!session.isDestroyed()) {
-    let client: DrishtiAgent;
-    try {
-      client = await cursor.next();
-    } catch (err) {
-      log(`bridge: waiting for next client failed: ${(err as Error).message}`);
-      break;
-    }
-    clientSeq += 1;
-    const seq = clientSeq;
-    log(`agent client ready (client #${seq}); starting mirror`);
-    // Per-client mirror state — the agent leads each (re)connect with a fresh
-    // `system` snapshot, so the first-frame handshake markers and the frame
-    // counter reset with the client.
-    let firstSystemFrame = true;
-    let frames = 0;
-    const issuedAt = Date.now();
-    // R7 (kolu #1505): `mirrorRemoteSurface` returns the total-dual handle
-    // `{ procedures, done }`, no longer `Promise<void>`. The streaming sinks
-    // fold below; the procedure stubs are published to `liveProcedures` so the
-    // parent's `kill` handler can forward through them, and the loop blocks on
-    // `.done` until the link dies (a bare `await mirrorRemoteSurface(...)` would
-    // await a non-thenable handle and resolve at once, spinning the loop).
-    const mirror = mirrorRemoteSurface(
-      surface,
-      client,
-      {
+    // Build the mirror sink for ONE freshly-spawned client. Called once per
+    // (re)spawn, so the per-client state below resets naturally each
+    // reconnect: the agent leads every (re)connect with a fresh `system`
+    // snapshot, so the first-frame handshake marker and the frame counter
+    // re-arm with the client. `seq` labels successive spawns (`#1`, `#2`, …)
+    // so the otherwise-identical per-reconnect log lines trace to a specific
+    // spawn — if the mirror against `#2` never yields a `system` frame while
+    // the agent logged `serving surface over stdio`, the handoff (not the
+    // remote) is where a stuck reconnect lives.
+    makeSink: (_client, { seq }) => {
+      let firstSystemFrame = true;
+      let frames = 0;
+      const issuedAt = Date.now();
+      return {
         cells: {
           // The agent's `system` cell → the parent's. The first yield is also
           // the connection handshake: it flips the session to `connected`
@@ -420,24 +324,54 @@ async function bridgeAgentToParent(
             },
           },
         },
-      },
-      { log },
-    );
-    // Publish this spawn's forwarding stubs for the parent's `kill` handler;
-    // clear them the instant the link dies so a kill in the gap fails honestly
-    // rather than calling into a dead client.
-    liveProcedures.current = mirror.procedures;
-    try {
-      await mirror.done;
-    } finally {
-      liveProcedures.current = null;
-    }
-    log(
-      `bridge: mirror ended for client #${seq} (link likely died) — awaiting next client`,
-    );
-  }
-  log("bridge: session destroyed — exiting reconnect loop");
+      };
+    },
+    // Publish each spawn's forwarding stubs for the parent's `kill` handler;
+    // the pump clears them the instant the link dies, so a kill in the gap
+    // fails honestly rather than calling into a dead client.
+    liveProcedures,
+    log,
+  });
+
+  // `implementSurface` returns a router *fragment* — `{ surface: ... }`
+  // wrapping the per-key namespaces. Passing it directly to RPCHandler
+  // produces a `surface/surface/...` double-prefix in the matcher tree
+  // (no procedure matches what the client sends). Wrap once via
+  // `implement(contract).router({...fragment})` to flatten the prefix.
+  const router = implement(surface.contract).router({ ...fragment.router });
+  return { router, session };
 }
+
+/** The write-side methods the pump sink is allowed to touch — a
+ *  deliberate least-privilege narrowing of `implementSurface(...).ctx`,
+ *  not the full ctx. The sink only ever mirrors remote data inward, so it
+ *  gets `set` / `upsert` / `remove`; `readAll` and the underlying stores
+ *  stay out of reach. This is a boundary, not a maintenance chore: the
+ *  `_pumpCtx` guard above assigns the real fragment to this type, so a
+ *  collection renamed or retyped on the surface becomes a compile error
+ *  here rather than silent drift. */
+type FragmentCtx = {
+  ctx: {
+    cells: {
+      system: { set: (v: SystemInfo) => void };
+      connection: { set: (v: ConnectionInfo) => void };
+    };
+    collections: {
+      processes: {
+        upsert: (k: Pid, v: Process) => void;
+        remove: (k: Pid) => void;
+      };
+      cpuCores: {
+        upsert: (k: CoreId, v: CpuCore) => void;
+        remove: (k: CoreId) => void;
+      };
+      networkInterfaces: {
+        upsert: (k: IfaceName, v: NetInterface) => void;
+        remove: (k: IfaceName) => void;
+      };
+    };
+  };
+};
 
 /** Apply one `processesSnapshot` frame to the parent's local
  *  collection — full reset on `snapshot`, incremental delta on
