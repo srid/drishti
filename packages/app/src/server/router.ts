@@ -271,7 +271,7 @@ export function buildRouter(opts: BuildRouterOptions) {
     // spawn — if the mirror against `#2` never yields a `system` frame while
     // the agent logged `serving surface over stdio`, the handoff (not the
     // remote) is where a stuck reconnect lives.
-    makeSink: (_client, { seq }) => {
+    makeSink: ({ seq }) => {
       let firstSystemFrame = true;
       let frames = 0;
       const issuedAt = Date.now();

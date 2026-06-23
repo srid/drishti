@@ -9,9 +9,9 @@
       },
       "branch": "feat/pulam-web-framework",
       "submodules": false,
-      "revision": "fb8fcb549485718cde91b54f6954f15d8a7dd8bb",
-      "url": "https://github.com/juspay/kolu/archive/fb8fcb549485718cde91b54f6954f15d8a7dd8bb.tar.gz",
-      "hash": "sha256-oOlz58AvvC9qVSNzgMoVg3BHESsP4XCkww+31RN0C1A="
+      "revision": "37540892b875c4e42d472979d330b467dc90aa6c",
+      "url": "https://github.com/juspay/kolu/archive/37540892b875c4e42d472979d330b467dc90aa6c.tar.gz",
+      "hash": "sha256-3HVBsSfndfck009S0BVcLeI8RJ3VgMEG1RVLgjWkPS8="
     },
     "nixpkgs": {
       "type": "Git",
