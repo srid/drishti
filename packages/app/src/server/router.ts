@@ -39,6 +39,7 @@ import {
 import { type ProcedureForwarders } from "@kolu/surface/mirror";
 import {
   type HostSession,
+  pipeSessionStateToCell,
   pumpRemoteSurface,
 } from "@kolu/surface-nix-host";
 import {
@@ -224,15 +225,13 @@ export function buildRouter(opts: BuildRouterOptions) {
   // Lives OUTSIDE the pump: the connection cell tracks the *session's*
   // state (copying / connecting / failed), not any frame the agent sends,
   // so it's wired straight off `session.onState` and never flows through
-  // the mirror sink.
-  session.onState((s) => {
-    fragment.ctx.cells.connection.set({
-      state: s.connection,
-      lastError: s.lastError,
-      failureCause: s.failureCause,
-      progressLines: [...s.progressLines],
-    });
-  });
+  // the mirror sink. `pipeSessionStateToCell` (kolu #1568) is the shared
+  // pump — it subscribes `session.onState` and writes the projected
+  // `ConnectionInfo` into the cell via the server-internal setter (NOT a
+  // wire verb, so the read-only cell is still parent-writable here).
+  pipeSessionStateToCell(session, (info) =>
+    fragment.ctx.cells.connection.set(info),
+  );
 
   // Sample the metric ring once per agent system tick. CPU% is the mean of
   // the cores currently mirrored into `coreCache` (pumped concurrently);
