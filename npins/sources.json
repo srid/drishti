@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "master",
+      "branch": "fix/pulam-web-stale-awareness-reconnect",
       "submodules": false,
-      "revision": "d8cd75c3c03c39c1e32e83518e20913497091abe",
-      "url": "https://github.com/juspay/kolu/archive/d8cd75c3c03c39c1e32e83518e20913497091abe.tar.gz",
-      "hash": "sha256-xBtF0Q2dQblGULtCoY+egAY0w3dKIWI5d2WRoxCTq0M="
+      "revision": "950ad6d1bce6dfcfc40ce22d87799595f144440b",
+      "url": "https://github.com/juspay/kolu/archive/950ad6d1bce6dfcfc40ce22d87799595f144440b.tar.gz",
+      "hash": "sha256-cJOfxYB8ZanOaRfWpi7c/Lh5e+pXoBYhEOnkkRoOOYE="
     },
     "nixpkgs": {
       "type": "Git",
