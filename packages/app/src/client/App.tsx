@@ -15,7 +15,7 @@
  */
 
 import { streamCall } from "@kolu/surface/client";
-import { createSubscription } from "@kolu/surface/solid";
+import { createSubscription, surfaceClientsHealth } from "@kolu/surface/solid";
 import { STALE_PROCESS_CLOSE_CODE } from "@kolu/surface-app";
 import { shellCommit } from "@kolu/surface-app/lifecycle";
 import { SurfaceAppProvider, surfaceAppProbe } from "@kolu/surface-app/solid";
@@ -181,6 +181,17 @@ function subscribeMetricHistory(
 } {
   const [history, setHistory] = createSignal<MetricSample[]>([]);
   const [streamError, setStreamError] = createSignal<Error | null>(null);
+  const [pending, setPending] = createSignal(true);
+  // Leak A: a RAW `streamCall` owns its loop, so the framework can't enrol it.
+  // JOIN it to `app.health()` by hand (`enroll` — it already owns its
+  // pending/error), so a dead metric feed surfaces in the one FACT (drishti's
+  // per-host degraded badge) and not ONLY this widget's sparkline. Auto-disposes
+  // with the calling component's owner; the reactive `error()` supersedes the old
+  // per-channel `console.error`.
+  app.enroll("metricHistory", {
+    pending,
+    error: () => streamError() ?? undefined,
+  });
   void (async () => {
     try {
       const stream = await streamCall(
@@ -189,6 +200,7 @@ function subscribeMetricHistory(
         { signal },
       );
       for await (const msg of stream) {
+        if (pending()) setPending(false);
         if (msg.kind === "snapshot") setHistory(msg.samples);
         else
           setHistory((prev) =>
@@ -197,7 +209,7 @@ function subscribeMetricHistory(
       }
     } catch (err) {
       if (!signal.aborted) {
-        console.error("metricHistory stream failed", err);
+        setPending(false);
         setStreamError(err instanceof Error ? err : new Error(String(err)));
       }
     }
@@ -356,6 +368,23 @@ function MultiHostApp() {
   // order, and the admin collection's keys stream is order-preserving.
   // Sorting here would silently override the upstream invariant.
   const hostList = createMemo<string[]>(() => [...hosts.keys()]);
+
+  // Y6 (Leak D): the admin transport multiplexes TWO sibling surfaces — drishti's
+  // own `admin` and surface-app — built by `surfaceClients`, each with its OWN
+  // independent `health()`. `surfaceClientsHealth` folds them into ONE fact (the
+  // multi-surface closure), so a degraded control-plane sibling surfaces in a
+  // single read instead of N hand-assembled ones (each easy to forget — the
+  // partial-gate hazard the fold exists to kill). This is the real CONSUMER of
+  // that fold: kolu surfaces health per-cell via colocated toasts, so kolu's own
+  // `surfaceClients` doesn't fold; drishti's always-open control plane is the
+  // natural place to ask "is the fleet's spine healthy?" as one answer. Rendered
+  // stale-while-degraded (drishti's policy) — a non-blocking strip, never blanking.
+  const controlPlaneError = createMemo(
+    () =>
+      surfaceClientsHealth({ admin, surfaceApp: surfaceAppClient() }).subs.find(
+        (s) => s.error,
+      )?.error?.message ?? null,
+  );
 
   // Drive per-host socket disposal from the parent that owns the admin
   // subscription, NOT from inside `TabChip`. The chip is pure display;
@@ -532,6 +561,14 @@ function MultiHostApp() {
           theme={theme()}
           onToggleTheme={toggleTheme}
         />
+        {/* The folded control-plane health (Leak D): a degraded admin sibling
+            shows a non-blocking strip, never blanking the fleet (drishti's
+            stale-while-degraded policy). */}
+        <Show when={controlPlaneError()}>
+          <div class="border-b border-amber-500/40 bg-amber-500/10 px-4 py-1 text-xs text-amber-700 dark:text-amber-400">
+            Control plane degraded — {controlPlaneError()}.
+          </div>
+        </Show>
         <Show
           when={hostList().length > 0}
           fallback={
@@ -759,9 +796,15 @@ function HostView(props: { host: string }) {
       reduce: foldProcessesMessage,
       initial: {},
       signal: processesCtl.signal,
-      onError: (err) => console.error("processesSnapshot stream failed", err),
     },
   );
+  // Leak A: this raw stream is a hand-driven `createSubscription` over a surface
+  // PROCEDURE (`processesSnapshot.get` is not a Stream primitive), so the
+  // framework can't enrol it — JOIN it to `app.health()` directly (a
+  // `createSubscription` already owns its pending/error). A dead process feed now
+  // surfaces in the one FACT (the per-host degraded badge) instead of a private
+  // `console.error` — the reactive `error()` supersedes the one-shot callback.
+  app.enroll("processesSnapshot", processesSub);
   const processes = (): Record<Pid, Process> => processesSub() ?? {};
 
   // Which PID is expanded into the detail panel (null = none). Ephemeral —
@@ -810,6 +853,17 @@ function HostView(props: { host: string }) {
   const currentSystem = createMemo(() => system.value() ?? DEFAULT_SYSTEM);
   const currentConnection = createMemo(
     () => connection.value() ?? DEFAULT_CONNECTION,
+  );
+
+  // R3: drishti READS the SAME `client.health()` fact pulam-web hard-gates on,
+  // but with the OPPOSITE policy — STALE-WHILE-DEGRADED. A subscription error (a
+  // per-key cell/core/nic sub, or the now-enrolled `metricHistory` /
+  // `processesSnapshot` raw streams) shows a NON-blocking strip and the body
+  // STAYS; pulam-web's `<SurfaceGate ready>` would blank the whole host. That
+  // divergence over ONE shared fact is exactly why the framework exposes the FACT
+  // and leaves the verdict to each consumer — the two-policy premise, exercised.
+  const degraded = createMemo(
+    () => app.health().subs.find((s) => s.error)?.error?.message ?? null,
   );
 
   const allPids = createMemo<Pid[]>(() =>
@@ -908,6 +962,14 @@ function HostView(props: { host: string }) {
         connection={currentConnection()}
         count={allPids().length}
       />
+      {/* Stale-while-degraded: a NON-blocking strip when any subscription errors;
+          the body below stays visible (drishti's policy — the opposite of
+          pulam-web's hard gate over the same `app.health()` fact). */}
+      <Show when={degraded()}>
+        <div class="border-b border-amber-500/40 bg-amber-500/10 px-4 py-1 text-xs text-amber-700 dark:text-amber-400">
+          Some data is stale — a subscription is reconnecting ({degraded()}).
+        </div>
+      </Show>
       <Show
         when={currentConnection().state === "connected"}
         fallback={
