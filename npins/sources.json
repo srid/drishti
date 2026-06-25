@@ -9,9 +9,9 @@
       },
       "branch": "pulam-conn-bug",
       "submodules": false,
-      "revision": "ea0faf623effb14cb5bc03a4a64cb59c7eeca674",
-      "url": "https://github.com/juspay/kolu/archive/ea0faf623effb14cb5bc03a4a64cb59c7eeca674.tar.gz",
-      "hash": "sha256-1zo1DYzbBOXd/TcBtqS7FmDyWOaS3dDiK8dGDUXg/L0="
+      "revision": "4be640db8279bc3b29490dda926d711cd5bac10e",
+      "url": "https://github.com/juspay/kolu/archive/4be640db8279bc3b29490dda926d711cd5bac10e.tar.gz",
+      "hash": "sha256-XYo99buGoL8P/OKld5MZyfxgMf0CpVYrZzexf0mJ8Ck="
     },
     "nixpkgs": {
       "type": "Git",

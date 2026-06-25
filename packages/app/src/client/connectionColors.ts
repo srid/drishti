@@ -89,3 +89,18 @@ export const STATE: Record<ConnectionState, StatePresentation> = {
     pending: false,
   },
 };
+
+// The framework `<HostStatusPip>` colors its dot via an inline `style.background`
+// hex, not a tailwind class, so `<HostDot>` supplies the palette as hex. Only
+// THREE are needed, and the split is deliberate: `connected` (green) is passed
+// solely as the pip's `readyColor` — emitted only from its fact-`ready` branch,
+// so a stale `connected` cell can't paint it — while the not-ready tone is keyed
+// to the cell as `failed → red`, else `amber`. The not-ready branch NEVER reads
+// `DOT_HEX.connected`, because a `connected` mirror can still be not-ready (a
+// pending/erroring sub) and emitting its green there would forge the very lie the
+// pip exists to prevent.
+export const DOT_HEX = {
+  connected: "#10b981", // emerald-500 — the pip's readyColor (fact-gated)
+  connecting: "#f59e0b", // amber-500 — every non-`failed` not-ready state
+  failed: "#ef4444", // red-500
+} as const;

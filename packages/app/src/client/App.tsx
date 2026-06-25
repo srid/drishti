@@ -15,7 +15,11 @@
  */
 
 import { unenrolledStreamCall } from "@kolu/surface/client";
-import { createSubscription, surfaceClientsHealth } from "@kolu/surface/solid";
+import {
+  createSubscription,
+  type SurfaceHealth,
+  surfaceClientsHealth,
+} from "@kolu/surface/solid";
 import { SurfaceGate } from "@kolu/surface/solid/SurfaceGate";
 import { STALE_PROCESS_CLOSE_CODE } from "@kolu/surface-app";
 import { shellCommit } from "@kolu/surface-app/lifecycle";
@@ -54,6 +58,7 @@ import {
   DEFAULT_CONNECTION,
 } from "drishti-common/browser";
 import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
+import { HostDot } from "./HostDot";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
 import {
@@ -658,9 +663,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
       class="flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3 text-left transition-colors hover:border-indigo-400 hover:bg-white dark:border-gray-800 dark:bg-gray-900/40 dark:hover:border-indigo-500 dark:hover:bg-gray-900"
     >
       <div class="flex items-center gap-2">
-        <span
-          class={`inline-block h-2 w-2 shrink-0 rounded-full ${STATE[state()].dotBg} ${STATE[state()].pending ? "animate-pulse" : ""}`}
-        />
+        <HostDot health={app.health} state={state} class="shrink-0" />
         <span class="truncate font-semibold" title={props.host}>
           {props.host}
         </span>
@@ -955,6 +958,7 @@ function HostView(props: { host: string }) {
       <Header
         system={currentSystem()}
         connection={currentConnection()}
+        health={app.health}
         count={allPids().length}
       />
       {/* drishti is a real component-level `<SurfaceGate>` ADOPTER, with the
@@ -1062,6 +1066,7 @@ function pidComparator(
 function Header(props: {
   system: ReturnType<() => typeof DEFAULT_SYSTEM>;
   connection: ReturnType<() => typeof DEFAULT_CONNECTION>;
+  health: Accessor<SurfaceHealth>;
   count: number;
 }) {
   // The component body runs ONCE at mount — when props.system is still
@@ -1083,8 +1088,14 @@ function Header(props: {
             <span class="text-gray-500">host:</span>{" "}
             <span class="font-semibold">{props.system.hostname || "—"}</span>
           </span>
-          <span class={STATE[props.connection.state].text}>
-            ● {props.connection.state}
+          <span
+            class={`flex items-center gap-1.5 ${STATE[props.connection.state].text}`}
+          >
+            <HostDot
+              health={props.health}
+              state={() => props.connection.state}
+            />
+            {props.connection.state}
           </span>
           <span class="text-gray-500">·</span>
           <span class="text-gray-500">
