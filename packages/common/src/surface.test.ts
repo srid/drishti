@@ -1,22 +1,22 @@
 import { describe, expect, it } from "bun:test";
 import { surface } from "./surface";
 
-// drishti is a read-only monitor: the per-host surface must expose
-// cells, collections, and streams but **no procedures**. A procedure is
-// the only way to push a mutation (e.g. a signal/kill) down to the
-// monitored host, so the absence of any procedure is the structural
-// guarantee that the app can't act on a host — only observe it. If a
-// future change re-introduces a procedure here, this test fails on
-// purpose: removing the kill capability was a deliberate decision, not
-// an oversight to be quietly undone.
-describe("surface is read-only", () => {
-  it("declares no procedures", () => {
-    // The spec type literally has no `procedures` key (read-only by
-    // construction). Widen to read the optional slot at runtime: this
-    // still fails the moment a procedure is re-added, even though the
-    // type would also light up at the call sites that consume it.
-    const spec = surface.spec as Record<string, unknown>;
-    expect(spec.procedures).toBeUndefined();
+// drishti is an observe-mostly monitor: the per-host surface is cells,
+// collections, and streams plus EXACTLY ONE deliberate mutating escape hatch —
+// the `process.kill` procedure (the R7 keystone, kolu #1505). A procedure is the
+// only way to push a mutation down to a monitored host, so this test pins the
+// blast radius: `process.kill` is the sole procedure, and ANY other procedure
+// (or a second verb under `process`) fails on purpose — a new way to act on a
+// host must be a deliberate decision, not an oversight quietly slipped in.
+describe("surface mutation surface is exactly process.kill", () => {
+  it("declares exactly the `process.kill` escape hatch and no other procedure", () => {
+    const procedures = (surface.spec.procedures ?? {}) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    // Exactly one namespace (`process`), exactly one verb under it (`kill`).
+    expect(Object.keys(procedures)).toEqual(["process"]);
+    expect(Object.keys(procedures.process ?? {})).toEqual(["kill"]);
   });
 
   it("still exposes the read-only primitives", () => {

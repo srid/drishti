@@ -19,7 +19,7 @@ import {
 } from "@kolu/surface-app/connect";
 import { adminContract, adminSurfaces } from "../common/admin-surface";
 import { ADMIN_HOST_SENTINEL } from "../common/host";
-import { surface } from "drishti-common";
+import { browserSurface } from "drishti-common";
 
 // ONE shared `pid` echo across every socket (per-host + admin). The parent mints
 // a fresh `processId` per boot; the echo threads the last-known one back as the
@@ -67,8 +67,8 @@ function buildHostSurface(host: string) {
   // Per-host sockets own their stale-close retirement — no provider watches them.
   const ws = makeSocket(host, true);
   const client = surfaceClient(
-    surface,
-    websocketLink<typeof surface.contract>(ws as unknown as WebSocket),
+    browserSurface,
+    websocketLink<typeof browserSurface.contract>(ws as unknown as WebSocket),
   );
   return { ws, client };
 }

@@ -21,9 +21,9 @@ import { defineSurface, type SurfaceTypes } from "@kolu/surface/define";
 import {
   type ConnectionInfo,
   type ConnectionState,
-  connectionCell,
   DEFAULT_CONNECTION,
   type FailureCause,
+  mirroredSurface,
 } from "@kolu/surface-nix-host/connection";
 import { z } from "zod";
 
@@ -31,7 +31,8 @@ import { z } from "zod";
 // from `drishti-common` (the canonical surface module) rather than reaching
 // into `@kolu/surface-nix-host/connection` directly. The cell itself — schema,
 // default, and the parent-only-write authority — is now owned upstream
-// (kolu #1568); drishti composes the shared `connectionCell` into its surface.
+// (kolu #1568); drishti adds it ONLY at the re-serve seam via `mirroredSurface`
+// (`browserSurface` below), never on the base surface the agent serves.
 export {
   type ConnectionInfo,
   type ConnectionState,
@@ -141,12 +142,12 @@ const SystemSchema = z.object({
 // ⚠ **Parent-to-agent link lifecycle — owned upstream (kolu #1568).**
 // The connection-health cell (schema, gate-closed `DEFAULT_CONNECTION`, and
 // the parent-only-write / read-only-over-the-wire authority) now lives in
-// `@kolu/surface-nix-host/connection` as the composable `connectionCell`. It
-// is byte-identical in shape to drishti's former local `ConnectionSchema`
-// (the five link phases, nullable `lastError`, nullable `network|remote`
-// `failureCause`, `progressLines` string tail). drishti spreads the shared
-// descriptor into its surface below and re-exports the types at the top of
-// this module, so a re-served mirror's browser still sees honest link health.
+// `@kolu/surface-nix-host/connection`. It is byte-identical in shape to
+// drishti's former local `ConnectionSchema` (the five link phases, nullable
+// `lastError`, nullable `network|remote` `failureCause`, `progressLines` tail).
+// drishti adds it ONLY at the re-serve seam via `mirroredSurface` (`browserSurface`)
+// and re-exports the types at the top of this module, so a re-served mirror's
+// browser sees honest link health while the base surface stays connection-free.
 
 export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
   loadAvg: [0, 0, 0],
@@ -222,12 +223,10 @@ export const surface = defineSurface({
       schema: SystemSchema,
       default: DEFAULT_SYSTEM,
     },
-    // Read-only over the wire (`verbs: ["get"]`) — the parent owns this
-    // cell and writes it server-side off `session.onState` via
-    // `pipeSessionStateToCell`; a remote RPC client can no longer forge
-    // the host's health. The shared descriptor carries its own schema and
-    // gate-closed default (kolu #1568).
-    connection: connectionCell,
+    // NOTE: no `connection` cell here. Link health is composed ONLY at the
+    // nix-host re-serve seam via `mirroredSurface(surface)` (`browserSurface`
+    // below) — the agent serves this connection-free base; the parent mirrors
+    // it and adds the cell, writing it off `session.onState` (kolu #1568).
   },
   collections: {
     processes: {
@@ -281,6 +280,13 @@ export const surface = defineSurface({
     },
   },
 });
+
+/** The surface the BROWSER consumes and the PARENT re-serves: the agent's base
+ *  `surface` augmented at the mirror seam with the gate-closed get-only
+ *  `connection` cell. The agent serves the base; the parent mirrors it and writes
+ *  `connection` from `session.onState` — kolu's `mirroredSurface` combinator, the
+ *  single source of truth, instead of a hand-composed cell. */
+export const browserSurface = mirroredSurface(surface);
 
 type SF = SurfaceTypes<typeof surface.spec>;
 

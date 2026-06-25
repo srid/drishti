@@ -39,14 +39,14 @@ import {
 import { type ProcedureForwarders } from "@kolu/surface/mirror";
 import {
   type HostSession,
-  pipeSessionStateToCell,
   pumpRemoteSurface,
+  seedConnectionCell,
 } from "@kolu/surface-nix-host";
 import {
+  browserSurface,
   type ConnectionInfo,
   type CoreId,
   type CpuCore,
-  DEFAULT_CONNECTION,
   DEFAULT_SYSTEM,
   type IfaceName,
   type MetricHistoryMsg,
@@ -86,9 +86,10 @@ export function buildRouter(opts: BuildRouterOptions) {
   const systemStore: CellStore<SystemInfo> = inMemoryStore({
     ...DEFAULT_SYSTEM,
   });
-  const connectionStore: CellStore<ConnectionInfo> = inMemoryStore({
-    ...DEFAULT_CONNECTION,
-  });
+  // The seeded, gate-closed connection cell — the shared `seedConnectionCell()`,
+  // not a hand-rolled store. Written by `pumpRemoteSurface` off `session.onState`
+  // (the `connection` option below), which owns the subscription + teardown.
+  const connection = seedConnectionCell();
   const processCache = new Map<Pid, Process>();
   const coreCache = new Map<CoreId, CpuCore>();
   const netCache = new Map<IfaceName, NetInterface>();
@@ -119,13 +120,17 @@ export function buildRouter(opts: BuildRouterOptions) {
     current: ProcedureForwarders<typeof surface.spec> | null;
   } = { current: null };
 
-  const fragment = implementSurface(surface, {
+  // Implements the MIRRORED surface (base + the get-only `connection` cell). The
+  // base primitives are forwarded/folded from the agent; `connection` is the
+  // seeded local store the session pump writes — the agent's surface stays
+  // connection-free.
+  const fragment = implementSurface(browserSurface, {
     // Name-keyed in-memory channel factory — publish/subscribe sites
     // land on the same `Channel<T>` instance per name.
     channel: inMemoryChannelByName(),
     cells: {
       system: { store: systemStore },
-      connection: { store: connectionStore },
+      connection,
     },
     collections: {
       processes: {
@@ -220,18 +225,6 @@ export function buildRouter(opts: BuildRouterOptions) {
   // an error on this line.
   const _pumpCtx: FragmentCtx = fragment;
   void _pumpCtx;
-
-  // ── Mirror session connection state → parent's `connection` cell ──
-  // Lives OUTSIDE the pump: the connection cell tracks the *session's*
-  // state (copying / connecting / failed), not any frame the agent sends,
-  // so it's wired straight off `session.onState` and never flows through
-  // the mirror sink. `pipeSessionStateToCell` (kolu #1568) is the shared
-  // pump — it subscribes `session.onState` and writes the projected
-  // `ConnectionInfo` into the cell via the server-internal setter (NOT a
-  // wire verb, so the read-only cell is still parent-writable here).
-  pipeSessionStateToCell(session, (info) =>
-    fragment.ctx.cells.connection.set(info),
-  );
 
   // Sample the metric ring once per agent system tick. CPU% is the mean of
   // the cores currently mirrored into `coreCache` (pumped concurrently);
@@ -329,6 +322,11 @@ export function buildRouter(opts: BuildRouterOptions) {
     // the pump clears them the instant the link dies, so a kill in the gap
     // fails honestly rather than calling into a dead client.
     liveProcedures,
+    // The session's link health (copying / connecting / failed) onto the
+    // browser-facing `connection` cell — the pump OWNS this subscription for the
+    // session's lifetime and tears it down on exit (kolu #1568), so it can't be
+    // forgotten or leak. The cell tracks the SESSION's state, never a mirror frame.
+    connection: { set: (info) => fragment.ctx.cells.connection.set(info) },
     log,
   });
 
@@ -337,7 +335,9 @@ export function buildRouter(opts: BuildRouterOptions) {
   // produces a `surface/surface/...` double-prefix in the matcher tree
   // (no procedure matches what the client sends). Wrap once via
   // `implement(contract).router({...fragment})` to flatten the prefix.
-  const router = implement(surface.contract).router({ ...fragment.router });
+  const router = implement(browserSurface.contract).router({
+    ...fragment.router,
+  });
   return { router, session };
 }
 
