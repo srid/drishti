@@ -14,8 +14,9 @@
  * The per-host data shape (cells/collections/streams) is unchanged.
  */
 
-import { streamCall } from "@kolu/surface/client";
+import { unenrolledStreamCall } from "@kolu/surface/client";
 import { createSubscription, surfaceClientsHealth } from "@kolu/surface/solid";
+import { SurfaceGate } from "@kolu/surface/solid/SurfaceGate";
 import { STALE_PROCESS_CLOSE_CODE } from "@kolu/surface-app";
 import { shellCommit } from "@kolu/surface-app/lifecycle";
 import { SurfaceAppProvider, surfaceAppProbe } from "@kolu/surface-app/solid";
@@ -172,49 +173,36 @@ function createPersistedSignal<T extends string>(
 // / cores / nics) already surfaces its `onError`; without this the metric
 // stream would be the lone one swallowing failure to the console, leaving an
 // empty ring to read identically as "no samples yet" and "stream died".
-function subscribeMetricHistory(
-  app: ReturnType<typeof surfaceForHost>,
-  signal: AbortSignal,
-): {
+function subscribeMetricHistory(app: ReturnType<typeof surfaceForHost>): {
   history: Accessor<MetricSample[]>;
   streamError: Accessor<Error | null>;
 } {
   const [history, setHistory] = createSignal<MetricSample[]>([]);
-  const [streamError, setStreamError] = createSignal<Error | null>(null);
-  const [pending, setPending] = createSignal(true);
-  // Leak A: a RAW `streamCall` owns its loop, so the framework can't enrol it.
-  // JOIN it to `app.health()` by hand (`enroll` — it already owns its
-  // pending/error), so a dead metric feed surfaces in the one FACT (drishti's
-  // per-host degraded badge) and not ONLY this widget's sparkline. Auto-disposes
-  // with the calling component's owner; the reactive `error()` supersedes the old
-  // per-channel `console.error`.
-  app.enroll("metricHistory", {
-    pending,
-    error: () => streamError() ?? undefined,
-  });
-  void (async () => {
-    try {
-      const stream = await streamCall(
-        app.rpc.surface.metricHistory.get,
-        {},
-        { signal },
-      );
-      for await (const msg of stream) {
-        if (pending()) setPending(false);
+  // 🔴2 (Leak A) — the STRUCTURAL raw-stream path. `app.rawStream` owns the
+  // consume loop, the `AbortController` (tied to THIS component's owner), the
+  // pending/error signals, AND the health enrolment — and THROWS if driven
+  // outside a reactive owner. So this raw metric feed cannot silently escape
+  // `app.health()` the way the old hand-rolled `unenrolledStreamCall` +
+  // `app.enroll` could: forgetting the enrol is now structurally impossible, not
+  // a convention an adopter can drop. Its returned `error()` carries a dead feed
+  // into THIS widget's own sparkline overlay; the same error is already in the
+  // FACT (drishti's per-host degraded badge), so a dead feed can no longer read
+  // identically to "no samples yet" while swallowing failure to the console.
+  const source = app.rawStream(
+    "metricHistory",
+    app.rpc.surface.metricHistory.get,
+    {},
+    {
+      onItem: (msg) => {
         if (msg.kind === "snapshot") setHistory(msg.samples);
         else
           setHistory((prev) =>
             pushSample(prev, msg.sample, HISTORY_RETENTION_MS),
           );
-      }
-    } catch (err) {
-      if (!signal.aborted) {
-        setPending(false);
-        setStreamError(err instanceof Error ? err : new Error(String(err)));
-      }
-    }
-  })();
-  return { history, streamError };
+      },
+    },
+  );
+  return { history, streamError: () => source.error() ?? null };
 }
 
 // Overlay text for a sparkline with no drawable point yet — the one place that
@@ -379,12 +367,15 @@ function MultiHostApp() {
   // `surfaceClients` doesn't fold; drishti's always-open control plane is the
   // natural place to ask "is the fleet's spine healthy?" as one answer. Rendered
   // stale-while-degraded (drishti's policy) — a non-blocking strip, never blanking.
-  const controlPlaneError = createMemo(
-    () =>
-      surfaceClientsHealth({ admin, surfaceApp: surfaceAppClient() }).subs.find(
-        (s) => s.error,
-      )?.error?.message ?? null,
-  );
+  // It DRINKS from the merged `live`: now that `wire.ts` threads the admin
+  // socket's liveness through `surfaceClients`, a dead control-plane socket flips
+  // the folded `live` false (the AND-reduce over both siblings) and the strip
+  // says so — transport death wins over a per-sub error.
+  const controlPlaneError = createMemo(() => {
+    const h = surfaceClientsHealth({ admin, surfaceApp: surfaceAppClient() });
+    if (!h.live) return "connection lost — reconnecting…";
+    return h.subs.find((s) => s.error)?.error?.message ?? null;
+  });
 
   // Drive per-host socket disposal from the parent that owns the admin
   // subscription, NOT from inside `TabChip`. The chip is pure display;
@@ -630,10 +621,9 @@ function HostCard(props: { host: string; onSelect: () => void }) {
   // Same parent-owned ring the open host view draws, streamed over the card's
   // already-warm socket. The card pins the widest window (WIDEST_HISTORY_WINDOW)
   // — it's a glanceable trend, not an interactive chart, so there's no per-card
-  // duration picker — and tears the stream down with the card via `ctl`.
-  const ctl = new AbortController();
-  onCleanup(() => ctl.abort());
-  const { history, streamError } = subscribeMetricHistory(app, ctl.signal);
+  // duration picker. `app.rawStream` ties the stream's teardown to this card's
+  // own reactive owner, so there's no hand-rolled AbortController to thread.
+  const { history, streamError } = subscribeMetricHistory(app);
   const { latest, points } = projectHistory(history, () =>
     windowMsFor(WIDEST_HISTORY_WINDOW),
   );
@@ -773,8 +763,8 @@ function HostView(props: { host: string }) {
   // The live process table, consumed as a declarative value-bearing reactive
   // subscription: `createSubscription` folds every snapshot|delta frame in-loop
   // (via `foldProcessesMessage`) into the full process map, replacing the
-  // hand-rolled `streamCall` + `for await` loop this used to be. The table
-  // renders FINE-GRAINED off `processes()` below (`processes()[pid].cpuPct`),
+  // hand-rolled `unenrolledStreamCall` + `for await` loop this used to be. The
+  // table renders FINE-GRAINED off `processes()` below (`processes()[pid].cpuPct`),
   // so an in-place `reconcile` leaf update re-notifies just that cell — reading
   // the whole map coarsely and copying it into a store would drop same-shape
   // deltas (the R8b lesson). `.streams.use()` exposes no `reduce`, so this
@@ -787,7 +777,15 @@ function HostView(props: { host: string }) {
     Record<Pid, Process>
   >(
     () =>
-      streamCall(
+      // The bare `unenrolledStreamCall` is the right primitive HERE — it is the
+      // raw stream FACTORY feeding `createSubscription`, which owns its own
+      // pending/error and is joined to the fact by `app.enroll` below. Its
+      // `unenrolled-` name flags that the raw call self-enrols nothing; the
+      // `createSubscription` + `enroll` pair is what carries it into `health()`.
+      // (A standalone surface-scoped raw stream would use `app.rawStream`, like
+      // `metricHistory` above; this one can't — `rawStream` returns only
+      // {pending,error}, not the value-bearing reconcile store the table needs.)
+      unenrolledStreamCall(
         app.rpc.surface.processesSnapshot.get,
         {},
         { signal: processesCtl.signal },
@@ -798,12 +796,13 @@ function HostView(props: { host: string }) {
       signal: processesCtl.signal,
     },
   );
-  // Leak A: this raw stream is a hand-driven `createSubscription` over a surface
-  // PROCEDURE (`processesSnapshot.get` is not a Stream primitive), so the
-  // framework can't enrol it — JOIN it to `app.health()` directly (a
-  // `createSubscription` already owns its pending/error). A dead process feed now
-  // surfaces in the one FACT (the per-host degraded badge) instead of a private
-  // `console.error` — the reactive `error()` supersedes the one-shot callback.
+  // Leak A: this is a hand-driven `createSubscription` over a surface PROCEDURE
+  // (`processesSnapshot.get` is not a Stream primitive), so the framework can't
+  // auto-enrol it — JOIN it to `app.health()` directly (a `createSubscription`
+  // already owns its pending/error). A dead process feed now surfaces in the one
+  // FACT (the per-host degraded badge) instead of a private `console.error` — the
+  // reactive `error()` supersedes the one-shot callback. The deliberate hand-join
+  // reads as deliberate because the factory call is named `unenrolledStreamCall`.
   app.enroll("processesSnapshot", processesSub);
   const processes = (): Record<Pid, Process> => processesSub() ?? {};
 
@@ -855,15 +854,14 @@ function HostView(props: { host: string }) {
     () => connection.value() ?? DEFAULT_CONNECTION,
   );
 
-  // R3: drishti READS the SAME `client.health()` fact pulam-web hard-gates on,
-  // but with the OPPOSITE policy — STALE-WHILE-DEGRADED. A subscription error (a
-  // per-key cell/core/nic sub, or the now-enrolled `metricHistory` /
-  // `processesSnapshot` raw streams) shows a NON-blocking strip and the body
-  // STAYS; pulam-web's `<SurfaceGate ready>` would blank the whole host. That
-  // divergence over ONE shared fact is exactly why the framework exposes the FACT
-  // and leaves the verdict to each consumer — the two-policy premise, exercised.
-  const degraded = createMemo(
-    () => app.health().subs.find((s) => s.error)?.error?.message ?? null,
+  // The connecting/failed overlay for the MIRROR axis (backend↔remote), reused
+  // as both the cold-connect fallback of the health `<SurfaceGate>` below and the
+  // inner connection-cell gate. Defined once so the two never drift.
+  const connectingView = () => (
+    <ConnectingOverlay
+      connection={currentConnection()}
+      onReconnect={onReconnect}
+    />
   );
 
   const allPids = createMemo<Pid[]>(() =>
@@ -935,13 +933,10 @@ function HostView(props: { host: string }) {
     );
   const windowMs = createMemo(() => windowMsFor(historyWindow()));
 
-  // metricHistory is still consumed imperatively (Step 0 graduates only the
-  // process list); its own AbortController tears the stream down on unmount.
-  // The fleet card runs the same step off its own controller (see
-  // `subscribeMetricHistory` / `projectHistory`).
-  const metricsCtl = new AbortController();
-  onCleanup(() => metricsCtl.abort());
-  const { history, streamError } = subscribeMetricHistory(app, metricsCtl.signal);
+  // metricHistory rides the structural `app.rawStream` path (it enrols into
+  // `app.health()` and owns its own teardown via this view's reactive owner —
+  // see `subscribeMetricHistory` / `projectHistory`).
+  const { history, streamError } = subscribeMetricHistory(app);
   const { latest: latestSample, points } = projectHistory(history, windowMs);
 
   // The currently-selected process resolved against the live store: null when
@@ -962,22 +957,35 @@ function HostView(props: { host: string }) {
         connection={currentConnection()}
         count={allPids().length}
       />
-      {/* Stale-while-degraded: a NON-blocking strip when any subscription errors;
-          the body below stays visible (drishti's policy — the opposite of
-          pulam-web's hard gate over the same `app.health()` fact). */}
-      <Show when={degraded()}>
-        <div class="border-b border-amber-500/40 bg-amber-500/10 px-4 py-1 text-xs text-amber-700 dark:text-amber-400">
-          Some data is stale — a subscription is reconnecting ({degraded()}).
-        </div>
-      </Show>
+      {/* drishti is a real component-level `<SurfaceGate>` ADOPTER, with the
+          framework DEFAULT policy = STALE-WHILE-DEGRADED (and, after the first
+          paint, stale-while-reconnecting): a sub error or a transport blip keeps
+          the body below VISIBLE under a NON-blocking amber notice; only a cold
+          connect blanks to `connectingView`. That is the OPPOSITE of pulam-web's
+          hard `<SurfaceGate ready>` over the SAME `app.health()` fact — the
+          two-policy premise exercised at the component level, not just the fact.
+          The connection CELL gate (the backend↔remote MIRROR axis, which the
+          health fact doesn't carry) stays nested INSIDE — `connectingView`
+          renders it for both the cold-health fallback and a not-yet-`connected`
+          mirror. The amber notice's `degraded` slot folds the first sub error (or
+          names a reconnect when the transport, not a sub, is the cause). */}
+      <SurfaceGate
+        health={app.health}
+        fallback={() => connectingView()}
+        degraded={(h) => {
+          const msg = h().subs.find((s) => s.error)?.error?.message;
+          return (
+            <div class="border-b border-amber-500/40 bg-amber-500/10 px-4 py-1 text-xs text-amber-700 dark:text-amber-400">
+              {msg
+                ? `Some data is stale — a subscription is reconnecting (${msg}).`
+                : "Reconnecting to this host…"}
+            </div>
+          );
+        }}
+      >
       <Show
         when={currentConnection().state === "connected"}
-        fallback={
-          <ConnectingOverlay
-            connection={currentConnection()}
-            onReconnect={onReconnect}
-          />
-        }
+        fallback={connectingView()}
       >
         <HistoryChart
           points={points()}
@@ -1026,6 +1034,7 @@ function HostView(props: { host: string }) {
           />
         </SelectionContext.Provider>
       </Show>
+      </SurfaceGate>
     </>
   );
 }

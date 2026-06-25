@@ -17,6 +17,7 @@ import {
   createProcessIdEcho,
   createSurfaceSocket,
 } from "@kolu/surface-app/connect";
+import { createSocketStatus } from "@kolu/surface-app/solid";
 import { adminContract, adminSurfaces } from "../common/admin-surface";
 import { ADMIN_HOST_SENTINEL } from "../common/host";
 import { browserSurface } from "drishti-common/browser";
@@ -66,9 +67,16 @@ type AdminClient = ReturnType<typeof buildAdminSurface>;
 function buildHostSurface(host: string) {
   // Per-host sockets own their stale-close retirement — no provider watches them.
   const ws = makeSocket(host, true);
+  // Thread the socket's reactive liveness into `client.health().live` so the
+  // FACT carries transport death, not a constant `true`. `createSocketStatus`
+  // tracks the socket's own open/close (retiring on a stale-restart close, like
+  // `makeSocket(host, true)` does); `() => status() === "live"` is the boolean
+  // leg `health()` folds in.
+  const status = createSocketStatus(ws, { retireOnStaleClose: true });
   const client = surfaceClient(
     browserSurface,
     websocketLink<typeof browserSurface.contract>(ws as unknown as WebSocket),
+    { live: () => status() === "live" },
   );
   return { ws, client };
 }
@@ -84,7 +92,14 @@ function buildAdminSurface() {
   // the SCOPED slice (`{ surface: link.surface[key] }`), so its primitives
   // resolve at `/surface/<key>/<prim>/<verb>`.
   const link = websocketLink<typeof adminContract>(ws as unknown as WebSocket);
-  const clients = surfaceClients(link, adminSurfaces);
+  // ONE socket carries BOTH siblings, so they share ONE liveness — thread it so
+  // `surfaceClientsHealth({ admin, surfaceApp })` reports `live: false` when the
+  // control-plane socket dies (the AND-reduce over siblings that all read this
+  // same `live`), instead of a structurally-constant `true`.
+  const status = createSocketStatus(ws, { retireOnStaleClose: false });
+  const clients = surfaceClients(link, adminSurfaces, {
+    live: () => status() === "live",
+  });
   return { ws, link, clients };
 }
 
