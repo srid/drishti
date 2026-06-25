@@ -8,7 +8,7 @@
  * single row, not five edits.
  */
 
-import type { ConnectionState, FailureCause } from "drishti-common";
+import type { ConnectionState, FailureCause } from "drishti-common/browser";
 
 type StatePresentation = {
   /** Status-dot background colour. */

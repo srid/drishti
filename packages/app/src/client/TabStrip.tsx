@@ -16,7 +16,7 @@
 import { useSurfaceApp } from "@kolu/surface-app/solid";
 import { createPwaInstall, installInstructions } from "@kolu/solid-pwa-install";
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { type ConnectionState, DEFAULT_CONNECTION } from "drishti-common";
+import { type ConnectionState, DEFAULT_CONNECTION } from "drishti-common/browser";
 import type { View } from "./view";
 import { STATE } from "./connectionColors";
 import { otherTheme, type Theme } from "./theme";

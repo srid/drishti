@@ -19,7 +19,7 @@ import {
 } from "@kolu/surface-app/connect";
 import { adminContract, adminSurfaces } from "../common/admin-surface";
 import { ADMIN_HOST_SENTINEL } from "../common/host";
-import { browserSurface } from "drishti-common";
+import { browserSurface } from "drishti-common/browser";
 
 // ONE shared `pid` echo across every socket (per-host + admin). The parent mints
 // a fresh `processId` per boot; the echo threads the last-known one back as the

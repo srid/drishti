@@ -42,9 +42,8 @@ import {
   pumpRemoteSurface,
   seedConnectionCell,
 } from "@kolu/surface-nix-host";
+import { browserSurface, type ConnectionInfo } from "drishti-common/browser";
 import {
-  browserSurface,
-  type ConnectionInfo,
   type CoreId,
   type CpuCore,
   DEFAULT_SYSTEM,

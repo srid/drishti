@@ -18,27 +18,15 @@
  */
 
 import { defineSurface, type SurfaceTypes } from "@kolu/surface/define";
-import {
-  type ConnectionInfo,
-  type ConnectionState,
-  DEFAULT_CONNECTION,
-  type FailureCause,
-  mirroredSurface,
-} from "@kolu/surface-nix-host/connection";
 import { z } from "zod";
 
-// Re-export the connection-cell types so drishti modules keep importing them
-// from `drishti-common` (the canonical surface module) rather than reaching
-// into `@kolu/surface-nix-host/connection` directly. The cell itself — schema,
-// default, and the parent-only-write authority — is now owned upstream
-// (kolu #1568); drishti adds it ONLY at the re-serve seam via `mirroredSurface`
-// (`browserSurface` below), never on the base surface the agent serves.
-export {
-  type ConnectionInfo,
-  type ConnectionState,
-  DEFAULT_CONNECTION,
-  type FailureCause,
-};
+// IMPORTANT: this module is AGENT-shared (drishti-common's `.` export — the
+// agent serves the base surface from it). It must NOT import
+// `@kolu/surface-nix-host`: the agent's scoped build hydrates only `@kolu/surface`,
+// so a runtime import of the parent-only provisioning lib crashes the agent at
+// load. The connection-cell types, `DEFAULT_CONNECTION`, and the `browserSurface`
+// mirror-seam composition therefore live in the APP-only `drishti-common/browser`
+// subpath (./browser.ts), imported only by the parent re-serve + the client.
 
 const PidSchema = z.number().int().nonnegative();
 const ProcessSchema = z.object({
@@ -281,13 +269,6 @@ export const surface = defineSurface({
   },
 });
 
-/** The surface the BROWSER consumes and the PARENT re-serves: the agent's base
- *  `surface` augmented at the mirror seam with the gate-closed get-only
- *  `connection` cell. The agent serves the base; the parent mirrors it and writes
- *  `connection` from `session.onState` — kolu's `mirroredSurface` combinator, the
- *  single source of truth, instead of a hand-composed cell. */
-export const browserSurface = mirroredSurface(surface);
-
 type SF = SurfaceTypes<typeof surface.spec>;
 
 export type Pid = SF["collections"]["processes"]["Key"];
@@ -297,10 +278,9 @@ export type CpuCore = SF["collections"]["cpuCores"]["Value"];
 export type IfaceName = SF["collections"]["networkInterfaces"]["Key"];
 export type NetInterface = SF["collections"]["networkInterfaces"]["Value"];
 export type SystemInfo = SF["cells"]["system"]["Value"];
-// `ConnectionInfo` / `ConnectionState` / `FailureCause` are re-exported at the
-// top of this module from `@kolu/surface-nix-host/connection` (kolu #1568) —
-// the shared cell is the single source of truth, so they are no longer derived
-// from the local surface spec here.
+// `ConnectionInfo` / `ConnectionState` / `FailureCause` are re-exported from the
+// app-only `drishti-common/browser` subpath (./browser.ts), NOT here — see the
+// agent-safety note near the top of this file.
 export type ProcessesSnapshotMsg = SF["streams"]["processesSnapshot"]["Output"];
 export type MetricSample = z.infer<typeof MetricSampleSchema>;
 export type MetricHistoryMsg = SF["streams"]["metricHistory"]["Output"];

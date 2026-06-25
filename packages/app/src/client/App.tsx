@@ -36,11 +36,8 @@ import {
   useContext,
 } from "solid-js";
 import {
-  type ConnectionInfo,
-  type ConnectionState,
   type CoreId,
   type CpuCore,
-  DEFAULT_CONNECTION,
   DEFAULT_SYSTEM,
   type IfaceName,
   type MetricSample,
@@ -50,6 +47,11 @@ import {
   type ProcessesSnapshotMsg,
   type SystemInfo,
 } from "drishti-common";
+import {
+  type ConnectionInfo,
+  type ConnectionState,
+  DEFAULT_CONNECTION,
+} from "drishti-common/browser";
 import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";

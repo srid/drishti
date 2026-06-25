@@ -20,7 +20,7 @@ nix_shell := if env('IN_NIX_SHELL', '') != '' { '' } else { 'nix develop --accep
 [macos]
 [parallel]
 [metadata("ci")]
-default: nix typecheck fmt-check bun-nix-fresh home-manager drv-stability
+default: nix typecheck fmt-check bun-nix-fresh home-manager drv-stability agent-boots
 
 # Single per-platform `bun install`. Funnel every bun consumer through this
 # node so concurrent `bun install` runs against the same workspace don't race.
@@ -84,6 +84,29 @@ drv-stability:
       echo "drv-stability: FAIL — a client edit churned the agent .drv"
       echo "  before: $base"
       echo "  after:  $after"
+      exit 1
+    fi
+
+# Boot the BUILT agent to prove its runtime module graph resolves — the guard
+# this pipeline lacked. `typecheck` resolves `@kolu/*` from the dev node_modules
+# (which has everything) and `nix build` only COPIES the agent's tree, so a
+# runtime-only missing dependency stays invisible until the agent actually runs:
+# the agent-shared `drishti-common` (common/surface.ts) must import NOTHING from
+# `@kolu/surface-nix-host`, because the agent's scoped build deliberately hydrates
+# only `@kolu/surface` (nix/packages/drishti-agent) — a stray import crashes the
+# remote agent with "Cannot find module" on every connect. A bare invocation
+# loads `common/surface.ts` at import (before printing usage), so a broken module
+# graph fails HERE with that error instead of the banner.
+agent-boots:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nix build .#drishti-agent
+    out=$(./result/bin/drishti-agent 2>&1 || true)
+    if printf '%s' "$out" | grep -q "drishti-agent — exposes"; then
+      echo "agent-boots: PASS — the built agent's module graph resolves at runtime"
+    else
+      echo "agent-boots: FAIL — the built agent did not boot (runtime module error?):"
+      printf '%s\n' "$out"
       exit 1
     fi
 
