@@ -346,6 +346,11 @@ export default function App() {
       clientCommit={shellCommit()}
       ws={adminSocket()}
       probe={() => surfaceAppProbe(surfaceAppClient())}
+      // `wire.ts`'s `connectSurfaces` already wires the half-open watchdog over
+      // this admin socket (minting the branded `{ live }` the clients require), so
+      // the lifecycle opts ITS watchdog out — one watchdog on the socket, not two.
+      // (The lifecycle mints no brand, so this is ownership coordination only.)
+      heartbeat={false}
       onProcessId={rememberServerProcessId}
       restartCloseCode={STALE_PROCESS_CLOSE_CODE}
     >

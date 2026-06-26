@@ -80,17 +80,20 @@ function buildAdminSurface() {
   // complete surface (`buildInfo` + the `identity.info` probe). `connectSurfaces`
   // splits the one link into a per-key client bundle and folds them into ONE
   // `health()` fact (`live` AND-reduced across siblings off the one socket).
-  // `heartbeat: false`: the admin socket is owned by `<SurfaceAppProvider>`'s
-  // `createServerLifecycle`, which runs its OWN heartbeat (kolu#1231) — a second
-  // here would double the probe — and retires the socket on a stale-restart
-  // itself, so it opts out of self-retire (`retireOnStaleClose: false`) too.
+  // `connectSurfaces` ALWAYS wires the half-open watchdog (it mints the
+  // watchdog-backed `LiveSignal` the clients require — there is no `heartbeat:
+  // false` that could mint a blind brand). So the admin socket's ONE watchdog
+  // lives here; the `<SurfaceAppProvider>` lifecycle over the SAME socket
+  // (`App.tsx`) opts ITS own watchdog out (`heartbeat={false}` — it mints no
+  // brand) so the socket isn't double-watched. The lifecycle still retires the
+  // socket on a stale-restart, so this opts out of self-retire
+  // (`retireOnStaleClose: false`).
   return connectSurfaces({
     surfaces: adminSurfaces,
     url: () => wsBaseFor(ADMIN_HOST_SENTINEL),
     echo,
     socketOptions: BASE_SOCKET_OPTIONS,
     retireOnStaleClose: false,
-    heartbeat: false,
   });
 }
 
