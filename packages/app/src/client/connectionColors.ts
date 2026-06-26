@@ -8,6 +8,7 @@
  * single row, not five edits.
  */
 
+import { gateStatus, type SurfaceHealth } from "@kolu/surface/solid";
 import type { ConnectionState, FailureCause } from "drishti-common/browser";
 
 type StatePresentation = {
@@ -104,3 +105,25 @@ export const DOT_HEX = {
   connecting: "#f59e0b", // amber-500 — every non-`failed` not-ready state
   failed: "#ef4444", // red-500
 } as const;
+
+/** The status-WORD color class — green ONLY when the host's FACT is fully READY,
+ *  the SAME verdict the adjacent fact-gated `<HostDot>` emits its green from
+ *  (`gateStatus(health) === "ready"`: live ∧ no erroring sub ∧ no pending sub).
+ *
+ *  The word reads the raw mirror cell `state`; the dot reads the whole `health()`
+ *  fact. Gating the word's green on the bare `live` boolean was too LOOSE — `live`
+ *  is `transport ∧ mirror` and stays `true` while a subscription silently errors
+ *  (gateStatus → `degraded`) or is still loading (→ `connecting`). So a green
+ *  `connected` word would sit beside an amber dot whenever a sub was dead — the
+ *  #1564 lie merely relocated from the dot to the status WORD. Folding the WHOLE
+ *  fact through `gateStatus` (never a narrower slice the caller hand-picks) keeps
+ *  word and dot the same decision: a `connected` cell that is not ready (transport
+ *  down, OR a sub erroring/pending) reads amber, never green; every non-`connected`
+ *  state already carries its own non-green tone (`failed` → red). */
+export function statusTextClass(
+  state: ConnectionState,
+  health: SurfaceHealth,
+): string {
+  if (gateStatus(health) === "ready") return STATE.connected.text; // green — fully ready
+  return state === "connected" ? STATE.connecting.text : STATE[state].text;
+}

@@ -57,7 +57,12 @@ import {
   type ConnectionState,
   DEFAULT_CONNECTION,
 } from "drishti-common/browser";
-import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
+import {
+  disconnectedMessage,
+  STATE,
+  statusTextClass,
+  withElapsed,
+} from "./connectionColors";
 import { HostDot } from "./HostDot";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
@@ -667,13 +672,15 @@ function HostCard(props: { host: string; onSelect: () => void }) {
         <span class="truncate font-semibold" title={props.host}>
           {props.host}
         </span>
-        <span class={`ml-auto shrink-0 text-xs ${STATE[state()].text}`}>
+        <span
+          class={`ml-auto shrink-0 text-xs ${statusTextClass(state(), app.health())}`}
+        >
           {state()}
         </span>
       </div>
 
       <Show
-        when={state() === "connected"}
+        when={app.health().live}
         fallback={
           <div class="py-3 text-center text-xs text-gray-400 dark:text-gray-500">
             {STATE[state()].label}
@@ -1089,7 +1096,7 @@ function Header(props: {
             <span class="font-semibold">{props.system.hostname || "—"}</span>
           </span>
           <span
-            class={`flex items-center gap-1.5 ${STATE[props.connection.state].text}`}
+            class={`flex items-center gap-1.5 ${statusTextClass(props.connection.state, props.health())}`}
           >
             <HostDot
               health={props.health}
