@@ -17,17 +17,19 @@
  */
 
 import { isCleanRef } from "@kolu/surface-app";
-import { type ConnectionStatus, useSurfaceApp } from "@kolu/surface-app/solid";
-import { Show } from "solid-js";
+import { useSurfaceApp } from "@kolu/surface-app/solid";
+import type { SurfaceHealth } from "@kolu/surface/solid";
+import { HostStatusPip } from "@kolu/surface/solid/HostStatusPip";
+import { type Accessor, Show } from "solid-js";
+import { DOT_HEX } from "./connectionColors";
 
-const SRV_DOT: Record<ConnectionStatus, string> = {
-  live: "bg-emerald-500",
-  reconnecting: "bg-amber-500 animate-pulse",
-  restarted: "bg-amber-500 animate-pulse",
-  down: "bg-red-500",
-};
-
-export function StatusFooter() {
+export function StatusFooter(props: {
+  /** The admin control-plane health fact (`surfaceClientsHealth({ admin,
+   *  surfaceApp })`) — the source of the srv dot's GREEN, so it can't be painted
+   *  from a raw status string. The admin surface has NO mirror leg, so its `live`
+   *  is transport-live alone (green == transport-live is honest here). */
+  health: Accessor<SurfaceHealth>;
+}) {
   const pwa = useSurfaceApp();
   return (
     <footer class="fixed inset-x-0 bottom-0 z-20 flex items-center justify-between border-t border-gray-200 bg-gray-50/95 px-3 pb-[max(0.25rem,env(safe-area-inset-bottom))] pt-1 font-mono text-xs backdrop-blur dark:border-gray-800 dark:bg-gray-950/95">
@@ -35,10 +37,24 @@ export function StatusFooter() {
         <span class="text-[9px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
           srv
         </span>
-        <span
+        {/* The srv dot is the framework `<HostStatusPip>` — the SAME component every
+            other connection dot uses, so "every connection dot is the pip" is
+            literally true and the green is single-sourced. GREEN ⇔ the lifecycle is
+            `live` (transport up AND not restarted/down) over the admin fact, whose
+            `live` is transport-only (no mirror leg). The amber/red/pulse stay raw
+            presentation off the lifecycle `pwa.status()` — the pip can't paint green
+            there (its ready branch is fact-gated, and a not-ready tone equal to the
+            ready color is refused), so `restarted`/`reconnecting` read amber and
+            `down` reads red, exactly as the old hand-rolled dot did. */}
+        <HostStatusPip
+          health={props.health}
+          ready={(h) => h.live && pwa.status() === "live"}
+          readyColor={DOT_HEX.connected}
+          notReadyTone={() =>
+            pwa.status() === "down" ? DOT_HEX.failed : DOT_HEX.connecting
+          }
+          pulse={pwa.status() === "reconnecting" || pwa.status() === "restarted"}
           title="Server connection"
-          data-ws-status={pwa.status()}
-          class={`inline-block h-[7px] w-[7px] rounded-full ${SRV_DOT[pwa.status()]}`}
         />
         <Commit sha={pwa.server()?.commit} />
       </span>

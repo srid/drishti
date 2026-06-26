@@ -381,8 +381,13 @@ function MultiHostApp() {
   // socket's liveness through `surfaceClients`, a dead control-plane socket flips
   // the folded `live` false (the AND-reduce over both siblings) and the strip
   // says so — transport death wins over a per-sub error.
+  // The admin control-plane health fact, folded once and read by BOTH the
+  // degraded-strip memo below and the `StatusFooter`'s srv dot (`<HostStatusPip>`),
+  // so the strip's "is the spine healthy?" verdict and the dot's green can't drift.
+  const adminHealth = () =>
+    surfaceClientsHealth({ admin, surfaceApp: surfaceAppClient() });
   const controlPlaneError = createMemo(() => {
-    const h = surfaceClientsHealth({ admin, surfaceApp: surfaceAppClient() });
+    const h = adminHealth();
     if (!h.live) return "connection lost — reconnecting…";
     return h.subs.find((s) => s.error)?.error?.message ?? null;
   });
@@ -593,7 +598,7 @@ function MultiHostApp() {
           </Show>
         </Show>
       </div>
-      <StatusFooter />
+      <StatusFooter health={adminHealth} />
     </div>
   );
 }

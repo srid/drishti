@@ -1,19 +1,22 @@
 /**
  * Per-connection-state presentation, single-sourced. Each state maps to
- * one `StatePresentation` row rather than living as five parallel
+ * one `StatePresentation` row rather than living as parallel
  * `Record<ConnectionState, …>` maps — `Record` totality already forces
  * every state to be present, but one map also forces every *aspect*
- * (dot colour, text colour, terse label, verbose message, pending flag)
- * to be filled in together, so they can't drift and adding a state is a
- * single row, not five edits.
+ * (text colour, terse label, verbose message, pending flag) to be filled
+ * in together, so they can't drift and adding a state is a single row,
+ * not four edits.
+ *
+ * The status DOT is NOT one of those aspects: it's the framework
+ * `<HostStatusPip>`, whose green is fact-gated (its hex palette is the
+ * three-entry `DOT_HEX` below), so this row carries no `dotBg` — there is
+ * no raw-state dot colour left for a widget to paint green from.
  */
 
 import { gateStatus, type SurfaceHealth } from "@kolu/surface/solid";
 import type { ConnectionState, FailureCause } from "drishti-common/browser";
 
 type StatePresentation = {
-  /** Status-dot background colour. */
-  dotBg: string;
   /** Inline "● connected" text colour. */
   text: string;
   /** Terse label — the fleet card's tight fallback. */
@@ -49,21 +52,18 @@ export function disconnectedMessage(failureCause: FailureCause | null): string {
 
 export const STATE: Record<ConnectionState, StatePresentation> = {
   connected: {
-    dotBg: "bg-emerald-500",
     text: "text-emerald-500",
     label: "connected",
     message: "Connected.",
     pending: false,
   },
   connecting: {
-    dotBg: "bg-amber-500",
     text: "text-amber-500",
     label: "connecting…",
     message: "Connecting…",
     pending: true,
   },
   copying: {
-    dotBg: "bg-amber-500",
     text: "text-amber-500",
     label: "provisioning agent…",
     message: "Copying agent to remote…",
@@ -73,7 +73,6 @@ export const STATE: Record<ConnectionState, StatePresentation> = {
   // another connect attempt. Amber + pulsing says "working on it" —
   // honest, unlike the old red "Retrying…" that also covered give-up.
   disconnected: {
-    dotBg: "bg-amber-500",
     text: "text-amber-500",
     label: "reconnecting…",
     message: "Reconnecting…",
@@ -83,7 +82,6 @@ export const STATE: Record<ConnectionState, StatePresentation> = {
   // nothing is happening until the user acts. The overlay pairs this
   // headline with `lastError` and a Reconnect button.
   failed: {
-    dotBg: "bg-red-500",
     text: "text-red-500",
     label: "failed",
     message: "Connection failed",

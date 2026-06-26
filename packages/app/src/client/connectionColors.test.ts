@@ -42,18 +42,18 @@ describe("connection STATE presentation", () => {
     // so it pulses amber and reads "Reconnecting…" — not the old red,
     // non-pulsing "Disconnected. Retrying…" that also covered give-up.
     expect(STATE.disconnected.pending).toBe(true);
-    expect(STATE.disconnected.dotBg).toBe("bg-amber-500");
+    expect(STATE.disconnected.text).toBe("text-amber-500");
     expect(STATE.disconnected.message).toBe("Reconnecting…");
   });
 
   it("treats failed as terminal — red, not pulsing", () => {
     expect(STATE.failed.pending).toBe(false);
-    expect(STATE.failed.dotBg).toBe("bg-red-500");
+    expect(STATE.failed.text).toBe("text-red-500");
   });
 
   it("only connected is non-pending and emerald", () => {
     expect(STATE.connected.pending).toBe(false);
-    expect(STATE.connected.dotBg).toBe("bg-emerald-500");
+    expect(STATE.connected.text).toBe("text-emerald-500");
     // copying/connecting are in-flight → pending.
     expect(STATE.copying.pending).toBe(true);
     expect(STATE.connecting.pending).toBe(true);
