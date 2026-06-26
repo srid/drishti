@@ -20,6 +20,14 @@
 import { defineSurface, type SurfaceTypes } from "@kolu/surface/define";
 import { z } from "zod";
 
+// IMPORTANT: this module is AGENT-shared (drishti-common's `.` export — the
+// agent serves the base surface from it). It must NOT import
+// `@kolu/surface-nix-host`: the agent's scoped build hydrates only `@kolu/surface`,
+// so a runtime import of the parent-only provisioning lib crashes the agent at
+// load. The connection-cell types, `DEFAULT_CONNECTION`, and the `browserSurface`
+// mirror-seam composition therefore live in the APP-only `drishti-common/browser`
+// subpath (./browser.ts), imported only by the parent re-serve + the client.
+
 const PidSchema = z.number().int().nonnegative();
 const ProcessSchema = z.object({
   user: z.string(),
@@ -119,58 +127,15 @@ const SystemSchema = z.object({
   pollIntervalMs: z.number(),
 });
 
-/** Parent-to-agent link lifecycle.
- *
- *  ⚠ **Parent-only write authority.** The cell lives on the shared
- *  surface so the browser can subscribe to it via snapshot-then-delta,
- *  but the *value* is owned by the parent's `HostSession`. The agent
- *  has no visibility into the link from the inside (a process can't
- *  observe its own SSH transport state) and must NOT publish updates
- *  here — see the inert stub in `agent/main.ts`. Any direct-to-agent
- *  client would see `DEFAULT_CONNECTION` forever; that's by design,
- *  since direct-to-agent connections imply the link is local and
- *  always-up.
- *
- *  The browser subscribes via `useCell(connection)`, which yields the
- *  current value synchronously to a new subscriber — the overlay
- *  attaches before `connect()` returns and still sees the initial
- *  `connecting` state. */
-const ConnectionSchema = z.object({
-  /** Link phase. Mirrors `HostSession`'s `ConnectionState` 1:1 (the
-   *  parent owns this — see above). `disconnected` is the transient gap
-   *  between retry attempts; `failed` is terminal — the parent's
-   *  reconnect loop gave up and won't retry without a manual
-   *  `hosts.reconnect`. Splitting the two is the whole point: the UI can
-   *  finally tell "reconnecting…" from "gave up, here's why". */
-  state: z.enum([
-    "copying",
-    "connecting",
-    "connected",
-    "disconnected",
-    "failed",
-  ]),
-  /** The error behind a `disconnected`/`failed` state, verbatim from the
-   *  parent (`HostSession.lastError`). `null` while healthy. Free-form —
-   *  the parent owns the vocabulary; the browser only renders it. */
-  lastError: z.string().nullable(),
-  /** Why the link is down, mirroring `HostSession.failureCause` — a stable
-   *  discriminant the browser keys messaging off of (vs parsing the
-   *  free-form `lastError`). `"network"` = host unreachable, so the parent
-   *  retries forever; `"remote"` = the host rejected the closure, which
-   *  goes terminal (`failed`). `null` while `copying`/`connecting`/
-   *  `connected`. */
-  failureCause: z.enum(["network", "remote"]).nullable(),
-  /** Tail of the parent's link-lifecycle progress log (nix-copy output,
-   *  ssh spawn, "reconnecting… (attempt N/5)"). Lets the overlay show
-   *  live retry progress without the browser parsing it for control
-   *  flow — it's display text, never a branch condition. Deliberately
-   *  uncapped: the parent already trims the ring to a kolu-private bound,
-   *  and re-asserting that constant here would couple this contract to a
-   *  value drishti doesn't own — and reject valid frames if kolu ever
-   *  raised it. The UI reads only a bounded tail (the overlay's last line;
-   *  the failed-host card's last few), so the length is moot. */
-  progressLines: z.array(z.string()),
-});
+// ⚠ **Parent-to-agent link lifecycle — owned upstream (kolu #1568).**
+// The connection-health cell (schema, gate-closed `DEFAULT_CONNECTION`, and
+// the parent-only-write / read-only-over-the-wire authority) now lives in
+// `@kolu/surface-nix-host/connection`. It is byte-identical in shape to
+// drishti's former local `ConnectionSchema` (the five link phases, nullable
+// `lastError`, nullable `network|remote` `failureCause`, `progressLines` tail).
+// drishti adds it ONLY at the re-serve seam via `mirroredSurface` (`browserSurface`)
+// and re-exports the types at the top of this module, so a re-served mirror's
+// browser sees honest link health while the base surface stays connection-free.
 
 export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
   loadAvg: [0, 0, 0],
@@ -182,13 +147,6 @@ export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
   os: "unknown",
   hostname: "",
   pollIntervalMs: 0,
-};
-
-export const DEFAULT_CONNECTION: z.infer<typeof ConnectionSchema> = {
-  state: "connecting",
-  lastError: null,
-  failureCause: null,
-  progressLines: [],
 };
 
 /** Snapshot-then-delta `Stream<>` shape — the bulk-friendly counterpart
@@ -253,10 +211,10 @@ export const surface = defineSurface({
       schema: SystemSchema,
       default: DEFAULT_SYSTEM,
     },
-    connection: {
-      schema: ConnectionSchema,
-      default: DEFAULT_CONNECTION,
-    },
+    // NOTE: no `connection` cell here. Link health is composed ONLY at the
+    // nix-host re-serve seam via `mirroredSurface(surface)` (`browserSurface`
+    // below) — the agent serves this connection-free base; the parent mirrors
+    // it and adds the cell, writing it off `session.onState` (kolu #1568).
   },
   collections: {
     processes: {
@@ -320,9 +278,9 @@ export type CpuCore = SF["collections"]["cpuCores"]["Value"];
 export type IfaceName = SF["collections"]["networkInterfaces"]["Key"];
 export type NetInterface = SF["collections"]["networkInterfaces"]["Value"];
 export type SystemInfo = SF["cells"]["system"]["Value"];
-export type ConnectionInfo = SF["cells"]["connection"]["Value"];
-export type ConnectionState = ConnectionInfo["state"];
-export type FailureCause = NonNullable<ConnectionInfo["failureCause"]>;
+// `ConnectionInfo` / `ConnectionState` / `FailureCause` are re-exported from the
+// app-only `drishti-common/browser` subpath (./browser.ts), NOT here — see the
+// agent-safety note near the top of this file.
 export type ProcessesSnapshotMsg = SF["streams"]["processesSnapshot"]["Output"];
 export type MetricSample = z.infer<typeof MetricSampleSchema>;
 export type MetricHistoryMsg = SF["streams"]["metricHistory"]["Output"];

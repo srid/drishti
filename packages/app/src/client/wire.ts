@@ -1,25 +1,30 @@
 /**
  * Client-side surface bundle — one WebSocket per host.
  *
- * Each host gets its own `surfaceClient` over its own `PartySocket`;
- * the admin surface (host set) gets one more at the reserved sentinel.
- * The cache keeps the PartySocket stable across Solid component
- * remounts so a tab switch doesn't tear down the connection — only the
- * subscriptions inside it.
+ * Each host gets its own surface client over its own `PartySocket` via
+ * `connectSurface` (the turnkey seam); the admin surface (host set + the
+ * surface-app sibling) gets one more via `connectSurfaces` at the reserved
+ * sentinel. Both seams wire the half-open liveness heartbeat — probing the
+ * framework-reserved `system.live` round-trip — BY CONSTRUCTION. The hand-built
+ * `surfaceClient + websocketLink` path these used to take could (and silently
+ * did) skip that heartbeat, so it is gone: there is no constructor left that can
+ * forget the watchdog. The admin socket opts the heartbeat OUT (`heartbeat:
+ * false`) only because `<SurfaceAppProvider>`'s `createServerLifecycle` already
+ * runs one for it — a second would double the probe.
  *
- * `disposeHostSurface(host)` closes a host's socket when it's removed
- * from the admin collection so the cache doesn't leak.
+ * The cache keeps the connection stable across Solid component remounts so a tab
+ * switch doesn't tear down the socket — only the subscriptions inside it.
+ * `disposeHostSurface(host)` disposes a host's connection (stopping its heartbeat
+ * and standing subs, then closing the socket) when it leaves the admin collection
+ * so the cache doesn't leak.
  */
 
-import { websocketLink } from "@kolu/surface/links/websocket";
-import { surfaceClient, surfaceClients } from "@kolu/surface/solid";
-import {
-  createProcessIdEcho,
-  createSurfaceSocket,
-} from "@kolu/surface-app/connect";
+import type { ContractRouterClient } from "@orpc/contract";
+import { createProcessIdEcho } from "@kolu/surface-app/connect";
+import { connectSurface, connectSurfaces } from "@kolu/surface-app/solid";
 import { adminContract, adminSurfaces } from "../common/admin-surface";
 import { ADMIN_HOST_SENTINEL } from "../common/host";
-import { surface } from "drishti-common";
+import { browserSurface } from "drishti-common/browser";
 
 // ONE shared `pid` echo across every socket (per-host + admin). The parent mints
 // a fresh `processId` per boot; the echo threads the last-known one back as the
@@ -27,12 +32,12 @@ import { surface } from "drishti-common";
 // after a restart and rejects it at the handshake. `App.tsx` feeds this via the
 // provider's `onProcessId` callback (the turnkey `{ ws, probe }` source publishes
 // each observed id); it's null until the first probe, so the first connect omits
-// the param. `createSurfaceSocket` reads it on every reconnect.
+// the param. The connect* seams read it on every reconnect.
 const echo = createProcessIdEcho();
 export const rememberServerProcessId = echo.remember;
 
 // The base WS URL — WITHOUT the `pid` (the echo appends it). A per-host string is
-// built fresh on each reconnect by `createSurfaceSocket`'s URL thunk.
+// built fresh on each reconnect by the seam's URL thunk.
 function wsBaseFor(host: string): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${location.host}/rpc/ws?host=${encodeURIComponent(host)}`;
@@ -41,85 +46,97 @@ function wsBaseFor(host: string): string {
 // Cold start can take 30+ seconds while the parent provisions the agent via
 // `nix copy`, so the connect deadline is bumped well past partysocket's 4s
 // default — without this, the socket flaps repeatedly during the first connect.
-//
-// `retire` controls who tears the socket down on a stale-close: the per-host
-// sockets have no provider lifecycle, so they self-retire on a stale-close
-// (`retire: true`). The admin socket is owned by `<SurfaceAppProvider>`'s turnkey
-// `{ ws, probe }` source, which retires it itself — so it opts out (`retire:
-// false`) to avoid a double-retire.
-function makeSocket(host: string, retire: boolean) {
-  return createSurfaceSocket({
-    url: () => wsBaseFor(host),
-    echo,
-    socketOptions: {
-      connectionTimeout: 60_000,
-      minReconnectionDelay: 2_000,
-      maxReconnectionDelay: 15_000,
-    },
-    retireOnStaleClose: retire,
-  }).ws;
-}
+// Shared by every socket the two connect* seams open.
+const BASE_SOCKET_OPTIONS = {
+  connectionTimeout: 60_000,
+  minReconnectionDelay: 2_000,
+  maxReconnectionDelay: 15_000,
+} as const;
 
-type HostClient = ReturnType<typeof buildHostSurface>;
-type AdminClient = ReturnType<typeof buildAdminSurface>;
+type HostConnection = ReturnType<typeof buildHostSurface>;
+type AdminConnection = ReturnType<typeof buildAdminSurface>;
 
 function buildHostSurface(host: string) {
-  // Per-host sockets own their stale-close retirement — no provider watches them.
-  const ws = makeSocket(host, true);
-  const client = surfaceClient(
-    surface,
-    websocketLink<typeof surface.contract>(ws as unknown as WebSocket),
-  );
-  return { ws, client };
+  // `connectSurface` builds the reconnecting socket, the reactive client, AND the
+  // default-on half-open heartbeat in one call — so a silently half-open per-host
+  // link is detected and force-reconnected instead of left painting stale metrics
+  // (the gap the hand-built path had: it threaded `{ live }` off open/close but
+  // ran no heartbeat). The socket self-retires on a stale-restart close — no
+  // provider watches per-host sockets — so `retireOnStaleClose: true`. The
+  // transport leg, and (via `browserSurface`'s `connection` cell `liveWhen`) the
+  // mirror leg, both fold into `client.health().live` by construction.
+  return connectSurface({
+    surface: browserSurface,
+    url: () => wsBaseFor(host),
+    echo,
+    socketOptions: BASE_SOCKET_OPTIONS,
+    retireOnStaleClose: true,
+  });
 }
 
 function buildAdminSurface() {
-  // The admin socket is owned by `<SurfaceAppProvider>`'s turnkey source, which
-  // retires it on a stale-restart itself (kolu#1231) — so it opts out here.
-  const ws = makeSocket(ADMIN_HOST_SENTINEL, false);
   // The admin transport multiplexes TWO sibling surfaces (kolu#1197/#1201):
   // drishti's own `admin` surface (the host set + procedures) and surface-app's
-  // complete surface (`buildInfo` + the `identity.info` probe). `surfaceClients`
-  // splits the one link into a per-key client bundle; each client's `.rpc` is
-  // the SCOPED slice (`{ surface: link.surface[key] }`), so its primitives
-  // resolve at `/surface/<key>/<prim>/<verb>`.
-  const link = websocketLink<typeof adminContract>(ws as unknown as WebSocket);
-  const clients = surfaceClients(link, adminSurfaces);
-  return { ws, link, clients };
+  // complete surface (`buildInfo` + the `identity.info` probe). `connectSurfaces`
+  // splits the one link into a per-key client bundle and folds them into ONE
+  // `health()` fact (`live` AND-reduced across siblings off the one socket).
+  // `connectSurfaces` ALWAYS wires the half-open watchdog (it mints the
+  // watchdog-backed `LiveSignal` the clients require — there is no `heartbeat:
+  // false` that could mint a blind brand). So the admin socket's ONE watchdog
+  // lives here; the `<SurfaceAppProvider>` lifecycle over the SAME socket
+  // (`App.tsx`) opts ITS own watchdog out (`heartbeat={false}` — it mints no
+  // brand) so the socket isn't double-watched. The lifecycle still retires the
+  // socket on a stale-restart, so this opts out of self-retire
+  // (`retireOnStaleClose: false`).
+  return connectSurfaces({
+    surfaces: adminSurfaces,
+    url: () => wsBaseFor(ADMIN_HOST_SENTINEL),
+    echo,
+    socketOptions: BASE_SOCKET_OPTIONS,
+    retireOnStaleClose: false,
+  });
 }
 
-const hostCache = new Map<string, HostClient>();
+const hostCache = new Map<string, HostConnection>();
 
-/** Get the (cached) surface client for `host`. The first call opens
- *  the PartySocket; subsequent calls return the same instance so a tab
- *  remount preserves the live connection. */
-export function surfaceForHost(host: string) {
+// `connectSurface`/`connectSurfaces` erase the client's `.rpc` to `unknown`/`any`
+// (to dodge TS2590 on their generic seams), so recover the CONCRETE contract for
+// imperative procedures here — the runtime link IS this type. The framework's
+// blessed "cast `.rpc` to your concrete contract once at the wire boundary".
+type HostRpc = ContractRouterClient<typeof browserSurface.contract>;
+type HostClient = HostConnection["client"] & { rpc: HostRpc };
+
+/** Get the (cached) surface client for `host`. The first call opens the
+ *  socket (and starts its heartbeat); subsequent calls return the same instance
+ *  so a tab remount preserves the live connection. */
+export function surfaceForHost(host: string): HostClient {
   let entry = hostCache.get(host);
   if (entry === undefined) {
     entry = buildHostSurface(host);
     hostCache.set(host, entry);
   }
-  return entry.client;
+  return entry.client as HostClient;
 }
 
-/** Close the host's socket and drop the cached client. Call when the
- *  admin collection signals the host was removed — otherwise the
- *  PartySocket keeps trying to reconnect into a server slot that no
- *  longer exists. */
+/** Dispose the host's connection and drop it from the cache. Stops the heartbeat
+ *  and tears down the client's standing subs, then closes the socket — otherwise
+ *  the PartySocket keeps reconnecting into a server slot that no longer exists.
+ *  Call when the admin collection signals the host was removed. */
 export function disposeHostSurface(host: string): void {
   const entry = hostCache.get(host);
   if (entry === undefined) return;
   hostCache.delete(host);
   try {
+    entry.dispose();
     entry.ws.close();
   } catch {
     /* best-effort */
   }
 }
 
-let adminEntry: AdminClient | undefined;
+let adminEntry: AdminConnection | undefined;
 
-function adminEntryLazy(): AdminClient {
+function adminEntryLazy(): AdminConnection {
   if (adminEntry === undefined) adminEntry = buildAdminSurface();
   return adminEntry;
 }
@@ -133,14 +150,19 @@ export function adminClient() {
   return adminEntryLazy().clients.admin;
 }
 
-/** The admin surface's PROCEDURE namespace, typed off the full combined link.
- *  `adminRpc().hosts.add(...)` / `.remove(...)` / `.reconnect(...)` /
- *  `.recheck(...)` resolve at `/surface/admin/hosts/<verb>`. Procedure calls go
- *  through the full typed link (not the per-key scoped client, whose `.rpc` is
- *  `unknown`) — mirroring kolu, where raw/surface procedures resolve off the
- *  full combined link rather than a scoped slice. */
+// The admin scoped client's `.rpc` is the slice `{ surface: link.surface.admin }`,
+// typed `any` by `connectSurfaces`; recover the admin router type so the
+// imperative host-lifecycle procedures stay typed.
+type AdminScopedRpc = {
+  surface: ContractRouterClient<typeof adminContract>["surface"]["admin"];
+};
+
+/** The admin surface's PROCEDURE namespace. `adminRpc().hosts.add(...)` /
+ *  `.remove(...)` / `.reconnect(...)` / `.recheck(...)` resolve at
+ *  `/surface/admin/hosts/<verb>`. Procedure calls go through the scoped rpc
+ *  (recovered to its concrete type above), mirroring kolu. */
 export function adminRpc() {
-  return adminEntryLazy().link.surface.admin;
+  return (adminEntryLazy().clients.admin.rpc as AdminScopedRpc).surface;
 }
 
 /** Get the (cached) surface-app client over the admin transport — the global
@@ -161,4 +183,3 @@ export function surfaceAppClient() {
 export function adminSocket() {
   return adminEntryLazy().ws;
 }
-

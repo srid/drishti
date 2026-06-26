@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { defineSurface } from "@kolu/surface/define";
 import { directLink } from "@kolu/surface/links/direct";
 import { implementSurface, inMemoryChannelByName } from "@kolu/surface/server";
-import { streamCall } from "@kolu/surface/client";
+import { unenrolledStreamCall } from "@kolu/surface/client";
 import { createSubscription } from "@kolu/surface/solid";
 import {
   type Pid,
@@ -146,7 +146,7 @@ describe("processesSnapshot consumer — createSubscription + reduce, read fine-
 
     await createRoot(async (dispose) => {
       const sub = createSubscription<ProcessesSnapshotMsg, Record<Pid, Process>>(
-        () => streamCall(link.surface.processesSnapshot.get, {}),
+        () => unenrolledStreamCall(link.surface.processesSnapshot.get, {}),
         { reduce: foldProcessesMessage, initial: {} },
       );
       const processes = (): Record<Pid, Process> => sub() ?? {};
@@ -183,7 +183,7 @@ describe("processesSnapshot consumer — createSubscription + reduce, read fine-
 
     await createRoot(async (dispose) => {
       const sub = createSubscription<ProcessesSnapshotMsg, Record<Pid, Process>>(
-        () => streamCall(link.surface.processesSnapshot.get, {}),
+        () => unenrolledStreamCall(link.surface.processesSnapshot.get, {}),
         { reduce: foldProcessesMessage, initial: {} },
       );
       const processes = (): Record<Pid, Process> => sub() ?? {};

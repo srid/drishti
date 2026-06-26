@@ -36,7 +36,6 @@ import { serveOverStdio } from "@kolu/surface/peer-server";
 import {
   type CoreId,
   type CpuCore,
-  DEFAULT_CONNECTION,
   type IfaceName,
   type MetricHistoryMsg,
   type NetInterface,
@@ -160,16 +159,11 @@ export async function serveAgent(
   const fragment = implementSurface(surface, {
     channel: inMemoryChannelByName(),
     cells: {
+      // The agent serves the connection-FREE base surface. Link health is the
+      // PARENT's observation of the parent↔agent link (the agent can't see its
+      // own SSH transport from the inside), so it's composed only at the parent's
+      // re-serve via `mirroredSurface`, never here.
       system: { store: systemStore },
-      // ⚠ **INERT STUB — DO NOT WRITE TO THIS CELL.**
-      // `connection` is declared on the shared surface so the browser
-      // can subscribe to parent-published lifecycle. The agent has no
-      // visibility into its own SSH transport state from the inside,
-      // so this store stays at `DEFAULT_CONNECTION` for the lifetime
-      // of the process. The parent's router has independent write
-      // authority on its own implementation of the same surface.
-      // (See the warning in common/surface.ts on `ConnectionSchema`.)
-      connection: { store: inMemoryStore({ ...DEFAULT_CONNECTION }) },
     },
     collections: {
       processes: {

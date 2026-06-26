@@ -16,9 +16,9 @@
 import { useSurfaceApp } from "@kolu/surface-app/solid";
 import { createPwaInstall, installInstructions } from "@kolu/solid-pwa-install";
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { type ConnectionState, DEFAULT_CONNECTION } from "drishti-common";
+import { type ConnectionState, DEFAULT_CONNECTION } from "drishti-common/browser";
 import type { View } from "./view";
-import { STATE } from "./connectionColors";
+import { HostDot } from "./HostDot";
 import { otherTheme, type Theme } from "./theme";
 import { surfaceForHost } from "./wire";
 
@@ -184,9 +184,7 @@ function TabChip(props: {
         onClick={props.onSelect}
         title={`${props.host} — ${state()}`}
       >
-        <span
-          class={`inline-block h-2 w-2 rounded-full ${STATE[state()].dotBg} ${STATE[state()].pending ? "animate-pulse" : ""}`}
-        />
+        <HostDot health={app.health} state={state} />
         <span class="font-semibold">{props.host}</span>
       </button>
       <button
