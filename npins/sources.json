@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "pulam-conn-bug",
+      "branch": "master",
       "submodules": false,
-      "revision": "10ea6946f8ff29bc7de7b0b874b4c30a8da01d13",
-      "url": "https://github.com/juspay/kolu/archive/10ea6946f8ff29bc7de7b0b874b4c30a8da01d13.tar.gz",
-      "hash": "sha256-EvMng1UDxY3K7ISgaFomA46uCwmvEsL19M+hKCSJmb4="
+      "revision": "85ca242b37105ea34ccdc7f826aef19b809af41c",
+      "url": "https://github.com/juspay/kolu/archive/85ca242b37105ea34ccdc7f826aef19b809af41c.tar.gz",
+      "hash": "sha256-EDGKHclK0+g/MHIF/p/iHxgX0YBWgMpLIytNg/NTHCk="
     },
     "nixpkgs": {
       "type": "Git",
