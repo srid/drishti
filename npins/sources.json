@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "master",
+      "branch": "drishti-cpu",
       "submodules": false,
-      "revision": "d9e4b77ccf4ccdebe2bce1f288ac9a62eb9bfd13",
-      "url": "https://github.com/juspay/kolu/archive/d9e4b77ccf4ccdebe2bce1f288ac9a62eb9bfd13.tar.gz",
-      "hash": "sha256-UbBS4ikqRspKsjkQVgrDjLkrMt2DsN3P9jLM2FY1/Gs="
+      "revision": "a7071b0b5a91a30427534a63bcbdc15bea4eae95",
+      "url": "https://github.com/juspay/kolu/archive/a7071b0b5a91a30427534a63bcbdc15bea4eae95.tar.gz",
+      "hash": "sha256-y6YHKdCnfSFnz9m95Mkmv3sw1Aepq8ZHrfhBHnmQiJ8="
     },
     "nixpkgs": {
       "type": "Git",

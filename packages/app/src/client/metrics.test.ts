@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { SystemInfo } from "drishti-common";
+import { averageCoreUsage } from "drishti-common/metrics";
 import {
-  averageCoreUsage,
   diskGb,
   diskPct,
   formatBytes,

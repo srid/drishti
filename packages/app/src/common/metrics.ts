@@ -12,12 +12,10 @@
 
 import type { SystemInfo } from "drishti-common";
 
-// `averageCoreUsage` now lives in `drishti-common/metrics` — the agent is the
+// `averageCoreUsage` lives in `drishti-common/metrics` — the agent is the
 // producer of the host-CPU aggregate (it folds the mean into `system.cpuPct`),
-// so the formula moved to the package the agent can import. Re-exported here so
-// existing app-side imports (`./metrics`, history.ts, the test) keep resolving
-// against one module.
-export { averageCoreUsage } from "drishti-common/metrics";
+// so the formula moved to the package the agent can import. Consumers import it
+// from there directly; it is not re-exported through this app-only module.
 
 /** `part` as a percentage of `whole`, guarded: 0 when `whole` is 0 (or
  *  negative) so callers never divide by zero — e.g. a freshly-connected host
