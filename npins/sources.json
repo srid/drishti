@@ -9,9 +9,9 @@
       },
       "branch": "mad-folk",
       "submodules": false,
-      "revision": "e956a86af7ab1538300da57af0157b38730a4c23",
-      "url": "https://github.com/juspay/kolu/archive/e956a86af7ab1538300da57af0157b38730a4c23.tar.gz",
-      "hash": "sha256-d9y09dz8sEkn3kjeF/MJbjTu0XH5rPN2DPv3wib7Iq8="
+      "revision": "288d8c08542874e9d61d6aa6bd135bac7e5bae7d",
+      "url": "https://github.com/juspay/kolu/archive/288d8c08542874e9d61d6aa6bd135bac7e5bae7d.tar.gz",
+      "hash": "sha256-UbBS4ikqRspKsjkQVgrDjLkrMt2DsN3P9jLM2FY1/Gs="
     },
     "nixpkgs": {
       "type": "Git",
