@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "master",
+      "branch": "fix/heartbeat-suspension-void",
       "submodules": false,
-      "revision": "85ca242b37105ea34ccdc7f826aef19b809af41c",
-      "url": "https://github.com/juspay/kolu/archive/85ca242b37105ea34ccdc7f826aef19b809af41c.tar.gz",
-      "hash": "sha256-EDGKHclK0+g/MHIF/p/iHxgX0YBWgMpLIytNg/NTHCk="
+      "revision": "cd6235c03ab99ee68ad851d3b1f22f054ef0ab5a",
+      "url": "https://github.com/juspay/kolu/archive/cd6235c03ab99ee68ad851d3b1f22f054ef0ab5a.tar.gz",
+      "hash": "sha256-jllZG8pGEzkgOLkv5eh/imFwiv0SeYXxbqd4YR2GNrs="
     },
     "nixpkgs": {
       "type": "Git",
