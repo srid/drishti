@@ -15,6 +15,8 @@ import {
 function sys(over: Partial<SystemInfo> = {}): SystemInfo {
   return {
     loadAvg: [0, 0, 0],
+    cpuPct: 0,
+    coreCount: 0,
     memUsed: 0,
     memTotal: 0,
     diskUsed: 0,

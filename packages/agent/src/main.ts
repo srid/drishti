@@ -44,9 +44,21 @@ import {
   type ProcessesSnapshotMsg,
   surface,
 } from "drishti-common";
+import { averageCoreUsage } from "drishti-common/metrics";
 import { createProcReader, type ProcReader } from "./proc";
 
 const POLL_INTERVAL_MS = 2000;
+
+// The host-CPU aggregate, folded into the `system` cell so a glance card reads
+// one scalar instead of subscribing to every per-core cell (which opens N
+// per-core value streams per host — the fleet's O(hosts×cores) CPU sink). The
+// agent is the natural producer: it already reads per-core usage each tick.
+const cpuAggregate = (
+  cores: ReadonlyMap<CoreId, CpuCore>,
+): { cpuPct: number; coreCount: number } => ({
+  cpuPct: averageCoreUsage([...cores.values()].map((c) => c.usagePct)),
+  coreCount: cores.size,
+});
 
 function log(...args: unknown[]): void {
   process.stderr.write(`${args.map((a) => String(a)).join(" ")}\n`);
@@ -127,19 +139,21 @@ export async function serveAgent(
   reader: ProcReader,
   serve: Serve = serveOverStdio,
 ): Promise<void> {
+  // Per-core CPU usage is a *rate* against the previous tick; the reader
+  // captured its baseline at construction, so this synchronous seed (just
+  // os.cpus(), no fork) costs nothing and lets a subscriber see cores at once.
+  // Seeded before `system` so its cpuPct/coreCount aggregate is live too.
+  const cpuCoreSnapshot = new Map<CoreId, CpuCore>();
+  for (const [core, value] of reader.readCpuCores())
+    cpuCoreSnapshot.set(core, value);
   // Seed the `system` cell synchronously — the cheap read (vm_stat + statfs
   // on darwin, a couple of /proc reads on linux) the handshake actually
   // needs, so the cell is live the instant we serve.
   const systemStore = inMemoryStore({
     ...(await reader.readSystem()),
+    ...cpuAggregate(cpuCoreSnapshot),
     pollIntervalMs: POLL_INTERVAL_MS,
   });
-  // Per-core CPU usage is a *rate* against the previous tick; the reader
-  // captured its baseline at construction, so this synchronous seed (just
-  // os.cpus(), no fork) costs nothing and lets a subscriber see cores at once.
-  const cpuCoreSnapshot = new Map<CoreId, CpuCore>();
-  for (const [core, value] of reader.readCpuCores())
-    cpuCoreSnapshot.set(core, value);
   // Processes and network start EMPTY and are filled by the poll loop's first
   // tick (kicked immediately below), NOT awaited here. On darwin
   // `readProcesses` forks `ps` + `lsof` over every pid and `readNetwork`
@@ -252,8 +266,14 @@ export async function serveAgent(
         reader.readProcesses(),
         reader.readNetwork(),
       ]);
+      // Read per-core usage up front so the host-CPU aggregate (cpuPct /
+      // coreCount) rides this tick's `system` cell — the fleet card reads that
+      // one scalar instead of subscribing to all N per-core cells to average
+      // them (the O(hosts×cores) fan-out the fleet used to pay).
+      const nextCores = reader.readCpuCores();
       fragment.ctx.cells.system.set({
         ...nextSystem,
+        ...cpuAggregate(nextCores),
         pollIntervalMs: POLL_INTERVAL_MS,
       });
       const upserts: Array<[Pid, Process]> = [];
@@ -276,12 +296,12 @@ export async function serveAgent(
       }
 
       // Per-core CPU usage — published through the framework's
-      // Collection<K,T>. Small-N (4-32 cores) so per-key fan-out is
-      // exactly the right shape: each core gets its own reactive
-      // subscription in the browser.
-      // Evict cores that disappeared (hot-unplug / VM CPU resize) so
-      // stale bars don't linger in the browser strip.
-      const nextCores = reader.readCpuCores();
+      // Collection<K,T>. Small-N (4-32 cores) so per-key fan-out is the right
+      // shape for the host drill-in, where each core gets its own reactive bar;
+      // the fleet glance card reads the `system.cpuPct` aggregate above instead
+      // of subscribing here. `nextCores` was read above for that aggregate.
+      // Evict cores that disappeared (hot-unplug / VM CPU resize) so stale bars
+      // don't linger in the browser strip.
       for (const [core, value] of nextCores) {
         fragment.ctx.collections.cpuCores.upsert(core, value);
       }

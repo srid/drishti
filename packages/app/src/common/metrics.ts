@@ -12,6 +12,13 @@
 
 import type { SystemInfo } from "drishti-common";
 
+// `averageCoreUsage` now lives in `drishti-common/metrics` — the agent is the
+// producer of the host-CPU aggregate (it folds the mean into `system.cpuPct`),
+// so the formula moved to the package the agent can import. Re-exported here so
+// existing app-side imports (`./metrics`, history.ts, the test) keep resolving
+// against one module.
+export { averageCoreUsage } from "drishti-common/metrics";
+
 /** `part` as a percentage of `whole`, guarded: 0 when `whole` is 0 (or
  *  negative) so callers never divide by zero — e.g. a freshly-connected host
  *  whose first `system` tick hasn't landed yet reports a 0 total. The single
@@ -31,12 +38,4 @@ export function memPct(system: SystemInfo): number {
  *  reports no disk total (agent couldn't `statfs`), never NaN. */
 export function diskPct(system: SystemInfo): number {
   return pctOf(system.diskUsed, system.diskTotal);
-}
-
-/** Mean busy-percentage across the supplied per-core usages — the single
- *  "host CPU%" number the fleet card and the history ring both use. Zero
- *  for a host with no reported cores (e.g. not yet connected), never NaN. */
-export function averageCoreUsage(usages: readonly number[]): number {
-  if (usages.length === 0) return 0;
-  return usages.reduce((s, u) => s + u, 0) / usages.length;
 }

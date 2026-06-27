@@ -2,11 +2,14 @@ import { describe, expect, it } from "bun:test";
 import type { MetricSample, SystemInfo } from "drishti-common";
 import {
   captureSample,
+  CHART_MAX_POINTS,
+  downsample,
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
   isHistoryWindowKey,
   polylinePoints,
   pushSample,
+  SPARKLINE_MAX_POINTS,
   WIDEST_HISTORY_WINDOW,
   windowMsFor,
   windowSlice,
@@ -19,6 +22,8 @@ function sample(t: number, cpu = 0, mem = 0, disk = 0): MetricSample {
 function sys(over: Partial<SystemInfo> = {}): SystemInfo {
   return {
     loadAvg: [0, 0, 0],
+    cpuPct: 0,
+    coreCount: 0,
     memUsed: 0,
     memTotal: 0,
     diskUsed: 0,
@@ -69,21 +74,59 @@ describe("isHistoryWindowKey", () => {
 });
 
 describe("captureSample", () => {
-  it("averages the per-core usages and computes memory + disk %", () => {
+  it("reads cpu from system.cpuPct and computes memory + disk %", () => {
     const s = captureSample(
       5000,
-      sys({ memUsed: 4e9, memTotal: 16e9, diskUsed: 75e9, diskTotal: 100e9 }),
-      [10, 20, 30, 40],
+      sys({
+        cpuPct: 25,
+        memUsed: 4e9,
+        memTotal: 16e9,
+        diskUsed: 75e9,
+        diskTotal: 100e9,
+      }),
     );
     expect(s).toEqual({ t: 5000, cpu: 25, mem: 25, disk: 75 });
   });
 
-  it("yields 0 cpu for a host reporting no cores (never NaN)", () => {
-    expect(captureSample(0, sys(), []).cpu).toBe(0);
+  it("carries the agent's cpuPct through verbatim (no re-derivation)", () => {
+    expect(captureSample(0, sys({ cpuPct: 73.5 })).cpu).toBe(73.5);
   });
 
   it("yields 0 disk for a host reporting no disk total (never NaN)", () => {
-    expect(captureSample(0, sys(), []).disk).toBe(0);
+    expect(captureSample(0, sys()).disk).toBe(0);
+  });
+});
+
+describe("downsample", () => {
+  const series = (n: number) => Array.from({ length: n }, (_, i) => i);
+
+  it("is a no-op when already within budget", () => {
+    const s = series(50);
+    expect(downsample(s, 120)).toBe(s);
+    expect(downsample(s, 50)).toBe(s);
+  });
+
+  it("caps to maxPoints, keeping the first and last sample", () => {
+    const out = downsample(series(900), 120);
+    expect(out.length).toBe(120);
+    expect(out[0]).toBe(0);
+    expect(out[out.length - 1]).toBe(899);
+  });
+
+  it("returns evenly-spaced, monotonically non-decreasing indices", () => {
+    const out = downsample(series(900), 120) as number[];
+    for (let i = 1; i < out.length; i++) {
+      expect(out[i]!).toBeGreaterThanOrEqual(out[i - 1]!);
+    }
+  });
+
+  it("keeps only the newest sample for a budget of 1", () => {
+    expect(downsample(series(900), 1)).toEqual([899]);
+  });
+
+  it("the configured budgets are well below the 30m ring (900 @ 2s)", () => {
+    expect(SPARKLINE_MAX_POINTS).toBeLessThan(900);
+    expect(CHART_MAX_POINTS).toBeLessThan(900);
   });
 });
 

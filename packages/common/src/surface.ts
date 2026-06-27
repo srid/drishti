@@ -96,6 +96,18 @@ const NetInterfaceSchema = z.object({
 const SystemSchema = z.object({
   /** 1-minute, 5-minute, 15-minute load averages. */
   loadAvg: z.tuple([z.number(), z.number(), z.number()]),
+  /** Mean busy-percentage across every core (0-100) — the single host-CPU
+   *  aggregate, computed ONCE at the agent (which already reads per-core usage
+   *  each tick) and carried on this fixed-cardinality cell. A glance card reads
+   *  this scalar instead of subscribing to the per-key `cpuCores` collection and
+   *  averaging all N cores client-side — a `.map(byKey)` reduction silently opens
+   *  N per-core value streams per host, the fleet's O(hosts×cores) CPU sink. The
+   *  per-core `cpuCores` collection stays for the host drill-in that renders a
+   *  bar per core. */
+  cpuPct: z.number(),
+  /** Number of cores the agent observed — lets a glance card show "N cores"
+   *  without touching the per-key `cpuCores` collection just for its key count. */
+  coreCount: z.number().int().nonnegative(),
   /** Bytes used / total — UI converts to GB. */
   memUsed: z.number(),
   memTotal: z.number(),
@@ -139,6 +151,8 @@ const SystemSchema = z.object({
 
 export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
   loadAvg: [0, 0, 0],
+  cpuPct: 0,
+  coreCount: 0,
   memUsed: 0,
   memTotal: 0,
   diskUsed: 0,
