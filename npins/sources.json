@@ -9,9 +9,9 @@
       },
       "branch": "drishti-cpu",
       "submodules": false,
-      "revision": "5d69d3144442efa019c4e63815c4f44c6133e762",
-      "url": "https://github.com/juspay/kolu/archive/5d69d3144442efa019c4e63815c4f44c6133e762.tar.gz",
-      "hash": "sha256-ywsc+d1g5AIaED6hCO3Uze4Qxgg1yqs8shgxpH+ie9s="
+      "revision": "46f0e8fd51584604e2e199e036087783dd1fc850",
+      "url": "https://github.com/juspay/kolu/archive/46f0e8fd51584604e2e199e036087783dd1fc850.tar.gz",
+      "hash": "sha256-hzdlqtZfM196EUmtemYZSw6oh9Zps2MxcoXWZemgqhg="
     },
     "nixpkgs": {
       "type": "Git",
