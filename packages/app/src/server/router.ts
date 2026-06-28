@@ -225,17 +225,14 @@ export function buildRouter(opts: BuildRouterOptions) {
   const _pumpCtx: FragmentCtx = fragment;
   void _pumpCtx;
 
-  // Sample the metric ring once per agent system tick. CPU% is the mean of
-  // the cores currently mirrored into `coreCache` (pumped concurrently);
-  // memory% comes from the just-arrived system snapshot. `pushSample`
-  // evicts points past the retention bound, and the delta goes to every
-  // live browser subscriber.
+  // Sample the metric ring once per agent system tick. Every series reads off
+  // the just-arrived `system` snapshot — CPU% is the agent-computed
+  // `system.cpuPct` (the single host-CPU mean), so the parent no longer
+  // re-averages `coreCache` (which is pumped on a separate leg and could lag
+  // the system tick by a frame). `pushSample` evicts points past the retention
+  // bound, and the delta goes to every live browser subscriber.
   const recordSample = (system: SystemInfo): void => {
-    const sample = captureSample(
-      Date.now(),
-      system,
-      [...coreCache.values()].map((c) => c.usagePct),
-    );
+    const sample = captureSample(Date.now(), system);
     historyRing = pushSample(historyRing, sample, HISTORY_RETENTION_MS);
     historyBus.publish({ kind: "delta", sample });
   };

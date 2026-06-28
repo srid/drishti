@@ -38,9 +38,14 @@ import type {
 
 const exec = promisify(execCb);
 
-/** Hardware/OS observations only — pollIntervalMs is owned by the
- *  agent's run loop and spliced in at publish time. */
-type RawSystemInfo = Omit<SystemInfo, "pollIntervalMs">;
+/** Hardware/OS observations only. `pollIntervalMs` is owned by the agent's run
+ *  loop, and the CPU aggregate (`cpuPct`/`coreCount`) is folded in from
+ *  `readCpuCores` — both spliced onto the `system` cell at publish time, so the
+ *  raw read produces neither. */
+type RawSystemInfo = Omit<
+  SystemInfo,
+  "pollIntervalMs" | "cpuPct" | "coreCount"
+>;
 
 export interface ProcReader {
   os: SystemInfo["os"];

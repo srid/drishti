@@ -16,7 +16,7 @@
  */
 
 import type { MetricSample, SystemInfo } from "drishti-common";
-import { averageCoreUsage, diskPct, memPct } from "./metrics";
+import { diskPct, memPct } from "./metrics";
 
 /** The series the chart draws. */
 export type MetricKey = "cpu" | "mem" | "disk";
@@ -68,23 +68,19 @@ export function isHistoryWindowKey(raw: string): boolean {
   return HISTORY_WINDOWS.some((w) => w.key === raw);
 }
 
-/** Assemble a `MetricSample` from a live system snapshot and the per-core
- *  usages captured at one instant — the single home for "what a captured
- *  sample is." Each series maps to its own derivation (a CPU mean, a memory
- *  share, a disk share), so adding one touches the data layer it comes from:
- *  the `MetricKey` union, the `MetricSample` schema, and this assembler. The
- *  *render* side (which polylines/legend chips to draw) is single-sourced
- *  separately in the client's `SERIES` table, so it costs no edit here. Pure:
- *  `t` is passed in, and every derivation reuses a canonical `metrics.ts`
- *  helper rather than re-deriving inline. */
-export function captureSample(
-  t: number,
-  system: SystemInfo,
-  coreUsages: readonly number[],
-): MetricSample {
+/** Assemble a `MetricSample` from a live system snapshot — the single home for
+ *  "what a captured sample is." Every series reads off the `system` cell: `cpu`
+ *  is the agent-computed `system.cpuPct` (the ONE host-CPU mean, no longer
+ *  re-averaged from the parent's `coreCache` — which could lag the system tick
+ *  by a frame under concurrent pumping), `mem`/`disk` reuse the canonical
+ *  `metrics.ts` shares. Adding a series touches the data layer it comes from
+ *  (the `MetricKey` union, the `MetricSample` schema, and this assembler); the
+ *  *render* side is single-sourced separately in the client's `SERIES` table.
+ *  Pure: `t` is passed in. */
+export function captureSample(t: number, system: SystemInfo): MetricSample {
   return {
     t,
-    cpu: averageCoreUsage(coreUsages),
+    cpu: system.cpuPct,
     mem: memPct(system),
     disk: diskPct(system),
   };
@@ -113,9 +109,44 @@ export function windowSlice(
   buffer: readonly MetricSample[],
   windowMs: number,
   now: number,
-): MetricSample[] {
+): readonly MetricSample[] {
   const cutoff = now - windowMs;
+  // The buffer is time-ascending, so if its OLDEST sample is already within the
+  // window every sample is — return it as-is. The fleet card pins the widest
+  // window (= the ring's retention bound), so it hits this every tick and skips
+  // an O(ring) filter allocation, handing the buffer straight to `downsample`.
+  if (buffer.length === 0 || buffer[0]!.t >= cutoff) return buffer;
   return buffer.filter((s) => s.t >= cutoff);
+}
+
+/** Max points a glance sparkline / drill-in chart is drawn from. A trace
+ *  renders into at most a few hundred horizontal pixels, so beyond ~one point
+ *  per pixel the extra samples are invisible — yet each still costs a
+ *  coordinate pair, two `toFixed` calls, and ~12 bytes of `points` string PER
+ *  series PER tick. The 30m ring holds 900 samples at the 2s cadence; without a
+ *  cap the fleet redraws 27 polylines × 900 points (~24k points, ~270 KB of
+ *  strings) every tick into 40px boxes. Capping turns that into a fixed,
+ *  pixel-sized draw. The fleet sparkline is ~40px tall; the host chart wider. */
+export const SPARKLINE_MAX_POINTS = 120;
+export const CHART_MAX_POINTS = 240;
+
+/** Reduce a series to at most `maxPoints` evenly-spaced samples, always keeping
+ *  the first and last (so the trace still spans the full window and its right
+ *  edge stays "latest"). A no-op when already within budget. Pure; the input is
+ *  never mutated. Index-strided (not time-bucketed averaged) because a monitor
+ *  trace wants the real peaks/troughs preserved, not smoothed away. */
+export function downsample<T>(
+  items: readonly T[],
+  maxPoints: number,
+): readonly T[] {
+  const n = items.length;
+  if (maxPoints <= 0 || n <= maxPoints) return items;
+  if (maxPoints === 1) return [items[n - 1]!];
+  const out: T[] = [];
+  for (let i = 0; i < maxPoints; i++) {
+    out.push(items[Math.round((i * (n - 1)) / (maxPoints - 1))]!);
+  }
+  return out;
 }
 
 function clamp(n: number, lo: number, hi: number): number {

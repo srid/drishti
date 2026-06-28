@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { SystemInfo } from "drishti-common";
 import {
-  averageCoreUsage,
   diskGb,
   diskPct,
   formatBytes,
@@ -15,6 +14,8 @@ import {
 function sys(over: Partial<SystemInfo> = {}): SystemInfo {
   return {
     loadAvg: [0, 0, 0],
+    cpuPct: 0,
+    coreCount: 0,
     memUsed: 0,
     memTotal: 0,
     diskUsed: 0,
@@ -111,15 +112,5 @@ describe("formatThroughput", () => {
   it("appends a per-second suffix to the byte size", () => {
     expect(formatThroughput(0)).toBe("0 B/s");
     expect(formatThroughput(1_200_000)).toBe("1.2 MB/s");
-  });
-});
-
-describe("averageCoreUsage", () => {
-  it("averages the per-core usages", () => {
-    expect(averageCoreUsage([10, 20, 30, 40])).toBe(25);
-  });
-
-  it("returns 0 for no cores (never NaN)", () => {
-    expect(averageCoreUsage([])).toBe(0);
   });
 });

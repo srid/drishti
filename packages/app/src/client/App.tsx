@@ -67,7 +67,6 @@ import { HostDot } from "./HostDot";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
 import {
-  averageCoreUsage,
   diskGb,
   diskPct,
   formatBytes,
@@ -81,7 +80,9 @@ import { isActiveNic } from "./nic";
 import { foldProcessesMessage } from "./processesStream";
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import {
+  CHART_MAX_POINTS,
   DEFAULT_HISTORY_WINDOW,
+  downsample,
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
   type HistoryWindowKey,
@@ -89,6 +90,7 @@ import {
   type MetricKey,
   polylinePoints,
   pushSample,
+  SPARKLINE_MAX_POINTS,
   WIDEST_HISTORY_WINDOW,
   windowMsFor,
   windowSlice,
@@ -99,6 +101,8 @@ import { TransportOverlay } from "./TransportOverlay";
 import { prefKey, readPref, writePref } from "./localStorageState";
 import { brandColorForTheme } from "./brand";
 import { APP_TITLE } from "./title";
+import { createPageVisibility } from "@solid-primitives/page-visibility";
+import { createVisibilityGate } from "./visibility";
 import {
   applyTheme,
   initialTheme,
@@ -295,6 +299,7 @@ const SERIES: ReadonlyArray<{ key: MetricKey } & SeriesMeta> = (
 function projectHistory(
   history: Accessor<readonly MetricSample[]>,
   windowMs: Accessor<number>,
+  maxPoints: number,
 ): {
   latest: Accessor<MetricSample | null>;
   points: Accessor<Record<MetricKey, string>>;
@@ -304,7 +309,13 @@ function projectHistory(
     return s.length > 0 ? s[s.length - 1]! : null;
   });
   const now = createMemo(() => latest()?.t ?? 0);
-  const windowed = createMemo(() => windowSlice(history(), windowMs(), now()));
+  // Downsample to the draw budget BEFORE projecting: the widest 30m window is
+  // up to 900 samples, but a trace only resolves a few hundred horizontal
+  // pixels, so the per-tick `polylinePoints` work (and the `points` string the
+  // SVG re-parses) is bounded to `maxPoints` per series instead of the ring.
+  const windowed = createMemo(() =>
+    downsample(windowSlice(history(), windowMs(), now()), maxPoints),
+  );
   const points = createMemo<Record<MetricKey, string>>(() => {
     const w = windowed();
     const n = now();
@@ -357,6 +368,25 @@ export default function App() {
       <TransportOverlay />
       <MultiHostApp />
     </SurfaceAppProvider>
+  );
+}
+
+// How long a tab may sit hidden before its data views are torn down. Long
+// enough that an alt-tab to copy a value keeps the fleet warm; short relative
+// to the minutes/hours a genuinely-backgrounded tab spends idle.
+const VISIBILITY_GRACE_MS = 20_000;
+
+// Shown in place of the fleet/host body while the tab is paused (hidden past
+// the grace window). Mounts no per-host subscriptions — that's the whole point
+// — so a backgrounded tab stops decoding telemetry it can't display. The user
+// only ever sees this for the one frame between re-focusing and the views
+// remounting; it exists to make the paused state legible, not decorative.
+function PausedView() {
+  return (
+    <div class="px-4 py-12 text-center text-gray-400 dark:text-gray-500">
+      <div class="mb-1 text-sm">Paused</div>
+      <div class="text-xs">Live updates resume when this tab is in view.</div>
+    </div>
   );
 }
 
@@ -416,27 +446,37 @@ function MultiHostApp() {
     }),
   );
 
+  // Page-visibility, sourced ONCE here (the single `visibilitychange`
+  // subscription, SSR-safe) and fed to BOTH consumers — the becoming-visible
+  // link re-probe just below and the data-view pause gate
+  // (`createVisibilityGate`) — so there's no parallel listener to drift.
+  const pageVisible = createPageVisibility();
+
   // Nudge the parent to re-probe every host link when the browser regains
-  // connectivity (`online`) or the tab is refocused (`visibilitychange`) —
-  // the client-side companion to the server's wake monitor. It catches the
-  // case the parent's clock-gap detector can't: a brief network flap (café
-  // Wi-Fi dropping for a few seconds) that never suspends the process.
-  // partysocket already reconnects these loopback control sockets; this RPC
-  // reaches past them to the *agent* links the parent holds over ssh.
+  // connectivity (`online`) or the tab is refocused — the client-side companion
+  // to the server's wake monitor. It catches the case the parent's clock-gap
+  // detector can't: a brief network flap (café Wi-Fi dropping for a few seconds)
+  // that never suspends the process. partysocket already reconnects these
+  // loopback control sockets; this RPC reaches past them to the *agent* links
+  // the parent holds over ssh.
   const recheckAllHosts = () => {
     void adminRpc()
       .hosts.recheck({})
       .catch((err) => console.error("hosts.recheck failed", err));
   };
-  const onVisible = () => {
-    if (document.visibilityState === "visible") recheckAllHosts();
-  };
+  // Re-probe on the becoming-visible edge, off the shared signal (not a second
+  // listener); `defer` skips the initial value so only real transitions fire.
+  createEffect(
+    on(
+      pageVisible,
+      (v) => {
+        if (v) recheckAllHosts();
+      },
+      { defer: true },
+    ),
+  );
   window.addEventListener("online", recheckAllHosts);
-  document.addEventListener("visibilitychange", onVisible);
-  onCleanup(() => {
-    window.removeEventListener("online", recheckAllHosts);
-    document.removeEventListener("visibilitychange", onVisible);
-  });
+  onCleanup(() => window.removeEventListener("online", recheckAllHosts));
 
   // The fleet overview is the default landing view — the "single pane of
   // glass" across every host. `view` holds the user's intent; the host
@@ -545,6 +585,11 @@ function MultiHostApp() {
     }
   });
 
+  // Pause the data views once the tab is backgrounded past the grace window —
+  // see `createVisibilityGate`. 20s of grace lets a quick alt-tab keep the
+  // subscriptions warm; a tab genuinely left in the background drops them.
+  const visible = createVisibilityGate(pageVisible, VISIBILITY_GRACE_MS);
+
   return (
     // The app fills exactly one viewport (`h-dvh` + flex column) so the page
     // itself never scrolls — only the inner process list does, keeping the
@@ -589,17 +634,24 @@ function MultiHostApp() {
             </div>
           }
         >
-          <Show
-            when={selectedHost()}
-            fallback={
-              <FleetView
-                hosts={hostList()}
-                onSelect={(h) => setView({ kind: "host", host: h })}
-              />
-            }
-            keyed
-          >
-            {(host) => <HostView host={host} />}
+          {/* Pause the data views (and so every per-host system/cores/metric/
+              process subscription) once the tab has been backgrounded past the
+              grace window — a hidden tab can't show telemetry, so it shouldn't
+              decode and reconcile it. The sockets stay warm in the wire cache,
+              so returning re-subscribes and the parent re-seeds each snapshot. */}
+          <Show when={visible()} fallback={<PausedView />}>
+            <Show
+              when={selectedHost()}
+              fallback={
+                <FleetView
+                  hosts={hostList()}
+                  onSelect={(h) => setView({ kind: "host", host: h })}
+                />
+              }
+              keyed
+            >
+              {(host) => <HostView host={host} />}
+            </Show>
           </Show>
         </Show>
       </div>
@@ -634,32 +686,19 @@ function HostCard(props: { host: string; onSelect: () => void }) {
   const app = surfaceForHost(props.host);
   const system = app.cells.system.use({});
   const connection = app.cells.connection.use({});
-  const cores = app.collections.cpuCores.use({
-    onError: (err) => console.error("cpuCores subscription failed", err),
-  });
-
-  // Same parent-owned ring the open host view draws, streamed over the card's
-  // already-warm socket. The card pins the widest window (WIDEST_HISTORY_WINDOW)
-  // — it's a glanceable trend, not an interactive chart, so there's no per-card
-  // duration picker. `app.rawStream` ties the stream's teardown to this card's
-  // own reactive owner, so there's no hand-rolled AbortController to thread.
-  const { history, streamError } = subscribeMetricHistory(app);
-  const { latest, points } = projectHistory(history, () =>
-    windowMsFor(WIDEST_HISTORY_WINDOW),
-  );
 
   const sys = createMemo<SystemInfo>(() => system.value() ?? DEFAULT_SYSTEM);
   const state = createMemo<ConnectionState>(
     () => (connection.value() ?? DEFAULT_CONNECTION).state,
   );
-  // coreCount and cpuPct share a single cores.keys() iteration so the
-  // detail string in CardMetric doesn't need a second spread.
-  const coreCount = createMemo(() => [...cores.keys()].length);
-  const cpuPct = createMemo(() =>
-    averageCoreUsage(
-      [...cores.keys()].map((id) => cores.byKey(id)?.()?.usagePct ?? 0),
-    ),
-  );
+  // CPU% and the core count are read straight off the `system` cell — the agent
+  // folds them in (`system.cpuPct` / `system.coreCount`). The card used to open
+  // the per-key `cpuCores` collection (one value stream PER core PER host) just
+  // to average it for one number; reading the aggregate cell drops the fleet's
+  // entire O(hosts×cores) subscription fan-out. The per-core collection stays
+  // for the host drill-in (CpuStrip), which actually renders a bar per core.
+  const cpuPct = createMemo(() => sys().cpuPct);
+  const coreCount = createMemo(() => sys().coreCount);
   const mem = createMemo(() => memPct(sys()));
   const memText = createMemo(() => {
     const gb = memGb(sys());
@@ -716,28 +755,49 @@ function HostCard(props: { host: string; onSelect: () => void }) {
             up {formatUptime(sys().uptime)} · {sys().os}
           </span>
         </div>
-        <div class="flex flex-col gap-0.5">
-          <div class="flex items-center gap-2 text-xs text-gray-500">
-            <span class="uppercase tracking-wide">{WIDEST_HISTORY_WINDOW}</span>
-            <div class="ml-auto flex items-center gap-2">
-              <For each={SERIES}>
-                {(s) => (
-                  <span class={`flex items-center gap-1 ${s.chip}`}>
-                    <span class={`inline-block h-2 w-2 rounded-sm ${s.swatch}`} />
-                    {s.label}
-                  </span>
-                )}
-              </For>
-            </div>
-          </div>
-          <Sparkline
-            points={points()}
-            placeholder={sparklinePlaceholder(latest(), streamError())}
-            class="h-10"
-          />
-        </div>
+        <HostCardSparkline app={app} />
       </Show>
     </button>
+  );
+}
+
+// The fleet card's glance sparkline. Mounted only inside the card's
+// `<Show when={health.live}>`, so a connecting or disconnected host opens NO
+// metricHistory stream and runs NO per-tick projection — the eager projection
+// memos that used to recompute for every card regardless of liveness are gone.
+// Pins the widest window (a glanceable trend, no picker) and downsamples to the
+// sparkline's pixel budget so a 40px box is drawn from ~120 points, not the
+// full 900-sample ring.
+function HostCardSparkline(props: {
+  app: ReturnType<typeof surfaceForHost>;
+}) {
+  const { history, streamError } = subscribeMetricHistory(props.app);
+  const { latest, points } = projectHistory(
+    history,
+    () => windowMsFor(WIDEST_HISTORY_WINDOW),
+    SPARKLINE_MAX_POINTS,
+  );
+  return (
+    <div class="flex flex-col gap-0.5">
+      <div class="flex items-center gap-2 text-xs text-gray-500">
+        <span class="uppercase tracking-wide">{WIDEST_HISTORY_WINDOW}</span>
+        <div class="ml-auto flex items-center gap-2">
+          <For each={SERIES}>
+            {(s) => (
+              <span class={`flex items-center gap-1 ${s.chip}`}>
+                <span class={`inline-block h-2 w-2 rounded-sm ${s.swatch}`} />
+                {s.label}
+              </span>
+            )}
+          </For>
+        </div>
+      </div>
+      <Sparkline
+        points={points()}
+        placeholder={sparklinePlaceholder(latest(), streamError())}
+        class="h-10"
+      />
+    </div>
   );
 }
 
@@ -957,7 +1017,11 @@ function HostView(props: { host: string }) {
   // `app.health()` and owns its own teardown via this view's reactive owner —
   // see `subscribeMetricHistory` / `projectHistory`).
   const { history, streamError } = subscribeMetricHistory(app);
-  const { latest: latestSample, points } = projectHistory(history, windowMs);
+  const { latest: latestSample, points } = projectHistory(
+    history,
+    windowMs,
+    CHART_MAX_POINTS,
+  );
 
   // The currently-selected process resolved against the live store: null when
   // nothing is selected OR the selected pid has left the set. The clear-at-
@@ -1160,14 +1224,31 @@ function Header(props: {
   );
 }
 
-function UsageBar(props: { pct: number }) {
+// The one usage-bar fill leaf: a width-driven block inside a track, with NO CSS
+// transition. The width is reassigned every poll tick, so an ease never settles
+// — it only lags the true reading by ~150ms and turns one unavoidable repaint
+// into ~8 layout+paint frames per bar per tick. Routing every bar (host header,
+// fleet card, per-core strip) through this single leaf means no copy of the
+// markup can reintroduce `transition-all` on a live value. Color + track are
+// passed in so the >85%/>65% usage thresholds and the per-core scale share it.
+function Bar(props: { pct: number; colorClass: string; trackClass: string }) {
   return (
-    <div class="h-1 w-full bg-gray-100 dark:bg-gray-800">
+    <div class={props.trackClass}>
       <div
-        class={`h-full transition-all ${usageBarColor(props.pct)}`}
+        class={`h-full ${props.colorClass}`}
         style={{ width: `${Math.min(100, props.pct).toFixed(1)}%` }}
       />
     </div>
+  );
+}
+
+function UsageBar(props: { pct: number }) {
+  return (
+    <Bar
+      pct={props.pct}
+      colorClass={usageBarColor(props.pct)}
+      trackClass="h-1 w-full bg-gray-100 dark:bg-gray-800"
+    />
   );
 }
 
@@ -1717,12 +1798,11 @@ function CpuCoreCell(props: { id: CoreId; get: () => CpuCore | undefined }) {
   return (
     <div class="flex items-center gap-1 text-xs">
       <span class="w-6 shrink-0 text-gray-500 tabular-nums">c{props.id}</span>
-      <div class="h-2 flex-1 overflow-hidden rounded bg-gray-100 dark:bg-gray-800">
-        <div
-          class={`h-full transition-all ${coreUsageColor(pct())}`}
-          style={{ width: `${Math.min(100, pct()).toFixed(1)}%` }}
-        />
-      </div>
+      <Bar
+        pct={pct()}
+        colorClass={coreUsageColor(pct())}
+        trackClass="h-2 flex-1 overflow-hidden rounded bg-gray-100 dark:bg-gray-800"
+      />
       <span class="w-10 shrink-0 text-right tabular-nums text-gray-700 dark:text-gray-300">
         {pct().toFixed(0)}%
       </span>
