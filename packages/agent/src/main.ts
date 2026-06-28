@@ -56,7 +56,7 @@ const POLL_INTERVAL_MS = 2000;
 const cpuAggregate = (
   cores: ReadonlyMap<CoreId, CpuCore>,
 ): { cpuPct: number; coreCount: number } => ({
-  cpuPct: averageCoreUsage([...cores.values()].map((c) => c.usagePct)),
+  cpuPct: averageCoreUsage(Array.from(cores.values(), (c) => c.usagePct)),
   coreCount: cores.size,
 });
 

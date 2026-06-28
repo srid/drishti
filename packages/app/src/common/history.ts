@@ -109,8 +109,13 @@ export function windowSlice(
   buffer: readonly MetricSample[],
   windowMs: number,
   now: number,
-): MetricSample[] {
+): readonly MetricSample[] {
   const cutoff = now - windowMs;
+  // The buffer is time-ascending, so if its OLDEST sample is already within the
+  // window every sample is — return it as-is. The fleet card pins the widest
+  // window (= the ring's retention bound), so it hits this every tick and skips
+  // an O(ring) filter allocation, handing the buffer straight to `downsample`.
+  if (buffer.length === 0 || buffer[0]!.t >= cutoff) return buffer;
   return buffer.filter((s) => s.t >= cutoff);
 }
 

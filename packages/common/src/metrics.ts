@@ -2,12 +2,13 @@
  * Pure metric math shared across tiers — framework-free, no runtime deps.
  *
  * `averageCoreUsage` lives HERE (not in the app) because the **agent** is the
- * producer of the host-CPU aggregate: it reads per-core usage each tick and
- * folds it into the `system` cell's `cpuPct` (see `agent/src/main.ts`). The
- * parent re-serve and the browser then read that one scalar rather than each
- * re-deriving the mean — so the formula has a single home both the agent and
- * the app import, the "reuse the source of truth" principle applied to a number
- * three tiers were independently computing.
+ * SOLE producer of the host-CPU aggregate: it reads per-core usage each tick and
+ * folds the mean into the `system` cell's `cpuPct` (see `agent/src/main.ts`).
+ * Every downstream tier — the parent re-serve and the browser — reads that one
+ * pre-computed `system.cpuPct` scalar and does NOT re-derive the mean (the old
+ * shape, where the fleet card averaged the `cpuCores` collection client-side, was
+ * the O(hosts×cores) fan-out this collapsed). The formula sits in the one package
+ * the agent can import; its only non-test consumer is the agent.
  */
 
 /** Mean busy-percentage across the supplied per-core usages — the single

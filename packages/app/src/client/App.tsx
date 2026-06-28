@@ -101,6 +101,7 @@ import { TransportOverlay } from "./TransportOverlay";
 import { prefKey, readPref, writePref } from "./localStorageState";
 import { brandColorForTheme } from "./brand";
 import { APP_TITLE } from "./title";
+import { createPageVisibility } from "@solid-primitives/page-visibility";
 import { createVisibilityGate } from "./visibility";
 import {
   applyTheme,
@@ -445,27 +446,37 @@ function MultiHostApp() {
     }),
   );
 
+  // Page-visibility, sourced ONCE here (the single `visibilitychange`
+  // subscription, SSR-safe) and fed to BOTH consumers — the becoming-visible
+  // link re-probe just below and the data-view pause gate
+  // (`createVisibilityGate`) — so there's no parallel listener to drift.
+  const pageVisible = createPageVisibility();
+
   // Nudge the parent to re-probe every host link when the browser regains
-  // connectivity (`online`) or the tab is refocused (`visibilitychange`) —
-  // the client-side companion to the server's wake monitor. It catches the
-  // case the parent's clock-gap detector can't: a brief network flap (café
-  // Wi-Fi dropping for a few seconds) that never suspends the process.
-  // partysocket already reconnects these loopback control sockets; this RPC
-  // reaches past them to the *agent* links the parent holds over ssh.
+  // connectivity (`online`) or the tab is refocused — the client-side companion
+  // to the server's wake monitor. It catches the case the parent's clock-gap
+  // detector can't: a brief network flap (café Wi-Fi dropping for a few seconds)
+  // that never suspends the process. partysocket already reconnects these
+  // loopback control sockets; this RPC reaches past them to the *agent* links
+  // the parent holds over ssh.
   const recheckAllHosts = () => {
     void adminRpc()
       .hosts.recheck({})
       .catch((err) => console.error("hosts.recheck failed", err));
   };
-  const onVisible = () => {
-    if (document.visibilityState === "visible") recheckAllHosts();
-  };
+  // Re-probe on the becoming-visible edge, off the shared signal (not a second
+  // listener); `defer` skips the initial value so only real transitions fire.
+  createEffect(
+    on(
+      pageVisible,
+      (v) => {
+        if (v) recheckAllHosts();
+      },
+      { defer: true },
+    ),
+  );
   window.addEventListener("online", recheckAllHosts);
-  document.addEventListener("visibilitychange", onVisible);
-  onCleanup(() => {
-    window.removeEventListener("online", recheckAllHosts);
-    document.removeEventListener("visibilitychange", onVisible);
-  });
+  onCleanup(() => window.removeEventListener("online", recheckAllHosts));
 
   // The fleet overview is the default landing view — the "single pane of
   // glass" across every host. `view` holds the user's intent; the host
@@ -577,7 +588,7 @@ function MultiHostApp() {
   // Pause the data views once the tab is backgrounded past the grace window —
   // see `createVisibilityGate`. 20s of grace lets a quick alt-tab keep the
   // subscriptions warm; a tab genuinely left in the background drops them.
-  const visible = createVisibilityGate(VISIBILITY_GRACE_MS);
+  const visible = createVisibilityGate(pageVisible, VISIBILITY_GRACE_MS);
 
   return (
     // The app fills exactly one viewport (`h-dvh` + flex column) so the page

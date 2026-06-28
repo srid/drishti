@@ -1,5 +1,5 @@
 /**
- * A reactive "is this tab worth doing work for" flag.
+ * Grace-gate a reactive page-visibility flag.
  *
  * drishti's telemetry is SERVER-pushed: a hidden tab keeps receiving every 2s
  * frame and running the full decode → reconcile → memo cascade. Browsers
@@ -10,45 +10,45 @@
  * warm (the `wire.ts` host cache), so becoming visible re-subscribes and the
  * parent re-seeds each ring's snapshot — history is intact on return.
  *
- * A `graceMs` debounce keeps a quick tab-switch (alt-tab to copy something,
- * glance at another app) from tearing down and re-subscribing the whole fleet:
- * the flag only drops to false once the tab has been hidden for `graceMs`. A
- * tab genuinely left in the background (the Task-Manager scenario) crosses that
- * and pauses.
+ * The two bounded leaves are LIBRARY code, not hand-rolled: page-visibility
+ * DETECTION comes from `@solid-primitives/page-visibility` (the single
+ * `visibilitychange` subscription, SSR-safe) and the grace window from
+ * `@solid-primitives/scheduled`'s trailing `debounce`. Only the asymmetric
+ * policy is ours — resume IMMEDIATELY on becoming visible, pause only after the
+ * tab has been hidden for `graceMs` (so a quick alt-tab to copy something
+ * doesn't tear down and re-subscribe the whole fleet; a tab genuinely left in
+ * the background — the Task-Manager scenario — crosses the window and pauses).
+ *
+ * Takes the `visible` accessor rather than creating its own so the caller sources
+ * page-visibility ONCE and feeds every consumer (this gate AND the becoming-
+ * visible link re-probe) from one subscription — no parallel listener to drift.
  */
 
-import { createSignal, onCleanup } from "solid-js";
+import { createEffect, createSignal, on, onCleanup } from "solid-js";
+import { debounce } from "@solid-primitives/scheduled";
 
-export function createVisibilityGate(graceMs: number): () => boolean {
-  // No document (tests / non-DOM) → always active; there's nothing to pause.
-  if (typeof document === "undefined") return () => true;
-
-  const visibleNow = () => document.visibilityState === "visible";
-  const [active, setActive] = createSignal(visibleNow());
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const clearTimer = () => {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
-  };
-  const onChange = () => {
-    if (visibleNow()) {
-      // Back in view — cancel any pending pause and resume immediately.
-      clearTimer();
-      setActive(true);
-    } else if (timer === undefined) {
-      // Hidden — pause only after the grace window, and only arm one timer.
-      timer = setTimeout(() => {
-        timer = undefined;
-        setActive(false);
-      }, graceMs);
-    }
-  };
-  document.addEventListener("visibilitychange", onChange);
-  onCleanup(() => {
-    clearTimer();
-    document.removeEventListener("visibilitychange", onChange);
-  });
+export function createVisibilityGate(
+  visible: () => boolean,
+  graceMs: number,
+): () => boolean {
+  const [active, setActive] = createSignal(visible());
+  const pauseSoon = debounce(() => setActive(false), graceMs);
+  // `defer` so the initial value (already seeded into `active`) doesn't schedule
+  // a redundant pause; react only to genuine visibility CHANGES.
+  createEffect(
+    on(
+      visible,
+      (v) => {
+        if (v) {
+          pauseSoon.clear(); // back in view — cancel a pending pause, resume now
+          setActive(true);
+        } else {
+          pauseSoon(); // hidden — pause only once the grace window elapses
+        }
+      },
+      { defer: true },
+    ),
+  );
+  onCleanup(() => pauseSoon.clear());
   return active;
 }
