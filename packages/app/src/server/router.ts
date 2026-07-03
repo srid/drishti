@@ -283,17 +283,25 @@ export function buildRouter(opts: BuildRouterOptions) {
         },
         collections: {
           // Small-N per-key collections — the path the private collection
-          // engine drives (keys stream + per-key value streams).
+          // engine drives (keys stream + per-key value streams). `coreCache` /
+          // `netCache` outlive the per-spawn sink (they're minted once above),
+          // so a core/iface that vanished while the ssh link was down would
+          // survive as a ghost row across the reconnect. `initialKeys` hands the
+          // fresh mirror this spawn's carry-over keys; its first `keys` frame
+          // prunes any the snapshot omits — no stale row, no empty flash
+          // (kolu #1661; mirrors surface-nix-host's reServeSurface).
           cpuCores: {
             upsert: (key, value) =>
               fragment.ctx.collections.cpuCores.upsert(key, value),
             remove: (key) => fragment.ctx.collections.cpuCores.remove(key),
+            initialKeys: () => new Set(coreCache.keys()),
           },
           networkInterfaces: {
             upsert: (key, value) =>
               fragment.ctx.collections.networkInterfaces.upsert(key, value),
             remove: (key) =>
               fragment.ctx.collections.networkInterfaces.remove(key),
+            initialKeys: () => new Set(netCache.keys()),
           },
         },
         streams: {
