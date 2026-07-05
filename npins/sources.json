@@ -9,9 +9,9 @@
       },
       "branch": "fix/surface-boot-window-subscription",
       "submodules": false,
-      "revision": "ac9ed53603c7deb06193bd138f6265b7e69deeea",
-      "url": "https://github.com/juspay/kolu/archive/ac9ed53603c7deb06193bd138f6265b7e69deeea.tar.gz",
-      "hash": "sha256-pFB/idAotoqg9OPWd2EKirRcL7+rKdxQL4GhQSJc2ZQ="
+      "revision": "d8d26e67624c245a986a912fb2447d1ad926d9d8",
+      "url": "https://github.com/juspay/kolu/archive/d8d26e67624c245a986a912fb2447d1ad926d9d8.tar.gz",
+      "hash": "sha256-6ta/8JhCdiDE9FZJpPW1cC/2ICYvJIjhyV/jGsv8gDc="
     },
     "nixpkgs": {
       "type": "Git",
