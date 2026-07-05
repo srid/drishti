@@ -9,9 +9,9 @@
       },
       "branch": "refactor/surface-hosting-simplify",
       "submodules": false,
-      "revision": "1ae5a885f7ed5cba4d7b902183bf37df33c464c5",
-      "url": "https://github.com/juspay/kolu/archive/1ae5a885f7ed5cba4d7b902183bf37df33c464c5.tar.gz",
-      "hash": "sha256-9CFwwo0B8dK5r1yDmmpYIoFPm5NGo/oLFw9iYmbRRmU="
+      "revision": "8c6873fb77d56c4ae662ef6df9a5f5db0a669ed6",
+      "url": "https://github.com/juspay/kolu/archive/8c6873fb77d56c4ae662ef6df9a5f5db0a669ed6.tar.gz",
+      "hash": "sha256-/jrxzB3f1ALDnYS0IIspd1RIu0LkpAgqrDTdQ7+NfIs="
     },
     "nixpkgs": {
       "type": "Git",
