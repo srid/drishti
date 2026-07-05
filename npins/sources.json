@@ -7,10 +7,10 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "fix/surface-boot-window-subscription",
+      "branch": "master",
       "submodules": false,
-      "revision": "e01cc8ea8f8e7e841d147d9af04047eb8dccf7b1",
-      "url": "https://github.com/juspay/kolu/archive/e01cc8ea8f8e7e841d147d9af04047eb8dccf7b1.tar.gz",
+      "revision": "c97aac812e753c8c3c4561cf9043856247d044da",
+      "url": "https://github.com/juspay/kolu/archive/c97aac812e753c8c3c4561cf9043856247d044da.tar.gz",
       "hash": "sha256-yPX8IqNFw/UGIflaDJrT+cPxa3SPnNOxpYoyX0u2vLU="
     },
     "nixpkgs": {
