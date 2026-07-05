@@ -2,8 +2,8 @@
  * Per-host session + handler registry — single source of truth for
  * "which hosts this parent server knows about". Owns:
  *
- *   - One `HostSession` per host (via the kolu pool, keyed by
- *     `(host, binary)`).
+ *   - One `Session` per host (`makeSession` over an `sshConnector`
+ *     transport plug, keyed by host).
  *   - One `RPCHandler` per host (built from `buildRouter({session})`).
  *   - The set of open browser WebSockets per host (for eviction on
  *     remove — partysocket auto-reconnects, so we close on the server
@@ -25,8 +25,8 @@
  * pulam-web's terminal-awareness server can share it. drishti keeps a
  * THIN wrapper here: it owns only the app-specific knowledge the shared
  * registry deliberately doesn't hold — how a host becomes a `{ session,
- * handler }` (`buildEntry`: `getHostSession` + `buildRouter` + `new
- * RPCHandler`), where the host set persists (`saveHosts`), and the
+ * handler }` (`buildEntry`: `makeSession`/`sshConnector` + `buildRouter` +
+ * `new RPCHandler`), where the host set persists (`saveHosts`), and the
  * admin-surface wire-shape projection (`snapshot()`). The wrapper's async
  * signature and `resolveDrvPath`/`hostsFile` options are preserved so
  * `main.ts` and `admin-router.ts` call it exactly as before.
@@ -34,9 +34,13 @@
 
 import { RPCHandler } from "@orpc/server/ws";
 import {
+  type AgentClient,
   buildHostRegistry as buildSharedHostRegistry,
-  getHostSession,
+  type FleetControls,
   type HostRegistry as SharedHostRegistry,
+  makeSession,
+  type Session,
+  sshConnector,
 } from "@kolu/surface-nix-host";
 import type { WebSocket as WsConn } from "ws";
 import type { HostEntry } from "../common/admin-surface";
@@ -97,6 +101,10 @@ export interface HostRegistry {
   recheckAll(): void;
   registerConnection(host: string, ws: WsConn): void;
   unregisterConnection(host: string, ws: WsConn): void;
+  /** Destroy every host's session — called from the server's `shutdown()`.
+   *  Replaces the deleted free-standing `destroyAllSessions()`: sessions are
+   *  no longer pooled, so teardown runs through the registry that owns them. */
+  destroyAll(): void;
 }
 
 export interface HostRegistryOptions {
@@ -115,40 +123,59 @@ export async function buildHostRegistry(
   // The shared registry owns the keyed map + its full lifecycle. drishti
   // supplies only `buildEntry` (how a host becomes a session + handler)
   // and `persist` (where the host set lands on disk). Both stay SYNC for
-  // `buildEntry`: `getHostSession` defers the spawn into the session's own
+  // `buildEntry`: `makeSession` defers the spawn into the session's own
   // reconnect machinery, so a host unreachable at boot surfaces as a
   // per-host `failed` connection state — never a throw that takes the
   // whole registry (and with it the parent's HTTP port, never bound until
   // this resolves) down.
-  const shared: SharedHostRegistry<typeof surface.contract, DrishtiHandler> =
-    buildSharedHostRegistry({
-      initialHosts: opts.initialHosts,
-      buildEntry: (host) => {
-        const session = getHostSession<typeof surface.contract>({
+  const shared: SharedHostRegistry<
+    Session<AgentClient<typeof surface.contract>>,
+    DrishtiHandler
+  > &
+    FleetControls = buildSharedHostRegistry({
+    initialHosts: opts.initialHosts,
+    buildEntry: (host) => {
+      // `makeSession` over an `sshConnector` transport plug (kolu S9/S10 —
+      // the deleted `getHostSession` is now this composition). The connector
+      // owns everything transport-specific (resolve .drv per dial, nix copy,
+      // spawn ssh, wire stdio to a typed client); `makeSession` owns the
+      // durable lifecycle (pin/ref-count, backoff, give-up, watchdogs,
+      // reconnect/recheck, the connection-state cell). The agent .drv is
+      // resolved LAZILY inside the connector's dial (not awaited here): a host
+      // unreachable at probe time makes the resolver reject, which the loop
+      // treats as an ordinary connection failure (disconnected → backoff →
+      // failed, re-armable via Reconnect) — so it can't throw out of here
+      // before the session exists, and one unreachable initial host can't
+      // crash the whole server at boot.
+      const session = makeSession<AgentClient<typeof surface.contract>>({
+        connectOnce: sshConnector<typeof surface.contract>({
           host,
-          // Resolve the agent .drv lazily, inside the session's spawn
-          // cycle, rather than awaiting the arch probe here. A host that's
-          // unreachable at probe time makes the resolver reject, which the
-          // session treats as an ordinary connection failure (disconnected
-          // → backoff → failed, re-armable via Reconnect) — so it can't
-          // throw out of here before the session exists. That's what keeps
-          // one unreachable initial host from crashing the whole server at
-          // boot.
-          resolveDrvPath: () => opts.resolveDrvPath(host),
           binary: "drishti-agent",
-          connectTimeoutMs: CONNECT_TIMEOUT_MS,
-        });
-        const { router } = buildRouter({ host, session });
-        // biome-ignore lint/suspicious/noExplicitAny: implementSurface's Lazy<Router> spread isn't accepted by oRPC's Router<any, T> input type; runtime shape is valid.
-        const handler = new RPCHandler(router as any);
-        return { session, handler };
-      },
-      // Persist after every add/remove, awaited before the call resolves
-      // (the shared registry guarantees the ordering) — so the admin
-      // router's announce never races ahead of the on-disk store.
-      persist: (hosts) => saveHosts(opts.hostsFile, hosts),
-      log: (line) => log(line),
-    });
+          resolveDrvPath: () => opts.resolveDrvPath(host),
+        }),
+        connectTimeoutMs: CONNECT_TIMEOUT_MS,
+        label: `host:${host}`,
+      });
+      const { router } = buildRouter({ host, session });
+      // biome-ignore lint/suspicious/noExplicitAny: implementSurface's Lazy<Router> spread isn't accepted by oRPC's Router<any, T> input type; runtime shape is valid.
+      const handler = new RPCHandler(router as any);
+      return { session, handler };
+    },
+    // Fleet verbs (`reconnect(host)` / `recheckAll()`) exist on the returned
+    // registry ONLY when `controls` is supplied (kolu S2) — they're how the
+    // registry enacts a re-arm / link-recheck on each session. The `Session`
+    // that `makeSession` returns carries universal `reconnect()` / `recheck()`
+    // methods, so these thunks typecheck directly.
+    controls: {
+      reconnect: (s) => s.reconnect(),
+      recheck: (s) => s.recheck(),
+    },
+    // Persist after every add/remove, awaited before the call resolves
+    // (the shared registry guarantees the ordering) — so the admin
+    // router's announce never races ahead of the on-disk store.
+    persist: (hosts) => saveHosts(opts.hostsFile, hosts),
+    log: (line) => log(line),
+  });
 
   return {
     has: (host) => shared.has(host),
@@ -172,5 +199,6 @@ export async function buildHostRegistry(
     // through without a cast.
     registerConnection: (host, ws) => shared.registerConnection(host, ws),
     unregisterConnection: (host, ws) => shared.unregisterConnection(host, ws),
+    destroyAll: () => shared.destroyAll(),
   };
 }
