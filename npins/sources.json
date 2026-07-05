@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "master",
+      "branch": "fix/surface-rebind-frame-drop",
       "submodules": false,
-      "revision": "590f49e48b6e784bdb077987074fc4de0367732e",
-      "url": "https://github.com/juspay/kolu/archive/590f49e48b6e784bdb077987074fc4de0367732e.tar.gz",
-      "hash": "sha256-u6w7Li4h7PZtKUiq3EC5V+VIo3mq7wc0IXmbtJ5Gsio="
+      "revision": "5d2ac5683d7775f62e7b06bd32ffbcb3a86bd6a9",
+      "url": "https://github.com/juspay/kolu/archive/5d2ac5683d7775f62e7b06bd32ffbcb3a86bd6a9.tar.gz",
+      "hash": "sha256-njuja8mZPqcV4/DFytEg7/x6QXATMv28PH5ZTG3AyJ4="
     },
     "nixpkgs": {
       "type": "Git",
