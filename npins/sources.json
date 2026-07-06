@@ -9,9 +9,9 @@
       },
       "branch": "w4-the-switch",
       "submodules": false,
-      "revision": "c5f3f3014c6eae114b5524f62b603704501141fc",
-      "url": "https://github.com/juspay/kolu/archive/c5f3f3014c6eae114b5524f62b603704501141fc.tar.gz",
-      "hash": "sha256-CIFHTDbyefV+IGo0kF9LbCqaVuJKV/aYjmf/c/lDhYE="
+      "revision": "e9900fa467a92efe83f3f3384fcd32824c1eed25",
+      "url": "https://github.com/juspay/kolu/archive/e9900fa467a92efe83f3f3384fcd32824c1eed25.tar.gz",
+      "hash": "sha256-BAreFRjvorYf5AUWtB+c31OsLZlwaA5aZAYa84RRBu0="
     },
     "nixpkgs": {
       "type": "Git",
