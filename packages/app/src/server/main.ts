@@ -27,7 +27,6 @@ import { cli } from "cleye";
 import { Hono } from "hono";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
-import { destroyAllSessions } from "@kolu/surface-nix-host";
 import { gateWsOrigin, parseAllowedOrigins } from "@kolu/surface/ws-origin";
 import {
   gateStaleSocket,
@@ -362,7 +361,7 @@ async function main(): Promise<void> {
   const shutdown = (sig: string) => {
     log(`${sig}: destroying host sessions`);
     stopWakeMonitor();
-    destroyAllSessions();
+    registry.destroyAll();
     heartbeat.stop();
     wss.close();
     for (const ws of wss.clients) {

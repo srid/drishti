@@ -38,9 +38,10 @@ import {
 } from "@kolu/surface/server";
 import { type ProcedureForwarders } from "@kolu/surface/mirror";
 import {
-  type HostSession,
+  type AgentClient,
   pumpRemoteSurface,
   seedConnectionCell,
+  type Session,
 } from "@kolu/surface-nix-host";
 import { browserSurface, type ConnectionInfo } from "drishti-common/browser";
 import {
@@ -66,10 +67,10 @@ import { type Logger, makeLogger } from "./log";
 
 export interface BuildRouterOptions {
   /** The host this router bridges — used only to tag the bridge's log
-   *  lines (`bridge:${host}`). `HostSession` keeps its `host` private,
+   *  lines (`bridge:${host}`). The `Session` keeps its `host` private,
    *  so the registry (which has it) passes it in explicitly. */
   host: string;
-  session: HostSession<typeof surface.contract>;
+  session: Session<AgentClient<typeof surface.contract>>;
 }
 
 /** Build the parent's oRPC router. The session's connection state
