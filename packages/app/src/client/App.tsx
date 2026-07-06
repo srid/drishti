@@ -353,7 +353,7 @@ function projectHistory(
 export default function App() {
   return (
     <SurfaceAppProvider
-      controlPlane={surfaceAppClient()}
+      controlPlane={surfaceAppClient}
       clientCommit={shellCommit()}
       ws={adminSocket()}
       probe={() => surfaceAppProbe(surfaceAppClient())}
