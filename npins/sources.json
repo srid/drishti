@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "refactor/surface-hosting-simplify",
+      "branch": "master",
       "submodules": false,
-      "revision": "c0c899a804a00c964b19255c90a4595874398284",
-      "url": "https://github.com/juspay/kolu/archive/c0c899a804a00c964b19255c90a4595874398284.tar.gz",
-      "hash": "sha256-5ae4egg9iBQseuRQ4NttNrM4sJbxR7g30VtbrWtfEL0="
+      "revision": "59ab99b358bf4c55205f2ab8d4ce8ca1462311df",
+      "url": "https://github.com/juspay/kolu/archive/59ab99b358bf4c55205f2ab8d4ce8ca1462311df.tar.gz",
+      "hash": "sha256-RL9vmDzauV0Nd8dTowehj4RoXau0IPhAbdybnYKIspY="
     },
     "nixpkgs": {
       "type": "Git",
