@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "//": "@kolu/surface-app is NOT a bun dependency — like @kolu/surface, @kolu/surface-remote, and @kolu/surface-map it is hydrated into node_modules/@kolu/surface-app (its raw .ts sources are consumed directly: no build step). It is sourced hermetically from the npins-pinned kolu tree (npins/sources.json → kolu): nix/overlay.nix extracts it as a nix-store path, nix/env.nix exports it as $DRISHTI_KOLU_SURFACE_APP, and the dev shell / install recipe / build derivation copy it into node_modules exactly like the other @kolu/* packages. @kolu/solid-pwa-install (the PWA install-card adapter) is hydrated the same way; src/client/TabStrip.tsx's Pin-app button consumes it (createPwaInstall + installInstructions), gated on the canInstallPwa/isInstalled signals from useSurfaceApp(). The kolu pin tracks branch surface-map (juspay/kolu's dynamic host-map framework) which ships the package source, those signals, and defineSurfaceMap/serveSurfaceMap/connectSurfaceMap.",
-  "// zod": "EXACT pin, not a ^4.3.6 range: zod 4.3.7 through at least 4.4.3 changed z.object({...}) to require a z.void()-typed key to be LITERALLY PRESENT (still undefined-valued, but present) — 4.3.6 treats an omitted key as satisfying z.void() the same as an explicit `undefined` value; 4.3.7+ rejects the omitted-key case with {code:'invalid_type', expected:'nonoptional', path:['input']}. @kolu/surface-map's void-input member fold (`defineSurfaceMap`'s `foldInput()`, envelope `{ mapKey, input: z.void() }`) relies on the LENIENT 4.3.6 reading: the real WebSocket's JSON round-trip drops an explicit `input: undefined` key, so the wire frame a void-input member (system/connection cells, cpuCores/networkInterfaces collection deltas) receives is `{ mapKey }` with `input` omitted — which only 4.3.6 accepts. A floating ^4.3.6 let bun's lockfile resolve to 4.4.3 and silently broke every folded void-input subscription (BAD_REQUEST 'Input validation failed' client-side, host stuck 'connecting' with 0/0/unknown metrics) while `entries` (membership, non-void input) and `processesSnapshot` (a real z.object({}) input) kept working — reproduced+bisected locally, not a kolu/surface-map bug. Un-pin only once a zod release restores (or a newer @kolu/surface-map changes) the omitted-key-satisfies-void contract.",
   "scripts": {
     "dev": "bun --watch src/server/main.ts",
     "start": "bun src/server/main.ts",
@@ -28,7 +27,7 @@
     "partysocket": "^1.1.16",
     "solid-js": "^1.9.0",
     "ws": "^8.20.1",
-    "zod": "4.3.6"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/babel__core": "^7.20.5",

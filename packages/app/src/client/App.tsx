@@ -805,27 +805,17 @@ function HostView(props: { host: string }) {
   const entry = hostMap.entry(props.host);
 
   // `system`/`connection` are void-input CELLS. `@kolu/surface-map`'s
-  // entry-router transform folds a cell's `get` as `{ mapKey, input:
-  // undefined }` (`define.ts`'s `foldInput()` → `z.void()`), and that
-  // `input: undefined` key does not survive the real WebSocket's JSON
-  // round-trip (`JSON.stringify` drops an `undefined`-valued property), so
-  // the server sees `{ mapKey }` with `input` MISSING. This was NOT a
-  // surface-map bug: zod 4.3.6 (the floor of the `^4.3.6` range every
-  // `@kolu/*` package + drishti declares) already treats an omitted
-  // `z.void()`-typed key as satisfying the schema — but zod 4.3.7 through at
-  // least 4.4.3 tightened `z.object(...)` to require the key be literally
-  // PRESENT (still `undefined`-valued), rejecting the omitted-key wire frame
-  // with `{code: "invalid_type", expected: "nonoptional", path: ["input"]}`.
-  // drishti's OWN `zod` dependency floated on that range and resolved to
-  // 4.4.3, silently breaking every folded void-input subscription — fixed by
-  // pinning `zod` to the exact `4.3.6` known-good version (see
-  // `packages/app/package.json`'s `"// zod"` note), not by touching
-  // `@kolu/surface-map`. `processesSnapshot`/`metricHistory` below never hit
-  // this because they declare a real `z.object({})` `streams` input, which
-  // survives the round-trip untouched regardless of zod version — see
-  // `subscribeMetricHistory`. `onError` stays wired here as a defensive
-  // surface (not swallowed) rather than hanging silently, in case a future
-  // dependency drift reintroduces this class of bug.
+  // entry-router transform folds a void-input member's envelope as
+  // `{ mapKey }` — it OMITS the `input` field entirely (`define.ts`'s
+  // `foldInput()` / `isVoidInput`), rather than the old `{ mapKey, input:
+  // z.void() }` shape. That is what makes these subscriptions robust now: the
+  // wire frame has no `input` key by construction, so nothing depends on a
+  // JSON round-trip preserving an `undefined`-valued property or on zod
+  // accepting a MISSING `z.void()` key — a leniency zod tightened in >=4.3.7.
+  // drishti's `zod` therefore rides a normal `^4.3.6` range again (the exact
+  // `4.3.6` pin this once needed is gone). `onError` stays wired here as a
+  // defensive surface (not swallowed) rather than hanging silently, in case a
+  // future dependency drift reintroduces this class of bug.
   const system = entry.cells.system.use({
     onError: (err) => console.error("system subscription failed", err),
   });
@@ -947,9 +937,10 @@ function HostView(props: { host: string }) {
   );
 
   // `cpuCores`/`networkInterfaces` ride the collection `deltas` verb, which
-  // is ALSO void-input at the entry-router fold — the same zod-pin issue
-  // `system`/`connection` hit above (see that comment; `onError` was already
-  // wired here, unlike those, since these two pre-date the map adoption).
+  // is ALSO void-input at the entry-router fold — the same omitted-`input`
+  // envelope `system`/`connection` ride above (see that comment; `onError`
+  // was already wired here, unlike those, since these two pre-date the map
+  // adoption).
   const cores = entry.collections.cpuCores.use({
     onError: (err) => console.error("cpuCores subscription failed", err),
   });

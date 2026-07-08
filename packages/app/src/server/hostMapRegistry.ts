@@ -21,7 +21,17 @@
  *
  * The `EntryConnectionState`/`SessionState` projection below otherwise
  * mirrors `serveHostMap`'s `projectState` exactly (copying/connecting →
- * warming, connected → connected, disconnected/failed → failed(reason)).
+ * warming, connected → connected, disconnected → the transient-reconnect
+ * arm, failed → the terminal arm). It attaches NO domain `cause` — drishti's
+ * session type carries only a bare `lastError` string, no failure-cause
+ * taxonomy — so `serveSurfaceMap`'s `projectStatus` reads every `disconnected`
+ * as a transient reconnect (cause absent ⇒ the `"other"` catch-all ⇒
+ * `warming`, "coming back on its own"), and only the terminal `failed` arm
+ * projects to a red `failed` chip. A drishti host in reconnect-backoff thus
+ * reads amber/in-motion, never a red "needs intervention" — the honest tone
+ * (see `entryStatusTone.ts`). The optional `causeFor` hook `serveHostMap`
+ * grew is unused here for the same reason: with no domain cause to surface it
+ * would add no signal over the generic fallback.
  * The juspay/kolu#1716 "non-provisioning session can't legitimately reach
  * `copying`" belt is skipped: every drishti host — including `localhost` —
  * dials through `sshConnector` (`hostRegistry.ts`), so there is no
@@ -135,8 +145,10 @@ export function buildHostMapRegistry(
     },
     resolve(host) {
       const session = pool.getSession(host);
-      if (session === undefined) return { failed: `unknown host: ${host}` };
+      if (session === undefined)
+        return { kind: "fault", failed: `unknown host: ${host}` };
       return {
+        kind: "session",
         link: linkFor(host, session),
         state: projectState(latestState.get(host)),
       };

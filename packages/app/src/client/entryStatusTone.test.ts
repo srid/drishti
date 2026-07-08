@@ -10,7 +10,11 @@ import {
 
 const CONNECTED: EntryState = { kind: "connected", clockOffset: 0 };
 const WARMING: EntryState = { kind: "warming" };
-const FAILED: EntryState = { kind: "failed", reason: "connection refused" };
+const FAILED: EntryState = {
+  kind: "failed",
+  reason: "connection refused",
+  cause: "other",
+};
 const NOT_A_MEMBER: EntryState = { kind: "not-a-member" };
 
 describe("entryStatusTone", () => {
