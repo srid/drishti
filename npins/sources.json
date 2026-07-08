@@ -9,9 +9,9 @@
       },
       "branch": "surface-map",
       "submodules": false,
-      "revision": "6ccbbf5c4fbd6a1f35621c68c858f3b2a7033ee0",
-      "url": "https://github.com/juspay/kolu/archive/6ccbbf5c4fbd6a1f35621c68c858f3b2a7033ee0.tar.gz",
-      "hash": "sha256-nOHSXrjifojI4gylDXp+JfFBpilPduNbbAePx4ZJw0U="
+      "revision": "7d51cb2b290bdcaaabe6522c90152598d162d9bd",
+      "url": "https://github.com/juspay/kolu/archive/7d51cb2b290bdcaaabe6522c90152598d162d9bd.tar.gz",
+      "hash": "sha256-JeO5oKKXwLnrynIY9butaYh8YbpARNycZOK/wPFDhgo="
     },
     "nixpkgs": {
       "type": "Git",
