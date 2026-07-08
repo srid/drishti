@@ -1,16 +1,26 @@
 /**
- * Admin surface — the *set* of hosts.
+ * Admin surface — the host-lifecycle PROCEDURES (add/remove/reconnect/
+ * recheck).
+ *
+ * Host MEMBERSHIP + STATUS used to live here as a hand-rolled `hosts`
+ * collection; that collection is DELETED — it is now the `@kolu/surface-map`
+ * host map's OWN `entries` collection (`hostMap.ts`, served by
+ * `serveHostMap` in `admin-router.ts`, consumed by `connectSurfaceMap` in
+ * `wire.ts`). This surface keeps only the MUTATIONS, which the map
+ * deliberately doesn't own (`MapRegistry` is membership + resolution, not a
+ * write API) — mirroring kolu's own root `hosts.add`/`hosts.remove`
+ * procedures, which also sit outside the map they mutate.
  *
  * Volatility-distinct from the per-host `surface` (system / processes /
  * cpuCores / connection): admin mutates on user action (add/remove)
- * rather than per poll tick. Keeping it on its own surface lets the
- * per-host schema stay scalar (no host-keyed primitives) and lets admin
- * grow procedures (auth, alerts, renaming) without churning the data
- * primitives.
+ * rather than per poll tick.
  *
  * Served at `/rpc/ws?host=__admin__` — the reserved sentinel
  * (`ADMIN_HOST_SENTINEL`, defined in `./host`) and the upgrade handler in
- * `server/main.ts`.
+ * `server/main.ts`. This is now the ONE browser socket for the whole app:
+ * every host's own data (previously a dedicated `?host=` socket per host)
+ * rides the SAME transport, folded through the host map's `{ mapKey, input
+ * }` wire envelope.
  *
  * The admin connection is also drishti's CONTROL PLANE: the one
  * always-open, global connection. surface-app's build-identity surface
@@ -19,18 +29,17 @@
  * surface (kolu#1197/#1201). `composeSurfaceContracts` multiplexes the
  * two: drishti's own `admin` surface under the `admin` key, surface-app's
  * complete surface under the `surfaceApp` key. Each is namespaced by its
- * key on the wire (`/surface/admin/…` vs `/surface/surfaceApp/…`).
+ * key on the wire (`/surface/admin/…` vs `/surface/surfaceApp/…`); the
+ * host map rides a THIRD key, `hosts` (spliced in by `admin-router.ts` /
+ * dialled via `connectSurfaceMap(hostSurfaceMap, conn.transport, "hosts")`
+ * in `wire.ts` — outside `composeSurfaceContracts`, exactly like kolu's own
+ * padi map).
  */
 
 import { composeSurfaceContracts, defineSurface } from "@kolu/surface/define";
-import type { SurfaceTypes } from "@kolu/surface/define";
 import { surfaceAppSurface } from "@kolu/surface-app/surface";
 import { z } from "zod";
 import { isValidHost } from "./host";
-
-const HostEntrySchema = z.object({
-  host: z.string().min(1),
-});
 
 const HostInputSchema = z
   .string()
@@ -39,19 +48,10 @@ const HostInputSchema = z
     "host must be non-empty, have no whitespace, not start with '-', and not be the admin sentinel",
   );
 
-/** drishti's OWN admin surface — just the host set + the host-lifecycle
- *  procedures. surface-app's buildInfo/identity ride the sibling surface,
- *  not here. */
+/** drishti's OWN admin surface — just the host-lifecycle procedures.
+ *  surface-app's buildInfo/identity ride the sibling surface, and host
+ *  membership/status ride the `hosts` MAP sibling; neither lives here. */
 export const adminSurface = defineSurface({
-  collections: {
-    /** Configured hosts. Key = host string (ssh target). The browser's
-     *  tab strip subscribes to this collection — adds/removes ripple
-     *  through `useCollection` and the strip updates without polling. */
-    hosts: {
-      keySchema: z.string(),
-      schema: HostEntrySchema,
-    },
-  },
   procedures: {
     hosts: {
       add: {
@@ -65,8 +65,9 @@ export const adminSurface = defineSurface({
       // Re-arm a host whose parent session gave up (its `connection`
       // cell is `failed`). Distinct from add/remove: it mutates session
       // lifecycle, not host-set membership — the host stays configured,
-      // so this never touches the `hosts` collection. The recovery flows
-      // back through the per-host `connection` cell, not here.
+      // so this never touches the map's `entries` collection. The
+      // recovery flows back through the per-host `connection` cell AND
+      // the map's own `EntryStatus` projection, not here.
       reconnect: {
         input: z.object({ host: z.string() }),
         output: z.object({ ok: z.boolean() }),
@@ -75,7 +76,8 @@ export const adminSurface = defineSurface({
       // regaining connectivity (`online`) or refocus (`visibilitychange`),
       // the client-side companion to the parent's own wake monitor. No
       // input (it's fleet-wide) and no host-set change; like `reconnect`,
-      // recovery is observed via each host's `connection` cell.
+      // recovery is observed via each host's `connection` cell and the
+      // map's `EntryStatus`.
       recheck: {
         input: z.object({}),
         output: z.object({ ok: z.boolean() }),
@@ -103,6 +105,3 @@ export const adminSurfaces = {
  *  `implement(adminContract).router(...)`; the client types its
  *  `websocketLink` off `typeof adminContract`. */
 export const adminContract = composeSurfaceContracts(adminSurfaces);
-
-type AS = SurfaceTypes<typeof adminSurface.spec>;
-export type HostEntry = AS["collections"]["hosts"]["Value"];

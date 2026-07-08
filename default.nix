@@ -1,7 +1,8 @@
 # Root composer for drishti Nix derivations.
 #
-# The dev shell consumes `kolu-surface` + `kolu-surface-nix-host` (via
-# `nix/env.nix`); the wrappers below feed `nix run` / `nix build`.
+# The dev shell consumes `kolu-surface` + `kolu-surface-remote` +
+# `kolu-surface-map` (via `nix/env.nix`); the wrappers below feed `nix run` /
+# `nix build`.
 #
 # User-facing derivations. The monitor + client are backed by `drishtiBuilt`
 # (the full app tree + client bundle); the agent is backed by its own minimal
@@ -114,5 +115,5 @@ let
 in
 {
   inherit drishti drishti-agent drishti-client drishtiBuilt drishtiAgentBuilt;
-  inherit (resolvedPkgs) kolu-surface kolu-surface-nix-host;
+  inherit (resolvedPkgs) kolu-surface kolu-surface-remote kolu-surface-map;
 }

@@ -1,26 +1,25 @@
 /**
  * Tab strip — list of configured hosts plus an "+ add host" affordance.
  *
- * Each chip subscribes to its host's `connection` cell from `wire.ts`
- * so the dot color reflects the live link state without polling. Dot
- * color is a function of `ConnectionState`; there is no parallel
- * status enum to keep in sync.
+ * Each chip reads its host's `EntryState` off the shared `hostMap`
+ * (`wire.ts`) so the dot color reflects the live link state without
+ * polling — the map's `entries` collection is the ONE membership +
+ * status authority now (no more per-host `connection` cell socket to
+ * subscribe for the dot alone).
  *
- * Pure display: per-host socket disposal is driven by `MultiHostApp`'s
- * host-removal effect, NOT by this component's `onCleanup`. Mixing the
- * two would give a view component authority over transport lifetime
- * (Lowy L4); centralising in the parent keeps the chip a pure function
- * of its props plus its connection cell.
+ * Pure display: host removal itself is driven entirely by the server's
+ * `entries` collection dropping the key (no per-host socket left to
+ * dispose client-side) — there is nothing left for this component's
+ * `onCleanup` to own.
  */
 
 import { useSurfaceApp } from "@kolu/surface-app/solid";
 import { createPwaInstall, installInstructions } from "@kolu/solid-pwa-install";
-import { createMemo, createSignal, For, Show } from "solid-js";
-import { type ConnectionState, DEFAULT_CONNECTION } from "drishti-common/browser";
+import { createSignal, For, Show } from "solid-js";
 import type { View } from "./view";
 import { HostDot } from "./HostDot";
 import { otherTheme, type Theme } from "./theme";
-import { surfaceForHost } from "./wire";
+import { hostMap } from "./wire";
 
 // Shared chip chrome — the fleet tab and the host chips are the same
 // visual control, so the class strings live in one place rather than
@@ -170,11 +169,7 @@ function TabChip(props: {
   onSelect: () => void;
   onClose: () => void;
 }) {
-  const app = surfaceForHost(props.host);
-  const connection = app.cells.connection.use({});
-  const state = createMemo<ConnectionState>(
-    () => (connection.value() ?? DEFAULT_CONNECTION).state,
-  );
+  const state = () => hostMap.entry(props.host).state();
 
   return (
     <div class={`${TAB_BASE} ${props.active ? TAB_ACTIVE : TAB_INACTIVE}`}>
@@ -182,9 +177,9 @@ function TabChip(props: {
         type="button"
         class="flex items-center gap-2"
         onClick={props.onSelect}
-        title={`${props.host} — ${state()}`}
+        title={`${props.host} — ${state().kind}`}
       >
-        <HostDot health={app.health} state={state} />
+        <HostDot state={state} />
         <span class="font-semibold">{props.host}</span>
       </button>
       <button

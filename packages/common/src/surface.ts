@@ -22,7 +22,7 @@ import { z } from "zod";
 
 // IMPORTANT: this module is AGENT-shared (drishti-common's `.` export — the
 // agent serves the base surface from it). It must NOT import
-// `@kolu/surface-nix-host`: the agent's scoped build hydrates only `@kolu/surface`,
+// `@kolu/surface-remote`: the agent's scoped build hydrates only `@kolu/surface`,
 // so a runtime import of the parent-only provisioning lib crashes the agent at
 // load. The connection-cell types, `DEFAULT_CONNECTION`, and the `browserSurface`
 // mirror-seam composition therefore live in the APP-only `drishti-common/browser`
@@ -142,7 +142,7 @@ const SystemSchema = z.object({
 // ⚠ **Parent-to-agent link lifecycle — owned upstream (kolu #1568).**
 // The connection-health cell (schema, gate-closed `DEFAULT_CONNECTION`, and
 // the parent-only-write / read-only-over-the-wire authority) now lives in
-// `@kolu/surface-nix-host/connection`. It is byte-identical in shape to
+// `@kolu/surface-remote/connection`. It is byte-identical in shape to
 // drishti's former local `ConnectionSchema` (the five link phases, nullable
 // `lastError`, nullable `network|remote` `failureCause`, `progressLines` tail).
 // drishti adds it ONLY at the re-serve seam via `mirroredSurface` (`browserSurface`)

@@ -1,47 +1,66 @@
 /**
  * Admin-surface router.
  *
- * Owns the parent's view of "which hosts exist". The `hosts` collection
- * projects from the supplied `HostRegistry` — there is no shadow cache,
- * so admin and registry cannot diverge by construction.
+ * Serves THREE siblings over the one admin transport, all on the socket the
+ * browser opens once at `/rpc/ws?host=__admin__`:
  *
- * `hosts.add` / `hosts.remove` procedures hand off to the registry for
- * the side effects (spawn/destroy session+handler, persist to disk,
- * close any dangling browser WSes pointed at the removed host). The
- * channel publish that notifies subscribers fires AFTER the registry
- * mutation resolves — so a browser subscribing to a newly-added host
- * always lands on a live handler, and a subscriber learning about a
- * removed host never sees the upgrade handler still routing to it.
+ *   - `admin`      — drishti's own host-lifecycle PROCEDURES
+ *                     (add/remove/reconnect/recheck). No collection of its
+ *                     own any more (see `admin-surface.ts`'s docstring).
+ *   - `surfaceApp` — the global build-identity `buildInfo` cell + the
+ *                     `identity.info` restart probe (kolu#1197/#1201).
+ *   - `hosts`      — the `@kolu/surface-map` HOST MAP (`hostMap.ts`):
+ *                     `serveHostMap` folds the warm session pool's
+ *                     membership + each session's connection state into the
+ *                     map's `entries` collection (the `EntryStatus` fact the
+ *                     tab strip / fleet cards read), and key-folds every
+ *                     `browserSurface` primitive so a host's own data rides
+ *                     THIS transport instead of a dedicated `?host=` socket.
  *
- * The admin transport multiplexes TWO sibling surfaces (kolu#1197/#1201):
- * drishti's OWN `admin` surface (this file's host set + procedures) and
- * surface-app's complete surface (the global `buildInfo` cell + the
- * `identity.info` restart probe). `implementSurfaces` serves both —
- * surface-app's deps come from `surfaceAppServer()` in one call; drishti's
- * own deps are the `hosts` collection + procedures. The runtime fires the
- * buildInfo cell's async republish; no app-visible connect.
+ * The first two are keyed siblings via `implementSurfaces`/
+ * `composeSurfaceContracts` (`adminContract`); the map is a THIRD key
+ * spliced in afterward — `serveSurfaceMap`'s router shape (`{ surface: {
+ * <folded members>, entries } }`) is a flat single-surface object, not a
+ * multi-sibling `implementSurfaces` input, so it's nested under the `hosts`
+ * key exactly the way kolu nests its own padi map under `padi` in
+ * `packages/server/src/index.ts`.
+ *
+ * `hosts.add` / `hosts.remove` still hand off to the pool for the session
+ * side effects (spawn/destroy, persist to disk) — the map's `MapRegistry`
+ * is membership + resolution, never a write API, so these mutations stay
+ * OUTSIDE it, mirroring kolu's own root `hosts.add`/`hosts.remove`. The
+ * map republishes `entries` on its own once the pool's membership /
+ * per-session state changes; there is no manual channel-publish call left
+ * here to order against (contrast the OLD `hosts` collection, whose
+ * `ctx.admin.collections.hosts.upsert/remove` calls this file used to make
+ * by hand after every mutation).
  */
 
+import { oc } from "@orpc/contract";
 import { implement } from "@orpc/server";
-import { inMemoryChannelByName } from "@kolu/surface/server";
-import { implementSurfaces } from "@kolu/surface/server";
+import { directLink } from "@kolu/surface/links/direct";
+import { implementSurfaces, inMemoryChannelByName } from "@kolu/surface/server";
+import { serveSurfaceMap } from "@kolu/surface-map/server";
 import { surfaceAppServer } from "@kolu/surface-app/server";
 import { adminContract, adminSurfaces } from "../common/admin-surface";
-import type { HostRegistry } from "./hostRegistry";
+import { hostSurfaceMap } from "../common/hostMap";
+import { buildHostMapRegistry } from "./hostMapRegistry";
+import type { HostPool } from "./hostRegistry";
 import { makeLogger } from "./log";
+import { buildRouter } from "./router";
 
 const log = makeLogger("admin");
 
 export interface AdminRouterOptions {
-  registry: HostRegistry;
+  pool: HostPool;
 }
 
 export function buildAdminRouter(opts: AdminRouterOptions) {
   // Two SIBLING surfaces over the one admin transport (kolu#1197/#1201):
-  // drishti's OWN `admin` surface (the host set + host-lifecycle procedures)
-  // under the `admin` key, and surface-app's COMPLETE surface (the
-  // build-identity `buildInfo` cell + the `identity.info` restart probe) under
-  // the `surfaceApp` key. They are NOT merged — `implementSurfaces` keys each
+  // drishti's OWN `admin` surface (the host-lifecycle procedures) under the
+  // `admin` key, and surface-app's COMPLETE surface (the build-identity
+  // `buildInfo` cell + the `identity.info` restart probe) under the
+  // `surfaceApp` key. They are NOT merged — `implementSurfaces` keys each
   // surface, serving them at `/surface/admin/…` and `/surface/surfaceApp/…`
   // with a key-namespaced channel per surface.
   //
@@ -63,7 +82,7 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // reconnecting tab's `pid` against the SAME id `identity.info` reports, rather
   // than minting a second one that would never match.
   const surfaceApp = surfaceAppServer();
-  const { router: surfacesRouter, ctx } = implementSurfaces(
+  const { router: surfacesRouter } = implementSurfaces(
     adminSurfaces,
     { channel: inMemoryChannelByName() },
     {
@@ -72,72 +91,53 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
       surfaceApp,
 
       // ── drishti's own admin surface served as a sibling ──────────────
+      // Procedures only now — the `hosts` collection is gone (replaced by
+      // the host map's `entries` below).
       admin: {
-        collections: {
-          hosts: {
-            // Live projection from the registry — the framework calls this
-            // for every new subscriber's first frame.
-            readAll: () => opts.registry.snapshot(),
-            // No-op deps. The procedures below mutate the registry directly
-            // and then call `ctx.admin.collections.hosts.upsert/remove` to
-            // publish the change; the framework's channel publish fires off
-            // these calls regardless of what the deps do. Keeping the deps
-            // empty avoids maintaining a parallel cache that could drift from
-            // the registry.
-            upsert: () => {},
-            remove: () => {},
-          },
-        },
         procedures: {
           hosts: {
             add: async ({ input }: { input: { host: string } }) => {
               // `HostInputSchema` already rejects blank, whitespace-containing,
               // and sentinel strings at validation time; no re-check needed here.
               const host = input.host.trim();
-              if (opts.registry.has(host)) {
+              if (opts.pool.has(host)) {
                 return { ok: false, error: "host already exists" };
               }
               try {
-                // Invariant: `registry.add` must resolve BEFORE the channel
-                // publish below. The publish synchronously triggers each
-                // subscribed browser to open a new WS for the host; if the
-                // handler isn't built yet, the upgrade handler rejects.
-                await opts.registry.add(host);
+                await opts.pool.add(host);
               } catch (err) {
                 return { ok: false, error: (err as Error).message };
               }
-              ctx.admin.collections.hosts.upsert(host, { host });
+              // No manual publish: `serveHostMap`'s membership fuse (wired
+              // below) republishes the map's `entries` collection off the
+              // SAME `pool.subscribe` this `add` just satisfied.
               return { ok: true };
             },
             remove: async ({ input }: { input: { host: string } }) => {
-              if (!opts.registry.has(input.host)) return { ok: false };
+              if (!opts.pool.has(input.host)) return { ok: false };
               try {
-                // Invariant: `registry.remove` must resolve BEFORE the
-                // channel publish below. The registry closes the host's
-                // open WSes and destroys the session synchronously; only
-                // then is the subscriber notified the host has gone.
-                await opts.registry.remove(input.host);
+                await opts.pool.remove(input.host);
               } catch (err) {
                 log(`remove ${input.host} failed: ${(err as Error).message}`);
                 return { ok: false };
               }
-              ctx.admin.collections.hosts.remove(input.host);
               return { ok: true };
             },
             reconnect: ({ input }: { input: { host: string } }) => {
-              // No `hosts` collection publish: membership is unchanged. The
-              // session's copying→connecting→connected transition streams
-              // back through the per-host `connection` cell on its own.
-              if (!opts.registry.has(input.host)) return { ok: false };
-              opts.registry.reconnect(input.host);
+              // No `entries` publish here either: membership is unchanged.
+              // The session's copying→connecting→connected transition
+              // streams back through the per-host `connection` cell AND the
+              // map's fused per-session `onState` → `EntryStatus` republish.
+              if (!opts.pool.has(input.host)) return { ok: false };
+              opts.pool.reconnect(input.host);
               return { ok: true };
             },
             recheck: () => {
               // Fleet-wide force-reprobe (browser regained connectivity /
-              // refocused). Like `reconnect`, no membership change and no
-              // collection publish — each host's recovery streams back through
-              // its own `connection` cell.
-              opts.registry.recheckAll();
+              // refocused). Like `reconnect`, no membership change; each
+              // host's recovery streams back through its own `connection`
+              // cell and `EntryStatus`.
+              opts.pool.recheckAll();
               return { ok: true };
             },
           },
@@ -146,11 +146,71 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
     },
   );
 
-  const router = implement(adminContract).router({
-    ...surfacesRouter,
+  // ── The host MAP — serve every pool member's `browserSurface`, keyed by
+  // host, over THIS transport. `hostRegistry` bridges `opts.pool` to the
+  // `MapRegistry<string>` seam `serveSurfaceMap` consumes (hand-adapted from
+  // `@kolu/surface-remote`'s `serveHostMap` — see `hostMapRegistry.ts`'s
+  // docstring for why the convenience wrapper itself doesn't fit). `linkFor`
+  // builds (and caches, inside the registry) a `directLink` over each host's
+  // own `buildRouter(...)` — the SAME per-host bridge (agent mirror + kill
+  // forward) that used to back a dedicated `?host=` `RPCHandler`, now folded
+  // into the map's one combined link instead of a separate socket.
+  const hostRegistry = buildHostMapRegistry(opts.pool, {
+    linkFor: (host, session) =>
+      directLink(buildRouter({ host, session }).router),
   });
+  const hostsMap = serveSurfaceMap(hostSurfaceMap, hostRegistry);
+
+  // `implement(adminContract).router(...)` WALKS `adminContract` to build the
+  // runtime router — `adminContract` (the CLIENT-shared, 2-sibling contract)
+  // knows nothing about `hosts`, so an oRPC-blessed `.router()` call against
+  // it silently has no route for `hosts.entries`/`hosts.<member>` no matter
+  // what extra keys the handlers object carries (confirmed live: the
+  // `entries` subscription 404s). A SERVER-ONLY WIDENED contract is
+  // required — mirroring kolu's own `servedContract` (`packages/server/src/
+  // surface.ts`), which composes the client contract + `padiHostMap.contract`
+  // the identical way. `hostSurfaceMap.contract` is `SurfaceMapContract`
+  // (structurally `{ surface: { <member>: contract, entries: contract } }`,
+  // the contract-level twin of `serveSurfaceMap`'s router shape) — spread its
+  // `.surface` in as the `hosts` key, never shared with the client (the
+  // client dials the map SEPARATELY via `connectSurfaceMap`, never through
+  // this widened contract).
+  const servedAdminContract = oc.router({
+    ...adminContract,
+    surface: {
+      ...adminContract.surface,
+      // biome-ignore lint/suspicious/noExplicitAny: SurfaceMapContract is AnyContractRouter; its `.surface` is the folded map fragment (mirrors kolu's identical cast in surface.ts).
+      hosts: (hostSurfaceMap.contract as any).surface,
+    },
+  });
+
+  // Splice the map's flat `{ surface: { <folded members>, entries } }`
+  // router in under the `hosts` key, beside `admin`/`surfaceApp` —
+  // `surfacesRouter` (straight off `implementSurfaces`) is a plain object,
+  // so merging here reads its `.surface` directly. Mirrors kolu's own
+  // `surfaceRouter.surface = { ...koluSurfaceRouter.surface, padi: … }`.
+  const router = implement(servedAdminContract).router({
+    ...surfacesRouter,
+    surface: {
+      ...surfacesRouter.surface,
+      hosts: (hostsMap.router as { surface: Record<string, unknown> })
+        .surface,
+    },
+  });
+
   // `processId` is this parent process's live id — `main.ts`'s WS-upgrade gate
   // feeds it to `rejectStaleProcess` so a tab that reconnects after a parent
   // restart is rejected at the handshake.
-  return { router, processId: surfaceApp.processId };
+  return {
+    router,
+    processId: surfaceApp.processId,
+    /** Tear down the map's own machinery (`serveSurfaceMap`'s membership
+     *  republish sub, PLUS the registry's fused per-member `onState` subs
+     *  and cached links) — called from `main.ts`'s `shutdown()`, alongside
+     *  `pool.destroyAll()`. */
+    disposeHostMap: () => {
+      hostsMap.dispose();
+      hostRegistry.dispose();
+    },
+  };
 }

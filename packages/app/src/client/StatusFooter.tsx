@@ -21,7 +21,17 @@ import { useSurfaceApp } from "@kolu/surface-app/solid";
 import type { SurfaceHealth } from "@kolu/surface/solid";
 import { HostStatusPip } from "@kolu/surface/solid/HostStatusPip";
 import { type Accessor, Show } from "solid-js";
-import { DOT_HEX } from "./connectionColors";
+
+// The framework `<HostStatusPip>` colors its dot via an inline
+// `style.background` hex, not a tailwind class. This is the ONLY remaining
+// `<HostStatusPip>` consumer in drishti (the per-host dots now read
+// `@kolu/surface-map`'s `EntryStatus` instead — `entryStatusTone.ts`), so
+// the three-entry palette lives here rather than a shared module.
+const DOT_HEX = {
+  connected: "#10b981", // emerald-500 — the pip's readyColor (fact-gated)
+  connecting: "#f59e0b", // amber-500 — every non-`failed` not-ready state
+  failed: "#ef4444", // red-500
+} as const;
 
 export function StatusFooter(props: {
   /** The admin control-plane health fact (`surfaceClientsHealth({ admin,
