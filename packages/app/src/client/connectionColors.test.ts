@@ -1,31 +1,5 @@
-import type { SurfaceHealth } from "@kolu/surface/solid";
 import { describe, expect, it } from "bun:test";
-import {
-  disconnectedMessage,
-  STATE,
-  statusTextClass,
-  withElapsed,
-} from "./connectionColors";
-
-// `health()` facts spanning the readiness verdicts `gateStatus` distinguishes —
-// the word's green must track the dot's, which greens ONLY on `ready`.
-const READY: SurfaceHealth = {
-  live: true,
-  subs: [{ name: "c", pending: false, error: undefined }],
-};
-const DEAD: SurfaceHealth = { live: false, subs: [] };
-const PENDING: SurfaceHealth = {
-  live: true,
-  subs: [{ name: "c", pending: true, error: undefined }],
-};
-// Live (transport ∧ mirror up) but a subscription is silently erroring — the
-// fact `gateStatus` calls `degraded` and the dot paints amber. `live` is still
-// `true` here, so the OLD bare-`live` word stayed GREEN: the #1564 lie relocated
-// from the dot to the status word.
-const DEGRADED: SurfaceHealth = {
-  live: true,
-  subs: [{ name: "c", pending: false, error: new Error("boom") }],
-};
+import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
 
 describe("connection STATE presentation", () => {
   it("covers every connection state", () => {
@@ -57,42 +31,6 @@ describe("connection STATE presentation", () => {
     // copying/connecting are in-flight → pending.
     expect(STATE.copying.pending).toBe(true);
     expect(STATE.connecting.pending).toBe(true);
-  });
-});
-
-describe("statusTextClass — the WORD's green tracks the dot's verdict (gateStatus), not a narrower signal", () => {
-  it("greens a connected word ONLY when the FACT is fully READY", () => {
-    // The dot greens on gateStatus === "ready" (live ∧ no error ∧ no pending);
-    // the word must use the SAME verdict so the two never diverge.
-    expect(statusTextClass("connected", READY)).toBe("text-emerald-500");
-  });
-
-  it("a 'connected' cell over a DEGRADED fact (a sub silently erroring while live) reads amber, never green", () => {
-    // The relocated #1564 lie: live === true here, so the OLD bare-`live` word
-    // painted green while the dot (gateStatus → degraded) turned amber. The word
-    // now reads the WHOLE fact, so it drops to amber WITH the dot.
-    expect(statusTextClass("connected", DEGRADED)).toBe(STATE.connecting.text);
-    expect(statusTextClass("connected", DEGRADED)).not.toBe("text-emerald-500");
-  });
-
-  it("a 'connected' cell still awaiting its first frame (pending) reads amber, not a premature green", () => {
-    // gateStatus(PENDING) === "connecting" — the dot is amber on every fresh
-    // connect, so the word must be too.
-    expect(statusTextClass("connected", PENDING)).toBe(STATE.connecting.text);
-    expect(statusTextClass("connected", PENDING)).not.toBe("text-emerald-500");
-  });
-
-  it("a stale 'connected' over a dead transport reads amber, never green", () => {
-    // live === false though the cell still says connected (a half-open/dropped
-    // browser↔backend socket). gateStatus → connecting → amber.
-    expect(statusTextClass("connected", DEAD)).toBe(STATE.connecting.text);
-    expect(statusTextClass("connected", DEAD)).not.toBe("text-emerald-500");
-  });
-
-  it("a non-connected state keeps its own (non-green) tone for its realistic not-ready fact", () => {
-    expect(statusTextClass("failed", DEAD)).toBe("text-red-500");
-    expect(statusTextClass("connecting", DEAD)).toBe("text-amber-500");
-    expect(statusTextClass("copying", DEAD)).toBe("text-amber-500");
   });
 });
 

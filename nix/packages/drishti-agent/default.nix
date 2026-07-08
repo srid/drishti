@@ -93,7 +93,8 @@ stdenv.mkDerivation {
 
   # @kolu/surface is a Nix-store source, not a bun.lock entry — drop it in
   # after bun install populates node_modules. The agent needs only
-  # @kolu/surface (not surface-nix-host, which is the parent's provisioning lib).
+  # @kolu/surface (not surface-remote/surface-map, which are the parent's
+  # provisioning + fleet-membership libs).
   postBunNodeModulesInstallPhase = ''
     sh scripts/hydrate-kolu-packages.sh \
       ${kolu-surface} @kolu/surface

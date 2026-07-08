@@ -1,13 +1,13 @@
 /**
  * App-only (browser + parent re-serve) surface bits. This is the ONLY
- * drishti-common module that imports `@kolu/surface-nix-host` — kept off the
+ * drishti-common module that imports `@kolu/surface-remote` — kept off the
  * agent-shared `./surface.ts` so the agent (whose scoped build hydrates only
  * `@kolu/surface`) never loads the parent-only provisioning lib at runtime.
  * Exposed as the `drishti-common/browser` subpath; the agent imports
  * `drishti-common` (`./surface.ts`) and never reaches this file.
  */
 
-import { mirroredSurface } from "@kolu/surface-nix-host/connection";
+import { mirroredSurface } from "@kolu/surface-remote/connection";
 import { surface } from "./surface";
 
 /** The surface the BROWSER consumes and the PARENT re-serves: the agent's base
@@ -19,10 +19,10 @@ export const browserSurface = mirroredSurface(surface);
 
 // The connection-cell types + gate-closed default, re-exported here (not from the
 // agent-shared `./surface.ts`) so app modules import them without pulling
-// `@kolu/surface-nix-host` into the agent's runtime.
+// `@kolu/surface-remote` into the agent's runtime.
 export {
   type ConnectionInfo,
   type ConnectionState,
   DEFAULT_CONNECTION,
   type FailureCause,
-} from "@kolu/surface-nix-host/connection";
+} from "@kolu/surface-remote/connection";

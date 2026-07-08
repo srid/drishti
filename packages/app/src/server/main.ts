@@ -5,17 +5,24 @@
  *
  *   browser  ─WS oRPC─▶  this server  ─stdio oRPC─▶  remote agent
  *
- * The browser opens one WebSocket per host (plus one for the admin
- * surface). Each connection lands at `/rpc/ws?host=<id>`; the upgrade
- * handler dispatches to a per-host `RPCHandler`, or to the admin handler
- * when `host=__admin__`. The per-host `surface` schema is unchanged —
- * host identity lives only at the transport layer.
+ * The browser opens exactly ONE WebSocket — the admin/control-plane
+ * connection, at `/rpc/ws?host=__admin__` — for the WHOLE app now. Every
+ * configured host's own data used to ride a dedicated `?host=<id>` socket
+ * dispatched to a per-host `RPCHandler`; that's deleted (`@kolu/surface-map`
+ * adoption). It now rides the SAME admin transport, key-folded through the
+ * `hosts` host MAP (`admin-router.ts`'s `serveHostMap` /
+ * `packages/app/src/common/hostMap.ts`) — one socket, N keyed entries,
+ * membership + `EntryStatus` published for free as the map's `entries`
+ * collection. The per-host `browserSurface` schema itself is unchanged;
+ * only the transport it rides changed.
  *
- * The `HostRegistry` is the single source of truth for "which hosts
- * exist". Boot seeds it from CLI args (if any), the persisted file (if
- * none and the file exists), or `["localhost"]` (default); admin-surface
- * `addHost` / `removeHost` mutations flow through the same registry,
- * which persists back to the same file so UI changes survive restart.
+ * The warm host session `HostPool` (`hostRegistry.ts`) is the single
+ * source of truth for "which hosts exist". Boot seeds it from CLI args (if
+ * any), the persisted file (if none and the file exists), or
+ * `["localhost"]` (default); admin-surface `hosts.add` / `hosts.remove`
+ * procedures mutate the same pool, which persists back to the same file so
+ * UI changes survive restart. The host map's `entries` collection is a
+ * pure projection of the pool — there is no shadow cache to drift.
  */
 
 import { hostname } from "node:os";
@@ -39,7 +46,7 @@ import { appNameForHost } from "../client/title";
 import { buildAdminRouter } from "./admin-router";
 import { resolveDrvForHost } from "./archMap";
 import { buildClient } from "./build";
-import { buildHostRegistry } from "./hostRegistry";
+import { buildHostPool } from "./hostRegistry";
 import { loadHosts, resolveHostsFile, saveHosts } from "./hostsStore";
 import { installStderrTimestamps, makeLogger } from "./log";
 import { startWakeMonitor } from "./wakeMonitor";
@@ -120,13 +127,13 @@ async function main(): Promise<void> {
     );
   }
 
-  const registry = await buildHostRegistry({
+  const pool = buildHostPool({
     initialHosts,
     resolveDrvPath,
     hostsFile,
   });
 
-  const admin = buildAdminRouter({ registry });
+  const admin = buildAdminRouter({ pool });
   // biome-ignore lint/suspicious/noExplicitAny: matches existing router-handler cast (see implementSurface fragment shape).
   const adminHandler = new RPCHandler(admin.router as any);
 
@@ -140,7 +147,7 @@ async function main(): Promise<void> {
       log(
         `wake detected (process suspended ~${Math.round(gapMs / 1000)}s) — rechecking all host links`,
       );
-      registry.recheckAll();
+      pool.recheckAll();
     },
   });
 
@@ -228,11 +235,13 @@ async function main(): Promise<void> {
     },
   );
 
-  // ── WebSocket: one server, dispatch by `?host=<id>` query ────────────
-  // Mounting per-host handlers at path segments (`/rpc/ws/<host>`) would
-  // make the routing table volatile as hosts come and go; query-param
-  // dispatch keeps it stable. The parsed `host` is closed over in the
-  // handleUpgrade callback — no need to store it on the request object.
+  // ── WebSocket: ONE server, ONE endpoint ──────────────────────────────
+  // Every configured host's data now rides this SAME socket, key-folded
+  // through the `hosts` host map (`admin-router.ts`) — there is no more
+  // per-host `?host=<id>` dispatch table to keep stable as hosts come and
+  // go. The `host` query param is kept as the ONE remaining routing
+  // sentinel (`ADMIN_HOST_SENTINEL`) so the upgrade handler still rejects
+  // any other value rather than silently accepting an unrouted socket.
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: 8 * 1024 * 1024,
@@ -287,11 +296,7 @@ async function main(): Promise<void> {
       return;
     }
     const host = url.searchParams.get("host");
-    if (host === null || host.length === 0) {
-      s.destroy();
-      return;
-    }
-    if (host !== ADMIN_HOST_SENTINEL && !registry.has(host)) {
+    if (host !== ADMIN_HOST_SENTINEL) {
       s.destroy();
       return;
     }
@@ -323,36 +328,16 @@ async function main(): Promise<void> {
         )
           return;
         // Accepted socket (gate passed): enrol it in the liveness heartbeat so a
-        // half-open client is reaped here. One call covers both branches below;
-        // gate-rejected sockets already returned.
+        // half-open client is reaped here.
         heartbeat.register(ws);
-        if (host === ADMIN_HOST_SENTINEL) {
-          log("browser ws connect (admin)");
-          ws.on("close", (code, reason) =>
-            log(
-              `browser ws disconnect (admin) (code=${code} reason=${reason.toString() || "<none>"})`,
-            ),
-          );
-          void adminHandler.upgrade(
-            ws as unknown as Parameters<typeof adminHandler.upgrade>[0],
-          );
-          return;
-        }
-        const handler = registry.getHandler(host);
-        if (handler === undefined) {
-          ws.close(1008, `unknown host: ${host}`);
-          return;
-        }
-        registry.registerConnection(host, ws);
-        log(`browser ws connect (host=${host})`);
-        ws.on("close", (code, reason) => {
-          registry.unregisterConnection(host, ws);
+        log("browser ws connect (admin)");
+        ws.on("close", (code, reason) =>
           log(
-            `browser ws disconnect (host=${host}) (code=${code} reason=${reason.toString() || "<none>"})`,
-          );
-        });
-        void handler.upgrade(
-          ws as unknown as Parameters<typeof handler.upgrade>[0],
+            `browser ws disconnect (admin) (code=${code} reason=${reason.toString() || "<none>"})`,
+          ),
+        );
+        void adminHandler.upgrade(
+          ws as unknown as Parameters<typeof adminHandler.upgrade>[0],
         );
       },
     );
@@ -361,7 +346,8 @@ async function main(): Promise<void> {
   const shutdown = (sig: string) => {
     log(`${sig}: destroying host sessions`);
     stopWakeMonitor();
-    registry.destroyAll();
+    admin.disposeHostMap();
+    pool.destroyAll();
     heartbeat.stop();
     wss.close();
     for (const ws of wss.clients) {

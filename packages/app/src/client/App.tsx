@@ -14,13 +14,9 @@
  * The per-host data shape (cells/collections/streams) is unchanged.
  */
 
+import type { EntryState } from "@kolu/surface-map";
 import { unenrolledStreamCall } from "@kolu/surface/client";
-import {
-  createSubscription,
-  type SurfaceHealth,
-  surfaceClientsHealth,
-} from "@kolu/surface/solid";
-import { SurfaceGate } from "@kolu/surface/solid/SurfaceGate";
+import { createSubscription, surfaceClientsHealth } from "@kolu/surface/solid";
 import { STALE_PROCESS_CLOSE_CODE } from "@kolu/surface-app";
 import { shellCommit } from "@kolu/surface-app/lifecycle";
 import { SurfaceAppProvider, surfaceAppProbe } from "@kolu/surface-app/solid";
@@ -45,6 +41,7 @@ import {
   type CpuCore,
   DEFAULT_SYSTEM,
   type IfaceName,
+  type MetricHistoryMsg,
   type MetricSample,
   type NetInterface,
   type Pid,
@@ -57,12 +54,7 @@ import {
   type ConnectionState,
   DEFAULT_CONNECTION,
 } from "drishti-common/browser";
-import {
-  disconnectedMessage,
-  STATE,
-  statusTextClass,
-  withElapsed,
-} from "./connectionColors";
+import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
 import { HostDot } from "./HostDot";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
@@ -114,10 +106,11 @@ import {
   adminClient,
   adminRpc,
   adminSocket,
-  disposeHostSurface,
+  hostMap,
+  hostRpc,
+  onHostMembershipError,
   rememberServerProcessId,
   surfaceAppClient,
-  surfaceForHost,
 } from "./wire";
 
 const SORT_KEYS = ["cpu", "mem", "pid", "user"] as const;
@@ -182,41 +175,40 @@ function createPersistedSignal<T extends string>(
 // Accumulate a host's streamed metric ring into a signal: the full snapshot on
 // connect, then one delta per tick, bounded to the server's retention. The
 // stream lives off the passed `signal`, so the caller's controller (shared or
-// its own) tears it down on unmount. `streamError` carries a dead feed into
-// the reactive graph — every other per-host subscription (system / connection
-// / cores / nics) already surfaces its `onError`; without this the metric
-// stream would be the lone one swallowing failure to the console, leaving an
-// empty ring to read identically as "no samples yet" and "stream died".
-function subscribeMetricHistory(app: ReturnType<typeof surfaceForHost>): {
+// its own) tears it down on unmount.
+//
+// `entry.rpc` no longer rides a dedicated per-host socket with its own
+// `rawStream`/`health()` enrolment — every host's data is now key-folded
+// over the ONE admin transport (`@kolu/surface-map`'s host map), and
+// `Entry<ES>` carries no `.rawStream`/`.health()` of its own (see
+// `HostDot.tsx`'s docstring). So this drops one level to the bare
+// `createSubscription` + `unenrolledStreamCall` pair — the SAME primitive
+// `processesSub` below already uses for the same reason (a raw streaming
+// PROCEDURE, not a framework `.streams` primitive) — which owns its own
+// `pending`/`error` without a health fact to join.
+function subscribeMetricHistory(host: string): {
   history: Accessor<MetricSample[]>;
   streamError: Accessor<Error | null>;
 } {
-  const [history, setHistory] = createSignal<MetricSample[]>([]);
-  // 🔴2 (Leak A) — the STRUCTURAL raw-stream path. `app.rawStream` owns the
-  // consume loop, the `AbortController` (tied to THIS component's owner), the
-  // pending/error signals, AND the health enrolment — and THROWS if driven
-  // outside a reactive owner. So this raw metric feed cannot silently escape
-  // `app.health()` the way the old hand-rolled `unenrolledStreamCall` +
-  // `app.enroll` could: forgetting the enrol is now structurally impossible, not
-  // a convention an adopter can drop. Its returned `error()` carries a dead feed
-  // into THIS widget's own sparkline overlay; the same error is already in the
-  // FACT (drishti's per-host degraded badge), so a dead feed can no longer read
-  // identically to "no samples yet" while swallowing failure to the console.
-  const source = app.rawStream(
-    "metricHistory",
-    app.rpc.surface.metricHistory.get,
-    {},
+  const ctl = new AbortController();
+  onCleanup(() => ctl.abort());
+  const sub = createSubscription<MetricHistoryMsg, MetricSample[]>(
+    () =>
+      unenrolledStreamCall(
+        hostRpc(host).surface.metricHistory.get,
+        {},
+        { signal: ctl.signal },
+      ),
     {
-      onItem: (msg) => {
-        if (msg.kind === "snapshot") setHistory(msg.samples);
-        else
-          setHistory((prev) =>
-            pushSample(prev, msg.sample, HISTORY_RETENTION_MS),
-          );
-      },
+      reduce: (prev, msg) =>
+        msg.kind === "snapshot"
+          ? msg.samples
+          : pushSample(prev, msg.sample, HISTORY_RETENTION_MS),
+      initial: [],
+      signal: ctl.signal,
     },
   );
-  return { history, streamError: () => source.error() ?? null };
+  return { history: () => sub() ?? [], streamError: () => sub.error() ?? null };
 }
 
 // Overlay text for a sparkline with no drawable point yet — the one place that
@@ -392,14 +384,15 @@ function PausedView() {
 
 function MultiHostApp() {
   const admin = adminClient();
-  const hosts = admin.collections.hosts.use({
-    onError: (err) => console.error("admin.hosts subscription failed", err),
-  });
+  // Host membership + status is now the `@kolu/surface-map` host map's OWN
+  // `entries` collection (`hostMap`, `wire.ts`) — the old hand-rolled
+  // `admin.collections.hosts` is deleted.
+  const hosts = hostMap.entries.use({ onError: onHostMembershipError });
 
   // Preserve insertion order: hostsStore guarantees first-occurrence
-  // order, the server's registry seeds the admin collection in that
-  // order, and the admin collection's keys stream is order-preserving.
-  // Sorting here would silently override the upstream invariant.
+  // order, the server's pool seeds the map's `entries` in that order, and
+  // the collection's keys stream is order-preserving. Sorting here would
+  // silently override the upstream invariant.
   const hostList = createMemo<string[]>(() => [...hosts.keys()]);
 
   // Y6 (Leak D): the admin transport multiplexes TWO sibling surfaces — drishti's
@@ -426,25 +419,6 @@ function MultiHostApp() {
     if (!h.live) return "connection lost — reconnecting…";
     return h.subs.find((s) => s.error)?.error?.message ?? null;
   });
-
-  // Drive per-host socket disposal from the parent that owns the admin
-  // subscription, NOT from inside `TabChip`. The chip is pure display;
-  // putting `disposeHostSurface` in its `onCleanup` would make a view
-  // component the authoritative trigger for transport-lifetime events
-  // (and routing dispose through `wire.ts` subscribing to admin would
-  // complect the transport module with the admin schema). This effect
-  // diffs the host set against the previous tick and disposes any
-  // socket whose host is no longer present.
-  let prevHosts: ReadonlySet<string> = new Set();
-  createEffect(
-    on(hostList, (current) => {
-      const next = new Set(current);
-      for (const host of prevHosts) {
-        if (!next.has(host)) disposeHostSurface(host);
-      }
-      prevHosts = next;
-    }),
-  );
 
   // Page-visibility, sourced ONCE here (the single `visibilitychange`
   // subscription, SSR-safe) and fed to BOTH consumers — the becoming-visible
@@ -683,14 +657,22 @@ function FleetView(props: {
 }
 
 function HostCard(props: { host: string; onSelect: () => void }) {
-  const app = surfaceForHost(props.host);
-  const system = app.cells.system.use({});
-  const connection = app.cells.connection.use({});
+  const entry = hostMap.entry(props.host);
+  const system = entry.cells.system.use({});
+  const connection = entry.cells.connection.use({});
 
   const sys = createMemo<SystemInfo>(() => system.value() ?? DEFAULT_SYSTEM);
   const state = createMemo<ConnectionState>(
     () => (connection.value() ?? DEFAULT_CONNECTION).state,
   );
+  // The dot + readiness gate read the host MAP's `EntryStatus` fact
+  // (floored on real transport liveness by `connectSurfaceMap`) — the
+  // per-host `SurfaceHealth`/`app.health()` this used to gate on no longer
+  // exists now that every host rides the ONE admin transport. The status
+  // WORD stays driven by the richer `ConnectionState` cell (copying vs
+  // connecting vs the failure detail) — see `HostDot.tsx`'s docstring for
+  // why the dot and the word now read two different facts.
+  const entryState = createMemo<EntryState>(() => entry.state());
   // CPU% and the core count are read straight off the `system` cell — the agent
   // folds them in (`system.cpuPct` / `system.coreCount`). The card used to open
   // the per-key `cpuCores` collection (one value stream PER core PER host) just
@@ -717,19 +699,17 @@ function HostCard(props: { host: string; onSelect: () => void }) {
       class="flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3 text-left transition-colors hover:border-indigo-400 hover:bg-white dark:border-gray-800 dark:bg-gray-900/40 dark:hover:border-indigo-500 dark:hover:bg-gray-900"
     >
       <div class="flex items-center gap-2">
-        <HostDot health={app.health} state={state} class="shrink-0" />
+        <HostDot state={entryState} class="shrink-0" />
         <span class="truncate font-semibold" title={props.host}>
           {props.host}
         </span>
-        <span
-          class={`ml-auto shrink-0 text-xs ${statusTextClass(state(), app.health())}`}
-        >
+        <span class={`ml-auto shrink-0 text-xs ${STATE[state()].text}`}>
           {state()}
         </span>
       </div>
 
       <Show
-        when={app.health().live}
+        when={entryState().kind === "connected"}
         fallback={
           <div class="py-3 text-center text-xs text-gray-400 dark:text-gray-500">
             {STATE[state()].label}
@@ -755,23 +735,22 @@ function HostCard(props: { host: string; onSelect: () => void }) {
             up {formatUptime(sys().uptime)} · {sys().os}
           </span>
         </div>
-        <HostCardSparkline app={app} />
+        <HostCardSparkline host={props.host} />
       </Show>
     </button>
   );
 }
 
 // The fleet card's glance sparkline. Mounted only inside the card's
-// `<Show when={health.live}>`, so a connecting or disconnected host opens NO
-// metricHistory stream and runs NO per-tick projection — the eager projection
-// memos that used to recompute for every card regardless of liveness are gone.
-// Pins the widest window (a glanceable trend, no picker) and downsamples to the
-// sparkline's pixel budget so a 40px box is drawn from ~120 points, not the
-// full 900-sample ring.
-function HostCardSparkline(props: {
-  app: ReturnType<typeof surfaceForHost>;
-}) {
-  const { history, streamError } = subscribeMetricHistory(props.app);
+// `<Show when={entryState.kind === "connected"}>`, so a connecting or
+// disconnected host opens NO metricHistory stream and runs NO per-tick
+// projection — the eager projection memos that used to recompute for every
+// card regardless of liveness are gone. Pins the widest window (a
+// glanceable trend, no picker) and downsamples to the sparkline's pixel
+// budget so a 40px box is drawn from ~120 points, not the full 900-sample
+// ring.
+function HostCardSparkline(props: { host: string }) {
+  const { history, streamError } = subscribeMetricHistory(props.host);
   const { latest, points } = projectHistory(
     history,
     () => windowMsFor(WIDEST_HISTORY_WINDOW),
@@ -819,14 +798,31 @@ function CardMetric(props: { label: string; pct: number; detail: string }) {
 // ── Per-host body (the prior single-host App, now parametric) ──────────
 
 function HostView(props: { host: string }) {
-  // `surfaceForHost` returns the cached client — the same instance the
-  // tab chip is using for the `connection` cell. Multiple consumers on
-  // one socket is the supported shape; oRPC multiplexes calls per
-  // procedure-path on the wire.
-  const app = surfaceForHost(props.host);
+  // `hostMap.entry(...)` is a PURE lens over the ONE admin transport's
+  // key-folded link — the same map the tab chip's dot reads. Multiple
+  // consumers on one socket is the supported shape; oRPC multiplexes calls
+  // per procedure-path on the wire, now further folded by `{ mapKey }`.
+  const entry = hostMap.entry(props.host);
 
-  const system = app.cells.system.use({});
-  const connection = app.cells.connection.use({});
+  // `system`/`connection` are void-input CELLS. `@kolu/surface-map`'s
+  // entry-router transform folds a void-input member's envelope as
+  // `{ mapKey }` — it OMITS the `input` field entirely (`define.ts`'s
+  // `foldInput()` / `isVoidInput`), rather than the old `{ mapKey, input:
+  // z.void() }` shape. That is what makes these subscriptions robust now: the
+  // wire frame has no `input` key by construction, so nothing depends on a
+  // JSON round-trip preserving an `undefined`-valued property or on zod
+  // accepting a MISSING `z.void()` key — a leniency zod tightened in >=4.3.7.
+  // drishti's `zod` therefore rides a normal `^4.3.6` range again (the exact
+  // `4.3.6` pin this once needed is gone). `onError` stays wired here as a
+  // defensive surface (not swallowed) rather than hanging silently, in case a
+  // future dependency drift reintroduces this class of bug.
+  const system = entry.cells.system.use({
+    onError: (err) => console.error("system subscription failed", err),
+  });
+  const connection = entry.cells.connection.use({
+    onError: (err) => console.error("connection subscription failed", err),
+  });
+  const entryState = createMemo<EntryState>(() => entry.state());
 
   // Re-arm the parent's session after it gave up (state === "failed").
   // Routed straight to the admin surface rather than through the root's
@@ -857,16 +853,16 @@ function HostView(props: { host: string }) {
     Record<Pid, Process>
   >(
     () =>
-      // The bare `unenrolledStreamCall` is the right primitive HERE — it is the
-      // raw stream FACTORY feeding `createSubscription`, which owns its own
-      // pending/error and is joined to the fact by `app.enroll` below. Its
-      // `unenrolled-` name flags that the raw call self-enrols nothing; the
-      // `createSubscription` + `enroll` pair is what carries it into `health()`.
-      // (A standalone surface-scoped raw stream would use `app.rawStream`, like
-      // `metricHistory` above; this one can't — `rawStream` returns only
-      // {pending,error}, not the value-bearing reconcile store the table needs.)
+      // The bare `unenrolledStreamCall` is the right primitive HERE — it is
+      // the raw stream FACTORY feeding `createSubscription`, which owns its
+      // own pending/error (`processesSnapshot.get` is a surface PROCEDURE,
+      // not a `.streams` primitive, so the framework has no bound hook for
+      // it). There is no per-host `health()` fact left to join it to —
+      // every host's data rides the ONE admin transport now — so a dead
+      // process feed surfaces via this subscription's own reactive
+      // `error()`, read below.
       unenrolledStreamCall(
-        app.rpc.surface.processesSnapshot.get,
+        hostRpc(props.host).surface.processesSnapshot.get,
         {},
         { signal: processesCtl.signal },
       ),
@@ -876,14 +872,6 @@ function HostView(props: { host: string }) {
       signal: processesCtl.signal,
     },
   );
-  // Leak A: this is a hand-driven `createSubscription` over a surface PROCEDURE
-  // (`processesSnapshot.get` is not a Stream primitive), so the framework can't
-  // auto-enrol it — JOIN it to `app.health()` directly (a `createSubscription`
-  // already owns its pending/error). A dead process feed now surfaces in the one
-  // FACT (the per-host degraded badge) instead of a private `console.error` — the
-  // reactive `error()` supersedes the one-shot callback. The deliberate hand-join
-  // reads as deliberate because the factory call is named `unenrolledStreamCall`.
-  app.enroll("processesSnapshot", processesSub);
   const processes = (): Record<Pid, Process> => processesSub() ?? {};
 
   // Which PID is expanded into the detail panel (null = none). Ephemeral —
@@ -934,9 +922,9 @@ function HostView(props: { host: string }) {
     () => connection.value() ?? DEFAULT_CONNECTION,
   );
 
-  // The connecting/failed overlay for the MIRROR axis (backend↔remote), reused
-  // as both the cold-connect fallback of the health `<SurfaceGate>` below and the
-  // inner connection-cell gate. Defined once so the two never drift.
+  // The connecting/failed overlay for the MIRROR axis (backend↔remote) —
+  // the fallback the connection-cell gate below renders while not yet
+  // `connected`.
   const connectingView = () => (
     <ConnectingOverlay
       connection={currentConnection()}
@@ -948,14 +936,19 @@ function HostView(props: { host: string }) {
     Object.keys(processes()).map((k) => Number(k)),
   );
 
-  const cores = app.collections.cpuCores.use({
+  // `cpuCores`/`networkInterfaces` ride the collection `deltas` verb, which
+  // is ALSO void-input at the entry-router fold — the same omitted-`input`
+  // envelope `system`/`connection` ride above (see that comment; `onError`
+  // was already wired here, unlike those, since these two pre-date the map
+  // adoption).
+  const cores = entry.collections.cpuCores.use({
     onError: (err) => console.error("cpuCores subscription failed", err),
   });
   const coreIds = createMemo<CoreId[]>(() =>
     [...cores.keys()].sort((a, b) => a - b),
   );
 
-  const nics = app.collections.networkInterfaces.use({
+  const nics = entry.collections.networkInterfaces.use({
     onError: (err) =>
       console.error("networkInterfaces subscription failed", err),
   });
@@ -1013,10 +1006,9 @@ function HostView(props: { host: string }) {
     );
   const windowMs = createMemo(() => windowMsFor(historyWindow()));
 
-  // metricHistory rides the structural `app.rawStream` path (it enrols into
-  // `app.health()` and owns its own teardown via this view's reactive owner —
-  // see `subscribeMetricHistory` / `projectHistory`).
-  const { history, streamError } = subscribeMetricHistory(app);
+  // metricHistory owns its own teardown via this view's reactive owner —
+  // see `subscribeMetricHistory` / `projectHistory`.
+  const { history, streamError } = subscribeMetricHistory(props.host);
   const { latest: latestSample, points } = projectHistory(
     history,
     windowMs,
@@ -1039,35 +1031,18 @@ function HostView(props: { host: string }) {
       <Header
         system={currentSystem()}
         connection={currentConnection()}
-        health={app.health}
+        entryState={entryState}
         count={allPids().length}
       />
-      {/* drishti is a real component-level `<SurfaceGate>` ADOPTER, with the
-          framework DEFAULT policy = STALE-WHILE-DEGRADED (and, after the first
-          paint, stale-while-reconnecting): a sub error or a transport blip keeps
-          the body below VISIBLE under a NON-blocking amber notice; only a cold
-          connect blanks to `connectingView`. That is the OPPOSITE of pulam-web's
-          hard `<SurfaceGate ready>` over the SAME `app.health()` fact — the
-          two-policy premise exercised at the component level, not just the fact.
-          The connection CELL gate (the backend↔remote MIRROR axis, which the
-          health fact doesn't carry) stays nested INSIDE — `connectingView`
-          renders it for both the cold-health fallback and a not-yet-`connected`
-          mirror. The amber notice's `degraded` slot folds the first sub error (or
-          names a reconnect when the transport, not a sub, is the cause). */}
-      <SurfaceGate
-        health={app.health}
-        fallback={() => connectingView()}
-        degraded={(h) => {
-          const msg = h().subs.find((s) => s.error)?.error?.message;
-          return (
-            <div class="border-b border-amber-500/40 bg-amber-500/10 px-4 py-1 text-xs text-amber-700 dark:text-amber-400">
-              {msg
-                ? `Some data is stale — a subscription is reconnecting (${msg}).`
-                : "Reconnecting to this host…"}
-            </div>
-          );
-        }}
-      >
+      {/* The readiness gate is now just the connection CELL's own state — the
+          per-host `SurfaceHealth` `<SurfaceGate>` used to fold (transport ∧
+          every sub's pending/error) no longer exists as a per-host fact now
+          that every host's data rides the ONE admin transport instead of its
+          own socket. `connectingView` covers both the cold-connect and the
+          not-yet-`connected` mirror cases the old fallback did; there is no
+          separate "degraded" amber notice left to distinguish a live-but-
+          erroring sub from a still-warming one — each subscription below
+          already surfaces its OWN error via its `onError` callback. */}
       <Show
         when={currentConnection().state === "connected"}
         fallback={connectingView()}
@@ -1103,7 +1078,10 @@ function HostView(props: { host: string }) {
                   : null
               }
               onKill={(signal) =>
-                app.rpc.surface.process.kill({ pid: s().pid, signal })
+                hostRpc(props.host).surface.process.kill({
+                  pid: s().pid,
+                  signal,
+                })
               }
             />
           )}
@@ -1119,7 +1097,6 @@ function HostView(props: { host: string }) {
           />
         </SelectionContext.Provider>
       </Show>
-      </SurfaceGate>
     </>
   );
 }
@@ -1147,7 +1124,7 @@ function pidComparator(
 function Header(props: {
   system: ReturnType<() => typeof DEFAULT_SYSTEM>;
   connection: ReturnType<() => typeof DEFAULT_CONNECTION>;
-  health: Accessor<SurfaceHealth>;
+  entryState: Accessor<EntryState>;
   count: number;
 }) {
   // The component body runs ONCE at mount — when props.system is still
@@ -1170,12 +1147,9 @@ function Header(props: {
             <span class="font-semibold">{props.system.hostname || "—"}</span>
           </span>
           <span
-            class={`flex items-center gap-1.5 ${statusTextClass(props.connection.state, props.health())}`}
+            class={`flex items-center gap-1.5 ${STATE[props.connection.state].text}`}
           >
-            <HostDot
-              health={props.health}
-              state={() => props.connection.state}
-            />
+            <HostDot state={props.entryState} />
             {props.connection.state}
           </span>
           <span class="text-gray-500">·</span>

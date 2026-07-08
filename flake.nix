@@ -1,5 +1,5 @@
 # IMPORTANT: zero flake inputs *except* `bun2nix` — anywhen convention.
-# nixpkgs and kolu (for @kolu/surface, @kolu/surface-nix-host) are pinned
+# nixpkgs and kolu (for @kolu/surface, @kolu/surface-remote, @kolu/surface-map) are pinned
 # via npins (see npins/sources.json), bypassing the flake input system to
 # keep `nix develop` cold-eval fast (~1.0s vs ~7s per input). DO NOT add
 # further flake inputs.
@@ -72,7 +72,8 @@
           # @kolu/* source paths — exposed so `nix build .#kolu-surface`
           # realizes the store path used by the dev shell's hydrate hook.
           kolu-surface = pkgs.kolu-surface;
-          kolu-surface-nix-host = pkgs.kolu-surface-nix-host;
+          kolu-surface-remote = pkgs.kolu-surface-remote;
+          kolu-surface-map = pkgs.kolu-surface-map;
           # bun2nix CLI — `nix run .#bun2nix -- -l bun.lock -o bun.nix`
           # regenerates the lockfile-derived nix expression.
           bun2nix = b2n.bun2nix;

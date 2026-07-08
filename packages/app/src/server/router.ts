@@ -18,13 +18,19 @@
  * mutation back to the host.
  *
  * R7 keystone (kolu #1505): the reconnect-mirror loop that used to live
- * here as `bridgeAgentToParent` is now `@kolu/surface-nix-host`'s
+ * here as `bridgeAgentToParent` is now `@kolu/surface-remote`'s
  * `pumpRemoteSurface` — lifted verbatim-in-shape from this file so
  * pulam-web's terminal-awareness server can share it. drishti keeps only
  * the surface-specific knowledge the pump deliberately doesn't hold: the
  * per-spawn sink (`makeSink`) that folds the agent's `system` / `cpuCores`
  * / `networkInterfaces` / `processesSnapshot` frames into the parent's
  * local surface, and the `liveProcedures` holder the `kill` forward reads.
+ *
+ * The router this file builds is now the ENTRY surface `@kolu/surface-map`
+ * serves N times — `admin-router.ts`'s `serveHostMap` calls `buildRouter`
+ * once per pool member and hands `directLink(router)` to the map as that
+ * host's `linkFor`, replacing the `RPCHandler`-per-`?host=`-socket dispatch
+ * this file used to feed directly.
  */
 
 import { implement } from "@orpc/server";
@@ -42,7 +48,7 @@ import {
   pumpRemoteSurface,
   seedConnectionCell,
   type Session,
-} from "@kolu/surface-nix-host";
+} from "@kolu/surface-remote";
 import { browserSurface, type ConnectionInfo } from "drishti-common/browser";
 import {
   type CoreId,
@@ -290,7 +296,7 @@ export function buildRouter(opts: BuildRouterOptions) {
           // survive as a ghost row across the reconnect. `initialKeys` hands the
           // fresh mirror this spawn's carry-over keys; its first `keys` frame
           // prunes any the snapshot omits — no stale row, no empty flash
-          // (kolu #1661; mirrors surface-nix-host's reServeSurface).
+          // (kolu #1661; mirrors surface-remote's reServeSurface).
           cpuCores: {
             upsert: (key, value) =>
               fragment.ctx.collections.cpuCores.upsert(key, value),

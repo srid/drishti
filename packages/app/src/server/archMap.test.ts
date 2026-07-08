@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { resolveSystem } from "@kolu/surface-nix-host";
+import { resolveSystem } from "@kolu/surface-remote";
 import { resolveDrvForHost } from "./archMap";
 
 describe("resolveDrvForHost", () => {
