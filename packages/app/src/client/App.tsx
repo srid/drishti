@@ -658,8 +658,6 @@ function FleetView(props: {
 
 function HostCard(props: { host: string; onSelect: () => void }) {
   const entry = hostMap.entry(props.host);
-  // See `HostView`'s identical `.cells.system`/`.cells.connection` subscriptions
-  // for the known upstream void-input-cell limitation.
   const system = entry.cells.system.use({});
   const connection = entry.cells.connection.use({});
 
@@ -806,20 +804,28 @@ function HostView(props: { host: string }) {
   // per procedure-path on the wire, now further folded by `{ mapKey }`.
   const entry = hostMap.entry(props.host);
 
-  // KNOWN LIMITATION (tracked, not a drishti bug): `system`/`connection` are
-  // void-input CELLS. `@kolu/surface-map`'s entry-router transform folds a
-  // cell's `get` as `{ mapKey, input: undefined }`
-  // (`packages/surface-map/src/define.ts`'s `foldInput()` → `z.void()`), and
-  // that `input: undefined` key does not survive the real WebSocket's JSON
+  // `system`/`connection` are void-input CELLS. `@kolu/surface-map`'s
+  // entry-router transform folds a cell's `get` as `{ mapKey, input:
+  // undefined }` (`define.ts`'s `foldInput()` → `z.void()`), and that
+  // `input: undefined` key does not survive the real WebSocket's JSON
   // round-trip (`JSON.stringify` drops an `undefined`-valued property), so
-  // the server sees `{ mapKey }` with `input` MISSING — which
-  // `z.object({ input: z.void() })` rejects as "Input validation failed"
-  // (a missing key fails `z.void()`, though an explicit `undefined` value
-  // passes). `processesSnapshot`/`metricHistory` below dodge this because
-  // they declare a real `z.object({})` `streams` input, which survives the
-  // round-trip untouched — see `subscribeMetricHistory`. Filed upstream;
-  // until fixed, these two subscriptions surface the error via `onError`
-  // (not swallowed) rather than hang silently.
+  // the server sees `{ mapKey }` with `input` MISSING. This was NOT a
+  // surface-map bug: zod 4.3.6 (the floor of the `^4.3.6` range every
+  // `@kolu/*` package + drishti declares) already treats an omitted
+  // `z.void()`-typed key as satisfying the schema — but zod 4.3.7 through at
+  // least 4.4.3 tightened `z.object(...)` to require the key be literally
+  // PRESENT (still `undefined`-valued), rejecting the omitted-key wire frame
+  // with `{code: "invalid_type", expected: "nonoptional", path: ["input"]}`.
+  // drishti's OWN `zod` dependency floated on that range and resolved to
+  // 4.4.3, silently breaking every folded void-input subscription — fixed by
+  // pinning `zod` to the exact `4.3.6` known-good version (see
+  // `packages/app/package.json`'s `"// zod"` note), not by touching
+  // `@kolu/surface-map`. `processesSnapshot`/`metricHistory` below never hit
+  // this because they declare a real `z.object({})` `streams` input, which
+  // survives the round-trip untouched regardless of zod version — see
+  // `subscribeMetricHistory`. `onError` stays wired here as a defensive
+  // surface (not swallowed) rather than hanging silently, in case a future
+  // dependency drift reintroduces this class of bug.
   const system = entry.cells.system.use({
     onError: (err) => console.error("system subscription failed", err),
   });
@@ -940,10 +946,10 @@ function HostView(props: { host: string }) {
     Object.keys(processes()).map((k) => Number(k)),
   );
 
-  // `cpuCores`/`networkInterfaces` ride the collection `deltas` verb, which is
-  // ALSO void-input at the entry-router fold — the same known upstream
-  // limitation `system`/`connection` hit above (`onError` is already wired
-  // here, unlike those, since these two pre-date the map adoption).
+  // `cpuCores`/`networkInterfaces` ride the collection `deltas` verb, which
+  // is ALSO void-input at the entry-router fold — the same zod-pin issue
+  // `system`/`connection` hit above (see that comment; `onError` was already
+  // wired here, unlike those, since these two pre-date the map adoption).
   const cores = entry.collections.cpuCores.use({
     onError: (err) => console.error("cpuCores subscription failed", err),
   });
