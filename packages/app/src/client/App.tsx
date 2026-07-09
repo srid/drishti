@@ -32,10 +32,12 @@ import {
   type JSX,
   on,
   onCleanup,
+  type Setter,
   Show,
   type Signal,
   useContext,
 } from "solid-js";
+import { scopedByEntry, type ScopedByEntry } from "@kolu/surface-map/client";
 import {
   type CoreId,
   type CpuCore,
@@ -143,6 +145,15 @@ type ProcessSelection = {
   toggle: (pid: Pid) => void;
 };
 const SelectionContext = createContext<ProcessSelection>();
+
+// One host's per-host VIEW state, owned by the host map's `scopedByEntry` scope
+// (padi W7): the expanded PID lives in the host's OWN reactive scope, retained
+// across a tab switch and disposed when the host leaves the fleet — no longer a
+// `createSignal` reset on every keyed `HostView` remount.
+type HostScope = {
+  selectedPid: Accessor<Pid | null>;
+  setSelectedPid: Setter<Pid | null>;
+};
 
 // Bind a per-host preference to a signal: seed from localStorage and mirror
 // every change back, keyed by host (`defer` skips the redundant write of the
@@ -494,6 +505,23 @@ function MultiHostApp() {
     return v.kind === "host" ? v.host : null;
   });
 
+  // Per-host view state owned BY the host map (padi W7's `scopedByEntry`). Each
+  // host's expanded PID is born in its own reactive scope, RETAINED across a tab
+  // switch (restored verbatim on switch-back), and disposed when the host leaves
+  // the fleet. This replaces the per-`HostView` `createSignal` that reset to
+  // `null` on every keyed remount: "expanded pid lost on tab switch" dissolves
+  // into the scope's retention. `selectedHost` (nullable — the fleet view selects
+  // no host) stays the app-policy "which host is shown"; the framework owns the
+  // per-host lifetime.
+  const hostScopes: ScopedByEntry<string, HostScope> = scopedByEntry(
+    hostMap,
+    selectedHost,
+    () => {
+      const [selectedPid, setSelectedPid] = createSignal<Pid | null>(null);
+      return { selectedPid, setSelectedPid };
+    },
+  );
+
   // Theme is global app chrome (like `view`), so it lives here, not per
   // host. The signal seeds from the attribute the pre-paint bootstrap in
   // index.html already applied; toggling flips the attribute and persists
@@ -624,7 +652,7 @@ function MultiHostApp() {
               }
               keyed
             >
-              {(host) => <HostView host={host} />}
+              {(host) => <HostView host={host} scopes={hostScopes} />}
             </Show>
           </Show>
         </Show>
@@ -797,7 +825,10 @@ function CardMetric(props: { label: string; pct: number; detail: string }) {
 
 // ── Per-host body (the prior single-host App, now parametric) ──────────
 
-function HostView(props: { host: string }) {
+function HostView(props: {
+  host: string;
+  scopes: ScopedByEntry<string, HostScope>;
+}) {
   // `hostMap.entry(...)` is a PURE lens over the ONE admin transport's
   // key-folded link — the same map the tab chip's dot reads. Multiple
   // consumers on one socket is the supported shape; oRPC multiplexes calls
@@ -874,13 +905,19 @@ function HostView(props: { host: string }) {
   );
   const processes = (): Record<Pid, Process> => processesSub() ?? {};
 
-  // Which PID is expanded into the detail panel (null = none). Ephemeral —
-  // not a per-host persisted pref: it's a transient focus, not a setting to
-  // restore across reloads. Cleared when its process exits (the effect just
-  // below) so the panel never has to special-case a vanished pid — the same
-  // "resolve focus against the live set" shape the app-level `resolvedView`
-  // uses when a host disappears.
-  const [selectedPid, setSelectedPid] = createSignal<Pid | null>(null);
+  // Which PID is expanded into the detail panel (null = none). A transient focus,
+  // not a per-host persisted pref — but now OWNED per-host by the host-map scope,
+  // so it survives a tab switch (restored verbatim on switch-back) instead of
+  // resetting. Still cleared when its process exits (the effect just below) so the
+  // panel never has to special-case a vanished pid.
+  // Expanded PID — owned per-host by the host-map scope (survives tab-away). The
+  // active host's scope is stable for this HostView's lifetime (a tab switch
+  // remounts HostView with the new host's scope) and is defined by construction:
+  // HostView only mounts for a live `selectedHost`, which the map has activated.
+  const scope = props.scopes.active();
+  if (scope === undefined)
+    throw new Error("HostView: the active host has no scope");
+  const { selectedPid, setSelectedPid } = scope;
   const toggleSelected = (pid: Pid) =>
     setSelectedPid((cur) => (cur === pid ? null : pid));
 
@@ -888,9 +925,20 @@ function HostView(props: { host: string }) {
   // below also resolves to null mid-tick, but clearing the signal here keeps a
   // later-reused pid from silently re-opening the panel. Tracks only the
   // selected pid's slot (not its fields), so a cpu/mem tick doesn't re-run it.
+  //
+  // Gate on the subscription having yielded its FIRST frame (`!processesSub
+  // .pending()`) — mirroring kolu's `pending()`-gated hydration in
+  // `useSessionRestore.ts`. `processesSub` REMOUNTS on a host switch and starts
+  // at its `initial: {}` (empty) with `pending() === true`; without this gate,
+  // switching back would read the RETAINED per-host `selectedPid` against that
+  // empty first frame and clear it BEFORE the first real snapshot arrives —
+  // silently defeating the scopedByEntry adoption (the expanded PID surviving
+  // tab-away). Once the first snapshot lands, `pending()` latches false and a
+  // genuinely-exited pid still clears against the LOADED table.
   createEffect(() => {
     const pid = selectedPid();
-    if (pid !== null && processes()[pid] === undefined) setSelectedPid(null);
+    if (pid !== null && !processesSub.pending() && processes()[pid] === undefined)
+      setSelectedPid(null);
   });
 
   // Escape closes the panel — the conventional dismiss key, wired once for the

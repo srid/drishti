@@ -28,6 +28,7 @@
         "@orpc/client": "^1.13.13",
         "@orpc/contract": "^1.13.13",
         "@orpc/server": "^1.13.13",
+        "@solid-primitives/keyed": "^1.5.3",
         "@solid-primitives/page-visibility": "^2.1.5",
         "@solid-primitives/scheduled": "^1.5.3",
         "@solidjs/meta": "^0.29.4",
@@ -181,6 +182,8 @@
     "@parcel/watcher-win32-x64": ["@parcel/watcher-win32-x64@2.5.6", "", { "os": "win32", "cpu": "x64" }, "sha512-hbQlYcCq5dlAX9Qx+kFb0FHue6vbjlf0FrNzSKdYK2APUf7tGfGxQCk2ihEREmbR6ZMc0MVAD5RIX/41gpUzTw=="],
 
     "@solid-primitives/event-listener": ["@solid-primitives/event-listener@2.4.5", "", { "dependencies": { "@solid-primitives/utils": "^6.4.0" }, "peerDependencies": { "solid-js": "^1.6.12" } }, "sha512-nwRV558mIabl4yVAhZKY8cb6G+O1F0M6Z75ttTu5hk+SxdOnKSGj+eetDIu7Oax1P138ZdUU01qnBPR8rnxaEA=="],
+
+    "@solid-primitives/keyed": ["@solid-primitives/keyed@1.5.3", "", { "peerDependencies": { "solid-js": "^1.6.12" } }, "sha512-zNadtyYBhJSOjXtogkGHmRxjGdz9KHc8sGGVAGlUABkE8BED2tbIZoxkwSqzOwde8OcUEH0bb5DLZUWIMvyBSA=="],
 
     "@solid-primitives/page-visibility": ["@solid-primitives/page-visibility@2.1.5", "", { "dependencies": { "@solid-primitives/event-listener": "^2.4.5", "@solid-primitives/rootless": "^1.5.3", "@solid-primitives/utils": "^6.4.0" }, "peerDependencies": { "solid-js": "^1.6.12" } }, "sha512-ttCsV4jI9UVE60B/Ml0e5Fmkf59xO32Kb9VERuKUcO6zqv6MN0rkl9k7JIgbBypZZC62M8PU42CwWRIJWO0g1Q=="],
 

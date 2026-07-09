@@ -268,6 +268,10 @@
     url = "https://registry.npmjs.org/@solid-primitives/event-listener/-/event-listener-2.4.5.tgz";
     hash = "sha512-nwRV558mIabl4yVAhZKY8cb6G+O1F0M6Z75ttTu5hk+SxdOnKSGj+eetDIu7Oax1P138ZdUU01qnBPR8rnxaEA==";
   };
+  "@solid-primitives/keyed@1.5.3" = fetchurl {
+    url = "https://registry.npmjs.org/@solid-primitives/keyed/-/keyed-1.5.3.tgz";
+    hash = "sha512-zNadtyYBhJSOjXtogkGHmRxjGdz9KHc8sGGVAGlUABkE8BED2tbIZoxkwSqzOwde8OcUEH0bb5DLZUWIMvyBSA==";
+  };
   "@solid-primitives/page-visibility@2.1.5" = fetchurl {
     url = "https://registry.npmjs.org/@solid-primitives/page-visibility/-/page-visibility-2.1.5.tgz";
     hash = "sha512-ttCsV4jI9UVE60B/Ml0e5Fmkf59xO32Kb9VERuKUcO6zqv6MN0rkl9k7JIgbBypZZC62M8PU42CwWRIJWO0g1Q==";
