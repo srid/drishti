@@ -96,10 +96,12 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
           resolveDrvPath: () => opts.resolveDrvPath(host),
         }),
         // `sshConnector` PROVISIONS (nix-copies the agent closure before
-        // dialing), so its true opening phase is "copying" — every drishti
-        // host, including "localhost", dials through it (kolu#1716/#1808:
-        // the connector's own opening phase, never a LOCAL-set one).
-        initialConnection: "copying",
+        // dialing), so its true opening phase is the connector's FIRST
+        // provisioning phase, "probing" (kolu W6 widened `SshProv` to
+        // `probing → copying → building`) — every drishti host, including
+        // "localhost", dials through it (kolu#1716/#1808: the connector's own
+        // opening phase, never a LOCAL-set one).
+        initialConnection: "probing",
         connectTimeoutMs: CONNECT_TIMEOUT_MS,
         label: `host:${host}`,
       });
