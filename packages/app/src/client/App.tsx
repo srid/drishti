@@ -925,9 +925,20 @@ function HostView(props: {
   // below also resolves to null mid-tick, but clearing the signal here keeps a
   // later-reused pid from silently re-opening the panel. Tracks only the
   // selected pid's slot (not its fields), so a cpu/mem tick doesn't re-run it.
+  //
+  // Gate on the subscription having yielded its FIRST frame (`!processesSub
+  // .pending()`) — mirroring kolu's `pending()`-gated hydration in
+  // `useSessionRestore.ts`. `processesSub` REMOUNTS on a host switch and starts
+  // at its `initial: {}` (empty) with `pending() === true`; without this gate,
+  // switching back would read the RETAINED per-host `selectedPid` against that
+  // empty first frame and clear it BEFORE the first real snapshot arrives —
+  // silently defeating the scopedByEntry adoption (the expanded PID surviving
+  // tab-away). Once the first snapshot lands, `pending()` latches false and a
+  // genuinely-exited pid still clears against the LOADED table.
   createEffect(() => {
     const pid = selectedPid();
-    if (pid !== null && processes()[pid] === undefined) setSelectedPid(null);
+    if (pid !== null && !processesSub.pending() && processes()[pid] === undefined)
+      setSelectedPid(null);
   });
 
   // Escape closes the panel — the conventional dismiss key, wired once for the
