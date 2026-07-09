@@ -64,10 +64,26 @@ export const STATE: Record<ConnectionState, StatePresentation> = {
     message: "Connecting…",
     pending: true,
   },
+  // kolu W6 added `probing` as the ssh connector's FIRST up-phase (before
+  // `copying`/`building`). It's a calm "reaching the host" beat — presented
+  // exactly like `connecting` (amber, pulsing) rather than a distinct chip,
+  // since the fine phase story rides the progress line, not this coarse map.
+  probing: {
+    text: "text-amber-500",
+    label: "connecting…",
+    message: "Connecting…",
+    pending: true,
+  },
   copying: {
     text: "text-amber-500",
     label: "provisioning agent…",
     message: "Copying agent to remote…",
+    pending: true,
+  },
+  building: {
+    text: "text-amber-500",
+    label: "building agent…",
+    message: "Building agent on remote…",
     pending: true,
   },
   // Transient: the link dropped and the parent is cycling through

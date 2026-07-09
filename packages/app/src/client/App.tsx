@@ -691,7 +691,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
 
   const sys = createMemo<SystemInfo>(() => system.value() ?? DEFAULT_SYSTEM);
   const state = createMemo<ConnectionState>(
-    () => (connection.value() ?? DEFAULT_CONNECTION).state,
+    () => (connection.value() ?? DEFAULT_CONNECTION).phase,
   );
   // The dot + readiness gate read the host MAP's `EntryStatus` fact
   // (floored on real transport liveness by `connectSurfaceMap`) — the
@@ -1092,7 +1092,7 @@ function HostView(props: {
           erroring sub from a still-warming one — each subscription below
           already surfaces its OWN error via its `onError` callback. */}
       <Show
-        when={currentConnection().state === "connected"}
+        when={currentConnection().phase === "connected"}
         fallback={connectingView()}
       >
         <HistoryChart
@@ -1195,10 +1195,10 @@ function Header(props: {
             <span class="font-semibold">{props.system.hostname || "—"}</span>
           </span>
           <span
-            class={`flex items-center gap-1.5 ${STATE[props.connection.state].text}`}
+            class={`flex items-center gap-1.5 ${STATE[props.connection.phase].text}`}
           >
             <HostDot state={props.entryState} />
-            {props.connection.state}
+            {props.connection.phase}
           </span>
           <span class="text-gray-500">·</span>
           <span class="text-gray-500">
@@ -1301,16 +1301,26 @@ function ConnectingOverlay(props: {
   onReconnect: () => void;
 }) {
   const c = () => props.connection;
+  // The terminal-failure arm, keyed once so the FailedCard reads `error`/`log`
+  // off a narrowed value instead of the raw union. `null` when the link isn't
+  // failed, which the `<Show>` below treats as "render the connecting view".
+  const failedArm = () => {
+    const conn = c();
+    return conn.phase === "failed" ? conn : null;
+  };
   // The freshest parent progress line (e.g. "reconnecting in 4000ms…
   // (attempt 2/5)"). Display only — never parsed for control flow.
-  const lastProgress = () => c().progressLines.at(-1) ?? null;
-  // The pending-state headline. `disconnected` refines by failureCause
+  const lastProgress = () => c().log.at(-1)?.line ?? null;
+  // The pending-state headline. `disconnected` refines by cause
   // ("Host unreachable — retrying…" for a network fault); every other
-  // state takes its static message.
-  const statusMessage = () =>
-    c().state === "disconnected"
-      ? disconnectedMessage(c().failureCause)
-      : STATE[c().state].message;
+  // state takes its static message. `cause` lives only on the `disconnected`
+  // arm, so narrow on `.phase` before reading it.
+  const statusMessage = () => {
+    const conn = c();
+    return conn.phase === "disconnected"
+      ? disconnectedMessage(conn.cause)
+      : STATE[conn.phase].message;
+  };
 
   // Seconds elapsed in the *current* connection state, reset on every
   // state change so it counts time-in-this-phase rather than total. A
@@ -1319,7 +1329,7 @@ function ConnectingOverlay(props: {
   const [elapsedSec, setElapsedSec] = createSignal(0);
   createEffect(
     on(
-      () => c().state,
+      () => c().phase,
       (state) => {
         setElapsedSec(0);
         // Only the in-progress states render the counter — `pending` is
@@ -1340,7 +1350,7 @@ function ConnectingOverlay(props: {
   return (
     <div class="px-4 py-12 text-center text-gray-600 dark:text-gray-400">
       <Show
-        when={c().state === "failed"}
+        when={failedArm()}
         fallback={
           <>
             <div class="mb-2 text-lg">
@@ -1360,11 +1370,13 @@ function ConnectingOverlay(props: {
           </>
         }
       >
-        <FailedCard
-          lastError={c().lastError}
-          progressLines={c().progressLines}
-          onReconnect={props.onReconnect}
-        />
+        {(f) => (
+          <FailedCard
+            lastError={f().error}
+            progressLines={f().log.map((e) => e.line)}
+            onReconnect={props.onReconnect}
+          />
+        )}
       </Show>
     </div>
   );

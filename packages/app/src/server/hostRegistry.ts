@@ -31,6 +31,7 @@ import {
   type RemotePool,
   type Session,
   sshConnector,
+  type SshProv,
 } from "@kolu/surface-remote";
 import type { surface } from "drishti-common";
 import { saveHosts } from "./hostsStore";
@@ -50,7 +51,7 @@ const log = makeLogger("registry");
 // it answers to, rather than buried in the library's default.
 const CONNECT_TIMEOUT_MS = 30_000;
 
-export type HostSession = Session<AgentClient<typeof surface.contract>>;
+export type HostSession = Session<AgentClient<typeof surface.contract>, SshProv>;
 
 /** The pool `serveHostMap` consumes directly (`MembershipPool` is a slice
  *  of this same `RemotePool` shape) — no drishti-local wrapper interface
@@ -88,17 +89,19 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
       // failed, re-armable via Reconnect) — so it can't throw out of here
       // before the session exists, and one unreachable initial host can't
       // crash the whole server at boot.
-      const session = makeSession<AgentClient<typeof surface.contract>>({
+      const session = makeSession<AgentClient<typeof surface.contract>, SshProv>({
         connectOnce: sshConnector<typeof surface.contract>({
           host,
           binary: "drishti-agent",
           resolveDrvPath: () => opts.resolveDrvPath(host),
         }),
         // `sshConnector` PROVISIONS (nix-copies the agent closure before
-        // dialing), so its true opening phase is "copying" — every drishti
-        // host, including "localhost", dials through it (kolu#1716/#1808:
-        // the connector's own opening phase, never a LOCAL-set one).
-        initialConnection: "copying",
+        // dialing), so its true opening phase is the connector's FIRST
+        // provisioning phase, "probing" (kolu W6 widened `SshProv` to
+        // `probing → copying → building`) — every drishti host, including
+        // "localhost", dials through it (kolu#1716/#1808: the connector's own
+        // opening phase, never a LOCAL-set one).
+        initialConnection: "probing",
         connectTimeoutMs: CONNECT_TIMEOUT_MS,
         label: `host:${host}`,
       });

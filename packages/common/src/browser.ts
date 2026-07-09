@@ -22,7 +22,19 @@ export const browserSurface = mirroredSurface(surface);
 // `@kolu/surface-remote` into the agent's runtime.
 export {
   type ConnectionInfo,
-  type ConnectionState,
   DEFAULT_CONNECTION,
-  type FailureCause,
+  type LogEntry,
 } from "@kolu/surface-remote/connection";
+import type { ConnectionInfo } from "@kolu/surface-remote/connection";
+
+// kolu W6 reshaped the connection cell into ONE discriminated union on `phase` and
+// deleted the standalone `ConnectionState`/`FailureCause` names. Re-derive them
+// locally so drishti's presentation code (the `STATE` map, `disconnectedMessage`)
+// keeps a name for each — BOTH from the one source of truth, never hand-listed: the
+// phase set is the union's discriminant, and the failure cause is the `disconnected`
+// down arm's `cause` (so a change to kolu's cause vocabulary flows here automatically).
+export type ConnectionState = ConnectionInfo["phase"];
+export type FailureCause = Extract<
+  ConnectionInfo,
+  { phase: "disconnected" }
+>["cause"];

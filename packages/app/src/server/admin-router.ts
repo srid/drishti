@@ -40,11 +40,10 @@ import { oc } from "@orpc/contract";
 import { implement } from "@orpc/server";
 import { directLink } from "@kolu/surface/links/direct";
 import { implementSurfaces, inMemoryChannelByName } from "@kolu/surface/server";
-import { serveSurfaceMap } from "@kolu/surface-map/server";
+import { serveHostMap } from "@kolu/surface-remote";
 import { surfaceAppServer } from "@kolu/surface-app/server";
 import { adminContract, adminSurfaces } from "../common/admin-surface";
 import { hostSurfaceMap } from "../common/hostMap";
-import { buildHostMapRegistry } from "./hostMapRegistry";
 import type { HostPool } from "./hostRegistry";
 import { makeLogger } from "./log";
 import { buildRouter } from "./router";
@@ -147,19 +146,29 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   );
 
   // ── The host MAP — serve every pool member's `browserSurface`, keyed by
-  // host, over THIS transport. `hostRegistry` bridges `opts.pool` to the
-  // `MapRegistry<string>` seam `serveSurfaceMap` consumes (hand-adapted from
-  // `@kolu/surface-remote`'s `serveHostMap` — see `hostMapRegistry.ts`'s
-  // docstring for why the convenience wrapper itself doesn't fit). `linkFor`
-  // builds (and caches, inside the registry) a `directLink` over each host's
-  // own `buildRouter(...)` — the SAME per-host bridge (agent mirror + kill
-  // forward) that used to back a dedicated `?host=` `RPCHandler`, now folded
+  // host, over THIS transport. `serveHostMap` (`@kolu/surface-remote`) IS the
+  // pool → `SurfaceMap` adapter: it fuses `opts.pool`'s membership + each
+  // session's `onState` into the map's `entries`, projects `SessionState` →
+  // `EntryStatus`, and hands the composed registry to `serveSurfaceMap` — the
+  // ~90-line registry drishti used to hand-clone (`hostMapRegistry.ts`), now
+  // deleted. `linkFor` builds (and the adapter caches) a `directLink` over each
+  // host's own `buildRouter(...)` — the SAME per-host bridge (agent mirror +
+  // kill forward) that used to back a dedicated `?host=` `RPCHandler`, folded
   // into the map's one combined link instead of a separate socket.
-  const hostRegistry = buildHostMapRegistry(opts.pool, {
+  //
+  // `offsetOf: () => 0` is drishti's OWN honest offset story: the clock offset
+  // is no longer a type BOUND on the session (which is exactly what forced the
+  // clone — drishti's ssh sessions measure none), it's an INJECTED capability.
+  // drishti stamps every metric with the PARENT's own clock, never a
+  // host-stamped one, so there is no true offset being hidden behind the `0`.
+  // `causeFor` is omitted — drishti carries no domain failure-cause taxonomy,
+  // so a down entry rides through cause-less and the map's `projectStatus`
+  // falls back to `"other"` (reads amber/in-motion, never a red "needs you").
+  const hostsMap = serveHostMap(hostSurfaceMap, opts.pool, {
     linkFor: (host, session) =>
       directLink(buildRouter({ host, session }).router),
+    offsetOf: () => 0,
   });
-  const hostsMap = serveSurfaceMap(hostSurfaceMap, hostRegistry);
 
   // `implement(adminContract).router(...)` WALKS `adminContract` to build the
   // runtime router — `adminContract` (the CLIENT-shared, 2-sibling contract)
@@ -204,13 +213,12 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   return {
     router,
     processId: surfaceApp.processId,
-    /** Tear down the map's own machinery (`serveSurfaceMap`'s membership
-     *  republish sub, PLUS the registry's fused per-member `onState` subs
-     *  and cached links) — called from `main.ts`'s `shutdown()`, alongside
-     *  `pool.destroyAll()`. */
+    /** Tear down the map's own machinery — `serveHostMap.dispose()` tears down
+     *  `serveSurfaceMap`'s membership republish sub PLUS the adapter's fused
+     *  per-member `onState` subs and cached links in one call. Called from
+     *  `main.ts`'s `shutdown()`, alongside `pool.destroyAll()`. */
     disposeHostMap: () => {
       hostsMap.dispose();
-      hostRegistry.dispose();
     },
   };
 }
