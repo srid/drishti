@@ -9,9 +9,9 @@
       },
       "branch": "w6-honest-connect",
       "submodules": false,
-      "revision": "fc6e85939f6f56492ccbc0816f862810ef776816",
-      "url": "https://github.com/juspay/kolu/archive/fc6e85939f6f56492ccbc0816f862810ef776816.tar.gz",
-      "hash": "sha256-xS5YA/44qXEI1oMQagGeu9vO9mpvOyVRMcm/TQeMP2o="
+      "revision": "f5baebdb4e134c73f6337069d2c68cee887ed65d",
+      "url": "https://github.com/juspay/kolu/archive/f5baebdb4e134c73f6337069d2c68cee887ed65d.tar.gz",
+      "hash": "sha256-EzKoZhE7VHT1Z5o2BEQkyPT2hyrFsxfP8ldnNdoSovE="
     },
     "nixpkgs": {
       "type": "Git",
