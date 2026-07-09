@@ -31,6 +31,7 @@ import {
   type RemotePool,
   type Session,
   sshConnector,
+  type SshProv,
 } from "@kolu/surface-remote";
 import type { surface } from "drishti-common";
 import { saveHosts } from "./hostsStore";
@@ -50,7 +51,7 @@ const log = makeLogger("registry");
 // it answers to, rather than buried in the library's default.
 const CONNECT_TIMEOUT_MS = 30_000;
 
-export type HostSession = Session<AgentClient<typeof surface.contract>>;
+export type HostSession = Session<AgentClient<typeof surface.contract>, SshProv>;
 
 /** The pool `serveHostMap` consumes directly (`MembershipPool` is a slice
  *  of this same `RemotePool` shape) — no drishti-local wrapper interface
@@ -88,7 +89,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
       // failed, re-armable via Reconnect) — so it can't throw out of here
       // before the session exists, and one unreachable initial host can't
       // crash the whole server at boot.
-      const session = makeSession<AgentClient<typeof surface.contract>>({
+      const session = makeSession<AgentClient<typeof surface.contract>, SshProv>({
         connectOnce: sshConnector<typeof surface.contract>({
           host,
           binary: "drishti-agent",

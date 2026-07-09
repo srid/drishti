@@ -41,22 +41,27 @@
 import type { MapRegistry } from "@kolu/surface-map/server";
 import type { EntryConnectionState } from "@kolu/surface-map/server";
 import type { RemotePool } from "@kolu/surface-remote";
-import type { SessionState } from "@kolu/surface-remote";
+import type { SessionState, SshProv } from "@kolu/surface-remote";
 import type { HostSession } from "./hostRegistry";
 
-function projectState(s: SessionState | undefined): EntryConnectionState {
+function projectState(
+  s: SessionState<SshProv> | undefined,
+): EntryConnectionState {
   if (s === undefined) return { kind: "connecting" };
-  switch (s.connection) {
-    case "copying":
-      return { kind: "copying" };
+  switch (s.phase) {
     case "connecting":
       return { kind: "connecting" };
     case "connected":
       return { kind: "connected", clockOffset: 0 };
     case "disconnected":
-      return { kind: "disconnected", reason: s.lastError };
+      return { kind: "disconnected", reason: s.error };
     case "failed":
-      return { kind: "failed", reason: s.lastError };
+      return { kind: "failed", reason: s.error };
+    default:
+      // `"copying" | "building"` — both of the ssh connector's provisioning
+      // phases fold to the map's coarse warming/copying bucket. A `default`
+      // arm (not two `case`s) keeps the switch exhaustive.
+      return { kind: "copying" };
   }
 }
 
@@ -84,7 +89,7 @@ export function buildHostMapRegistry(
   pool: RemotePool<HostSession, undefined>,
   opts: HostMapRegistryOptions,
 ): HostMapRegistry {
-  const latestState = new Map<string, SessionState>();
+  const latestState = new Map<string, SessionState<SshProv>>();
   const stateSubs = new Map<string, () => void>();
   const links = new Map<string, unknown>();
   const changeListeners = new Set<() => void>();

@@ -48,6 +48,7 @@ import {
   pumpRemoteSurface,
   seedConnectionCell,
   type Session,
+  type SshProv,
 } from "@kolu/surface-remote";
 import { browserSurface, type ConnectionInfo } from "drishti-common/browser";
 import {
@@ -76,7 +77,7 @@ export interface BuildRouterOptions {
    *  lines (`bridge:${host}`). The `Session` keeps its `host` private,
    *  so the registry (which has it) passes it in explicitly. */
   host: string;
-  session: Session<AgentClient<typeof surface.contract>>;
+  session: Session<AgentClient<typeof surface.contract>, SshProv>;
 }
 
 /** Build the parent's oRPC router. The session's connection state

@@ -70,6 +70,12 @@ export const STATE: Record<ConnectionState, StatePresentation> = {
     message: "Copying agent to remote…",
     pending: true,
   },
+  building: {
+    text: "text-amber-500",
+    label: "building agent…",
+    message: "Building agent on remote…",
+    pending: true,
+  },
   // Transient: the link dropped and the parent is cycling through
   // another connect attempt. Amber + pulsing says "working on it" —
   // honest, unlike the old red "Retrying…" that also covered give-up.
