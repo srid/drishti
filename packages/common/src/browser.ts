@@ -30,7 +30,11 @@ import type { ConnectionInfo } from "@kolu/surface-remote/connection";
 // kolu W6 reshaped the connection cell into ONE discriminated union on `phase` and
 // deleted the standalone `ConnectionState`/`FailureCause` names. Re-derive them
 // locally so drishti's presentation code (the `STATE` map, `disconnectedMessage`)
-// keeps a name for each: the phase set is the union's discriminant, and the failure
-// cause is the down arms' `"network" | "remote"`.
+// keeps a name for each — BOTH from the one source of truth, never hand-listed: the
+// phase set is the union's discriminant, and the failure cause is the `disconnected`
+// down arm's `cause` (so a change to kolu's cause vocabulary flows here automatically).
 export type ConnectionState = ConnectionInfo["phase"];
-export type FailureCause = "network" | "remote";
+export type FailureCause = Extract<
+  ConnectionInfo,
+  { phase: "disconnected" }
+>["cause"];
