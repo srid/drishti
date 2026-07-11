@@ -190,9 +190,12 @@ export async function serveAgent(
   // `derived.cell` publishes that level as the wire-read-only `alerts` cell (its
   // own `equals` gate, `alertsEqual`, is the wire dedup). No store: `alerts`
   // must NOT survive a restart — a fresh process re-derives its level from fresh
-  // samples. `emitMetrics` is null until the source's first subscriber installs
-  // the tap (the `derived.cell`'s connect effect), so the poll's `?.` guard is a
-  // real pre-connect no-op, not defensive noise.
+  // samples. `emitMetrics` is installed SYNCHRONOUSLY the moment `scan(metrics,
+  // …)` below subscribes to this source — that happens while the `cells` literal
+  // is evaluated to build `implementSurface`'s argument, BEFORE the runtime ever
+  // fires the `derived.cell` connect effect. It goes null again only when that
+  // scan/source subscription tears down at dispose. So the poll's `?.` guard
+  // covers the pre-construction / post-teardown window, not a pre-connect gap.
   let emitMetrics: ((f: MetricsFrame) => void) | null = null;
   const metrics = source<MetricsFrame>((emit) => {
     emitMetrics = emit;
@@ -314,10 +317,11 @@ export async function serveAgent(
         pollIntervalMs: POLL_INTERVAL_MS,
       };
       fragment.ctx.cells.system.set(sys);
-      // Feed the alert reactor the frame just composed. `emitMetrics` is null
-      // until a subscriber installs the source tap (the `derived.cell` connect
-      // effect), so a tick before wiring is a no-op — the fold re-derives from
-      // subsequent frames.
+      // Feed the alert reactor the frame just composed. `emitMetrics` was
+      // installed synchronously when `scan` subscribed to the source at
+      // construction (see above), so by the time this poll runs it is already
+      // live; it is null only after the scan/source subscription tears down at
+      // dispose, where the `?.` makes a late tick a harmless no-op.
       emitMetrics?.(metricPercents(sys));
       const upserts: Array<[Pid, Process]> = [];
       const removes: Pid[] = [];

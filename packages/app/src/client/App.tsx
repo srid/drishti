@@ -553,8 +553,26 @@ function MultiHostApp() {
   // runs under `MultiHostApp`'s reactive owner (watchByEntry throws otherwise)
   // and every per-host subscription tears down when the host leaves the fleet.
   // Permission is requested once (idempotent); delivery is a silent no-op until
-  // granted, so an un-permissioned browser costs nothing.
-  void notify.requestPermission();
+  // granted, so an un-permissioned browser costs nothing. The request MUST ride
+  // a real user gesture: Firefox and Safari SUPPRESS a bare init-time
+  // `requestPermission()` (the prompt never shows) unless it fires from user
+  // activation, so asking eagerly here would leave first-time users on those
+  // browsers with alerts silently off. Ask on the first pointer/key interaction
+  // instead — a one-shot listener that removes itself (and its siblings) the
+  // instant either fires, so exactly one prompt is raised and none leaks past
+  // teardown. `requestPermission` is idempotent (resolves immediately, no
+  // prompt, once already granted/denied) and a no-op on an unsupported browser.
+  const requestNotifyPermission = () => {
+    window.removeEventListener("pointerdown", requestNotifyPermission, true);
+    window.removeEventListener("keydown", requestNotifyPermission, true);
+    void notify.requestPermission();
+  };
+  window.addEventListener("pointerdown", requestNotifyPermission, true);
+  window.addEventListener("keydown", requestNotifyPermission, true);
+  onCleanup(() => {
+    window.removeEventListener("pointerdown", requestNotifyPermission, true);
+    window.removeEventListener("keydown", requestNotifyPermission, true);
+  });
   const alertsWatch = watchByEntry(
     hostMap,
     (e) => e.cells.alerts,
@@ -584,8 +602,14 @@ function MultiHostApp() {
     }, 0);
     if (typeof navigator === "undefined") return;
     const nav = navigator as BadgingNavigator;
-    if (count > 0) void nav.setAppBadge?.(count);
-    else void nav.clearAppBadge?.();
+    // The Badging API can REJECT even when present (permission, security, or
+    // document-state failures), and `void` discards only the value, not a
+    // rejection — so swallow-and-log here, or a fire-and-forget badge update
+    // becomes an unhandled promise rejection every time this effect runs.
+    const badgeOp = count > 0 ? nav.setAppBadge?.(count) : nav.clearAppBadge?.();
+    void badgeOp?.catch((err: unknown) =>
+      console.warn("app badge update failed", err),
+    );
   });
 
   // Theme is global app chrome (like `view`), so it lives here, not per
@@ -756,7 +780,10 @@ function HostCard(props: { host: string; onSelect: () => void }) {
   const connection = entry.cells.connection.use({});
   // The host's raised-alert set (kolu W5 `alerts` cell). A minimal pip on the
   // card surfaces "this host is in trouble" at a glance, alongside the OS
-  // notification the app-scope `watchByEntry` fires — same source of truth.
+  // notification the app-scope `watchByEntry` fires — same source of truth. The
+  // pip is gated on a LIVE connection (below) so a disconnected host's stale
+  // last-known set isn't painted as a live alert — the same live-only policy the
+  // app badge applies, and consistent with the metrics body's disconnect gate.
   const alerts = entry.cells.alerts.use({});
   const alertCount = createMemo(() => alerts.value()?.items.length ?? 0);
 
@@ -802,7 +829,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
         <span class="truncate font-semibold" title={props.host}>
           {props.host}
         </span>
-        <Show when={alertCount() > 0}>
+        <Show when={entryState().kind === "connected" && alertCount() > 0}>
           <span
             class="shrink-0 rounded-full bg-red-500/15 px-1.5 text-xs font-semibold text-red-600 dark:text-red-400"
             title={`${alertCount()} alert${alertCount() === 1 ? "" : "s"}`}

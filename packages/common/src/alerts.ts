@@ -102,9 +102,15 @@ export function applyHysteresis(state: Alerts, frame: MetricsFrame): Alerts {
 }
 
 /** Equal iff the SAME set of alert ids is raised — the cell's `equals` gate.
- *  Only a raise or a clear (a change to the id set) crosses the wire. */
+ *  Only a raise or a clear (a change to the id set) crosses the wire. Compares
+ *  as true sets (size + membership) so it stays honest even if a caller ever
+ *  hands in a non-canonical list with a repeat — the fold only ever emits the
+ *  unique, order-stable `METRIC_IDS.filter(...)` result, but the exported
+ *  predicate should not silently mistake `["cpu","cpu"]` for `["cpu","mem"]`. */
 export function alertsEqual(a: Alerts, b: Alerts): boolean {
-  if (a.items.length !== b.items.length) return false;
-  const ids = new Set(a.items);
-  return b.items.every((id) => ids.has(id));
+  const as = new Set(a.items);
+  const bs = new Set(b.items);
+  if (as.size !== bs.size) return false;
+  for (const id of as) if (!bs.has(id)) return false;
+  return true;
 }
