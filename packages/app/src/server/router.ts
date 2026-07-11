@@ -65,6 +65,7 @@ import {
   type SystemInfo,
   surface,
 } from "drishti-common";
+import { type Alerts, NO_ALERTS } from "drishti-common/alerts";
 import {
   captureSample,
   HISTORY_RETENTION_MS,
@@ -93,6 +94,12 @@ export function buildRouter(opts: BuildRouterOptions) {
   const systemStore: CellStore<SystemInfo> = inMemoryStore({
     ...DEFAULT_SYSTEM,
   });
+  // The parent MIRRORS the agent's `alerts` cell (the agent is the sole
+  // producer — it folds the threshold+hysteresis derivation via the reactor).
+  // A plain local store the pump sink writes each agent `alerts` frame into,
+  // re-served to the browser exactly like `system`. Seeds gate-closed
+  // (`NO_ALERTS`) until the first agent frame lands.
+  const alertsStore: CellStore<Alerts> = inMemoryStore({ ...NO_ALERTS });
   // The seeded, gate-closed connection cell — the shared `seedConnectionCell()`,
   // not a hand-rolled store. Written by `pumpRemoteSurface` off `session.onState`
   // (the `connection` option below), which owns the subscription + teardown.
@@ -137,6 +144,7 @@ export function buildRouter(opts: BuildRouterOptions) {
     channel: inMemoryChannelByName(),
     cells: {
       system: { store: systemStore },
+      alerts: { store: alertsStore },
       connection,
     },
     collections: {
@@ -288,6 +296,13 @@ export function buildRouter(opts: BuildRouterOptions) {
             fragment.ctx.cells.system.set(remoteSystem);
             recordSample(remoteSystem);
           },
+          // The agent's `alerts` cell → the parent's. Wire-read-only downstream;
+          // the parent only ever mirrors the agent's derived value inward. The
+          // agent's own `equals` (`alertsEqual`) already gated the frame, so a
+          // frame arriving here is a genuine raise/clear worth re-publishing.
+          alerts: (remoteAlerts) => {
+            fragment.ctx.cells.alerts.set(remoteAlerts);
+          },
         },
         collections: {
           // Small-N per-key collections — the path the private collection
@@ -365,6 +380,7 @@ type FragmentCtx = {
   ctx: {
     cells: {
       system: { set: (v: SystemInfo) => void };
+      alerts: { set: (v: Alerts) => void };
       connection: { set: (v: ConnectionInfo) => void };
     };
     collections: {

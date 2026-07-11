@@ -33,6 +33,14 @@ import {
   inMemoryStore,
 } from "@kolu/surface/server";
 import { serveOverStdio } from "@kolu/surface/peer-server";
+// The reactive bridge (kolu W5, phase 0). This import is CORRECT here and only
+// here: the agent is the surface's serving endpoint, so folding host metrics
+// into the `alerts` cell through a backend signal graph belongs in the agent's
+// main.ts. It must NOT reach the agent-SHARED graph (`drishti-common`) — the
+// agent-boots CI check guards exactly that — so the pure fold lives in
+// `drishti-common/alerts` (reactor-free) and the graph that DRIVES it lives
+// here.
+import { derived, scan, source } from "@kolu/surface/reactor";
 import {
   type CoreId,
   type CpuCore,
@@ -44,7 +52,12 @@ import {
   type ProcessesSnapshotMsg,
   surface,
 } from "drishti-common";
-import { averageCoreUsage } from "drishti-common/metrics";
+import {
+  applyHysteresis,
+  type MetricsFrame,
+  NO_ALERTS,
+} from "drishti-common/alerts";
+import { averageCoreUsage, metricPercents } from "drishti-common/metrics";
 import { createProcReader, type ProcReader } from "./proc";
 
 const POLL_INTERVAL_MS = 2000;
@@ -170,6 +183,27 @@ export async function serveAgent(
   // `processesSnapshot` stream subscribers read the current map on
   // first subscribe, then forward every delta the poll loop publishes.
   const snapshotDeltaBus = inMemoryChannel<ProcessesSnapshotMsg>();
+
+  // The metrics SOURCE feeding the `alerts` reactor graph. The poll `tick`
+  // pushes one `MetricsFrame` per tick through `emitMetrics`; `scan` folds each
+  // occurrence into the raised-alert set via the pure `applyHysteresis`, and
+  // `derived.cell` publishes that level as the wire-read-only `alerts` cell (its
+  // own `equals` gate, `alertsEqual`, is the wire dedup). No store: `alerts`
+  // must NOT survive a restart — a fresh process re-derives its level from fresh
+  // samples. `emitMetrics` is installed SYNCHRONOUSLY the moment `scan(metrics,
+  // …)` below subscribes to this source — that happens while the `cells` literal
+  // is evaluated to build `implementSurface`'s argument, BEFORE the runtime ever
+  // fires the `derived.cell` connect effect. It goes null again only when that
+  // scan/source subscription tears down at dispose. So the poll's `?.` guard
+  // covers the pre-construction / post-teardown window, not a pre-connect gap.
+  let emitMetrics: ((f: MetricsFrame) => void) | null = null;
+  const metrics = source<MetricsFrame>((emit) => {
+    emitMetrics = emit;
+    return () => {
+      emitMetrics = null;
+    };
+  });
+
   const fragment = implementSurface(surface, {
     channel: inMemoryChannelByName(),
     cells: {
@@ -178,6 +212,12 @@ export async function serveAgent(
       // own SSH transport from the inside), so it's composed only at the parent's
       // re-serve via `mirroredSurface`, never here.
       system: { store: systemStore },
+      // The reactor's wire exit: `alerts` is a DERIVED cell — the graph is its
+      // only writer. `scan(metrics, NO_ALERTS, applyHysteresis)` folds the
+      // metrics source into the raised-alert set; `derived.cell` plugs into the
+      // existing cell connect seam ({ store, connect }) and is branded so the
+      // boot walk enforces the contract's get-only verbs.
+      alerts: derived.cell(scan(metrics, NO_ALERTS, applyHysteresis)),
     },
     collections: {
       processes: {
@@ -256,6 +296,22 @@ export async function serveAgent(
     },
   });
 
+  // Assert the eager-subscribe invariant the `emitMetrics` comment above rests
+  // on: `scan(metrics, …)` subscribed to the source while the `cells` literal
+  // was evaluated, so `emitMetrics` is installed by now. If a future reactor
+  // change made that subscription lazy (deferred to the `derived.cell` connect),
+  // `emitMetrics` would be null here and every poll tick's `?.` would silently
+  // no-op FOREVER — a host that never raises an alert, with no crash and no log.
+  // Fail LOUD at boot instead: a one-time check that turns a silent-forever
+  // regression into an immediate, obvious agent-startup crash (drishti CI's e2e
+  // would go red on the first boot). The `?.` at the tick's call site then means
+  // exactly one thing — a late tick after dispose — not "maybe never installed".
+  if (emitMetrics === null)
+    throw new Error(
+      "alerts reactor: metrics source was never subscribed during surface " +
+        "construction — the scan→source eager-subscribe invariant broke",
+    );
+
   // Poll loop: refresh system + processes, diff against current
   // `processSnapshot`, push deltas through the framework's ctx (which
   // mutates the snapshot AND publishes to subscribers in one step).
@@ -271,11 +327,18 @@ export async function serveAgent(
       // one scalar instead of subscribing to all N per-core cells to average
       // them (the O(hosts×cores) fan-out the fleet used to pay).
       const nextCores = reader.readCpuCores();
-      fragment.ctx.cells.system.set({
+      const sys = {
         ...nextSystem,
         ...cpuAggregate(nextCores),
         pollIntervalMs: POLL_INTERVAL_MS,
-      });
+      };
+      fragment.ctx.cells.system.set(sys);
+      // Feed the alert reactor the frame just composed. `emitMetrics` was
+      // installed synchronously when `scan` subscribed to the source at
+      // construction (see above), so by the time this poll runs it is already
+      // live; it is null only after the scan/source subscription tears down at
+      // dispose, where the `?.` makes a late tick a harmless no-op.
+      emitMetrics?.(metricPercents(sys));
       const upserts: Array<[Pid, Process]> = [];
       const removes: Pid[] = [];
       for (const [pid, value] of nextProcesses) {

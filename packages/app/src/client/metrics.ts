@@ -3,16 +3,17 @@
  * overview cards — GB strings, uptime, byte/throughput sizes. Kept free of
  * Solid and DOM so it's unit testable in isolation.
  *
- * The numeric derivations (`memPct`, `diskPct`, `pctOf`) live in
- * `common/metrics.ts` because the parent's history sampler needs them too;
- * they're re-exported here so existing client imports keep resolving against
- * one module. (`averageCoreUsage` lives in `drishti-common/metrics` — the agent
- * produces the CPU aggregate — and is imported from there directly.)
+ * The numeric derivations (`memPct`, `diskPct`, `pctOf`) live in the
+ * agent-shared `drishti-common/metrics` (the one home the parent's history
+ * sampler and the agent's alert fold also resolve against); they're re-exported
+ * here so existing client imports keep resolving against one module.
+ * (`averageCoreUsage` lives there too — the agent produces the CPU aggregate —
+ * and is imported from there directly.)
  */
 
 import type { SystemInfo } from "drishti-common";
 
-export { diskPct, memPct, pctOf } from "../common/metrics";
+export { diskPct, memPct, metricPercents, pctOf } from "drishti-common/metrics";
 
 /** Used / total memory in gigabytes, formatted to one decimal — the
  *  string form the header and the fleet cards both render. */

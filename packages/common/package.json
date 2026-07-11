@@ -8,6 +8,7 @@
   "types": "./src/surface.ts",
   "exports": {
     ".": "./src/surface.ts",
+    "./alerts": "./src/alerts.ts",
     "./browser": "./src/browser.ts",
     "./metrics": "./src/metrics.ts"
   },

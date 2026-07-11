@@ -19,6 +19,7 @@
 
 import { defineSurface, type SurfaceTypes } from "@kolu/surface/define";
 import { z } from "zod";
+import { alertsEqual, AlertsSchema, NO_ALERTS } from "./alerts";
 
 // IMPORTANT: this module is AGENT-shared (drishti-common's `.` export — the
 // agent serves the base surface from it). It must NOT import
@@ -224,6 +225,20 @@ export const surface = defineSurface({
     system: {
       schema: SystemSchema,
       default: DEFAULT_SYSTEM,
+    },
+    // Per-host raised-alert set — a threshold+hysteresis fold over the host's
+    // metrics (see `./alerts.ts`). Wire-READ-ONLY (`verbs: ["get"]`): the agent
+    // is the sole writer via `@kolu/surface/reactor`'s `derived.cell(scan(...))`,
+    // so the boot walk MUST see get-only here or it crashes on a write verb.
+    // `equals: alertsEqual` is the final wire dedup — a metric drifting within
+    // an already-raised level publishes nothing (same id set). This stays
+    // reactor-FREE: only schema/default/verbs/equals, no graph import (the
+    // reactor lives in the AGENT's main.ts, never in this agent-shared module).
+    alerts: {
+      schema: AlertsSchema,
+      default: NO_ALERTS,
+      verbs: ["get"],
+      equals: alertsEqual,
     },
     // NOTE: no `connection` cell here. Link health is composed ONLY at the
     // nix-host re-serve seam via `mirroredSurface(surface)` (`browserSurface`
