@@ -17,7 +17,7 @@ const frame = (over: Partial<MetricsFrame>): MetricsFrame => ({
 describe("applyHysteresis", () => {
   it("raises a metric at the 80% threshold", () => {
     const next = applyHysteresis(NO_ALERTS, frame({ cpu: 80 }));
-    expect(next.items).toEqual([{ id: "cpu", pct: 80 }]);
+    expect(next.items).toEqual([{ id: "cpu" }]);
   });
 
   it("does not raise just below the threshold", () => {
@@ -56,33 +56,22 @@ describe("applyHysteresis", () => {
     // Raise mem and disk while cpu stays high; items stay in metric order.
     state = applyHysteresis(state, frame({ cpu: 95, mem: 88, disk: 82 }));
     expect(state.items.map((i) => i.id)).toEqual(["cpu", "mem", "disk"]);
-    expect(state.items).toContainEqual({ id: "mem", pct: 88 });
-    expect(state.items).toContainEqual({ id: "disk", pct: 82 });
+    expect(state.items).toContainEqual({ id: "mem" });
+    expect(state.items).toContainEqual({ id: "disk" });
 
     // Drop cpu below the clear edge; mem/disk remain raised.
     state = applyHysteresis(state, frame({ cpu: 20, mem: 88, disk: 82 }));
     expect(state.items.map((i) => i.id)).toEqual(["mem", "disk"]);
   });
-
-  it("re-raises the pct at the moment of a fresh raise", () => {
-    let state = applyHysteresis(NO_ALERTS, frame({ mem: 81 }));
-    expect(state.items[0]?.pct).toBe(81);
-    // clear then raise again at a different pct
-    state = applyHysteresis(state, frame({ mem: 10 }));
-    state = applyHysteresis(state, frame({ mem: 99 }));
-    expect(state.items[0]?.pct).toBe(99);
-  });
 });
 
 describe("alertsEqual", () => {
   it("equal iff the same set of ids is raised", () => {
-    const a: Alerts = { items: [{ id: "cpu", pct: 80 }] };
-    // Same id set, different pct — still equal (pct drift within a level
-    // publishes nothing).
-    const b: Alerts = { items: [{ id: "cpu", pct: 95 }] };
+    const a: Alerts = { items: [{ id: "cpu" }] };
+    const b: Alerts = { items: [{ id: "cpu" }] };
     expect(alertsEqual(a, b)).toBe(true);
 
-    const c: Alerts = { items: [{ id: "mem", pct: 80 }] };
+    const c: Alerts = { items: [{ id: "mem" }] };
     expect(alertsEqual(a, c)).toBe(false);
     expect(alertsEqual(a, NO_ALERTS)).toBe(false);
   });

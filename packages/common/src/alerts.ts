@@ -39,12 +39,11 @@ export type MetricsFrame = Record<MetricKey, number>;
  *  so they must not churn. */
 export type AlertId = MetricKey;
 
-/** One raised alert: which metric, and the pct at the moment it (last) raised.
- *  The human word is NOT carried here — it is a client-owned presentation
- *  lookup (`LABELS` in the app), not an agent/wire fact. */
+/** One raised alert: which metric. Nothing else — the human word is a
+ *  client-owned presentation lookup (`LABELS` in the app), and no consumer
+ *  reads a pct, so neither rides the wire. */
 export interface AlertItem {
   id: AlertId;
-  pct: number;
 }
 
 /** The set of currently-raised alerts for one host. */
@@ -56,7 +55,6 @@ export const AlertsSchema = z.object({
   items: z.array(
     z.object({
       id: z.enum(["cpu", "mem", "disk"]),
-      pct: z.number(),
     }),
   ),
 });
@@ -94,7 +92,7 @@ export function applyHysteresis(state: Alerts, frame: MetricsFrame): Alerts {
     const pct = frame[id];
     const isRaised = raised.has(id);
     if (!isRaised && pct >= RAISE_PCT) {
-      raised.set(id, { id, pct });
+      raised.set(id, { id });
       changed = true;
     } else if (isRaised && pct < CLEAR_PCT) {
       raised.delete(id);
