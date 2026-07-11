@@ -35,6 +35,7 @@ import {
   type Setter,
   Show,
   type Signal,
+  untrack,
   useContext,
 } from "solid-js";
 import {
@@ -42,7 +43,7 @@ import {
   type ScopedByEntry,
   watchByEntry,
 } from "@kolu/surface-map/client";
-import type { AlertId } from "drishti-common/alerts";
+import { type AlertId, CLEAR_PCT, RAISE_PCT } from "drishti-common/alerts";
 import {
   type CoreId,
   type CpuCore,
@@ -61,6 +62,7 @@ import {
   type ConnectionState,
   DEFAULT_CONNECTION,
 } from "drishti-common/browser";
+import { reconcileRaiseTimes } from "./alertTiming";
 import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
 import { HostDot } from "./HostDot";
 import type { View } from "./view";
@@ -73,6 +75,7 @@ import {
   formatUptime,
   memGb,
   memPct,
+  metricPercents,
   pctOf,
 } from "./metrics";
 import { isActiveNic } from "./nic";
@@ -590,6 +593,40 @@ function MultiHostApp() {
   // host-select is just setting the `view` intent. Torn down with the app.
   onCleanup(notify.onClick(({ host }) => setView({ kind: "host", host })));
 
+  // Client-OBSERVED raise time per (host, alert). The wire carries LEVEL state
+  // only — a bare set of raised ids, no history (the ratified design) — so the
+  // honest "since when" the host-detail panel can show is when THIS session
+  // first SAW the alert raised. It's stamped from the app-scope `watchByEntry`
+  // above, which observes EVERY host eagerly, so the time is the earliest this
+  // client could know the metric was over threshold — not merely when you later
+  // opened the host (which would mislead: "since just now" for a hours-old
+  // alert). Cleared when the alert releases (hysteresis drop below CLEAR_PCT) so
+  // a later re-raise stamps fresh, never a stale first-raise time.
+  const raiseKey = (host: string, id: AlertId) => `${host} ${id}`;
+  const [raisedSince, setRaisedSince] = createSignal<Record<string, number>>(
+    {},
+  );
+  createEffect(() => {
+    // Reactive over the fleet's live alert sets (hostList + each watched value).
+    const live = new Set<string>();
+    for (const host of hostList()) {
+      const w = alertsWatch.get(host);
+      if (w?.kind === "live")
+        for (const id of w.value.items) live.add(raiseKey(host, id));
+    }
+    // `untrack` the stamp map's own read/write: this effect DERIVES the map from
+    // the alert sets, so depending on the map it produces would self-trigger.
+    // `reconcileRaiseTimes` (pure, unit-tested) returns the same ref when nothing
+    // moved, so the signal write — and any re-render — is skipped on quiet ticks.
+    untrack(() => {
+      const prev = raisedSince();
+      const next = reconcileRaiseTimes(prev, live, Date.now());
+      if (next !== prev) setRaisedSince(next);
+    });
+  });
+  const raisedSinceFor = (host: string, id: AlertId): number | undefined =>
+    raisedSince()[raiseKey(host, id)];
+
   // App badge = the COUNT OF HOSTS with any LIVE alert (drishti's own fold — a
   // host in trouble is one unit of attention, NOT the sum of its raised
   // metrics). A stale host (its link down) keeps its last value marked stale
@@ -748,7 +785,13 @@ function MultiHostApp() {
               }
               keyed
             >
-              {(host) => <HostView host={host} scopes={hostScopes} />}
+              {(host) => (
+                <HostView
+                  host={host}
+                  scopes={hostScopes}
+                  raisedSince={raisedSinceFor}
+                />
+              )}
             </Show>
           </Show>
         </Show>
@@ -937,9 +980,75 @@ function CardMetric(props: { label: string; pct: number; detail: string }) {
 
 // ── Per-host body (the prior single-host App, now parametric) ──────────
 
+// The host-detail ALERTS panel — the badge/notification's traceable cause,
+// rendered where the deep-link lands. For each raised metric it states WHAT
+// (label), HOW FAR over (the live value vs the shipped RAISE threshold), the
+// hysteresis release point (why a metric between 70 and 80% holds its alert),
+// and SINCE WHEN this session first saw it. Level state, no ack/dismiss: an
+// alert leaves only when the metric itself falls below CLEAR_PCT (the agent's
+// hysteresis fold), so the panel empties on its own — never a manual clear.
+// Renders nothing when `ids` is empty, so a healthy host shows no chrome.
+function AlertsPanel(props: {
+  ids: AlertId[];
+  system: SystemInfo;
+  raisedAt: (id: AlertId) => number | undefined;
+}) {
+  // The SAME system→% projection the agent's fold thresholds on, so the value
+  // shown is the value that raised the alert — not a second, drifting formula.
+  const pct = createMemo(() => metricPercents(props.system));
+  return (
+    <Show when={props.ids.length > 0}>
+      <section
+        data-testid="host-alerts"
+        class="flex flex-col gap-1 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs"
+      >
+        <div class="flex items-center gap-2 font-semibold text-red-700 dark:text-red-400">
+          <span>Active alerts</span>
+          <span class="rounded-full bg-red-500/20 px-1.5">
+            {props.ids.length}
+          </span>
+        </div>
+        <For each={props.ids}>
+          {(id) => {
+            const value = createMemo(() => pct()[id]);
+            const since = createMemo(() => props.raisedAt(id));
+            return (
+              <div
+                data-testid={`host-alert-${id}`}
+                class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-gray-700 dark:text-gray-300"
+              >
+                <span class="font-semibold text-red-700 dark:text-red-400">
+                  {LABELS[id]}
+                </span>
+                <span>
+                  <span class="font-semibold">{value().toFixed(0)}%</span>
+                  {` ≥ ${RAISE_PCT}% (clears below ${CLEAR_PCT}%)`}
+                </span>
+                <Show when={since()}>
+                  {(t) => (
+                    <span
+                      class="ml-auto text-gray-500 dark:text-gray-400"
+                      title={`First seen raised by this session at ${new Date(
+                        t(),
+                      ).toLocaleString()}`}
+                    >
+                      since {new Date(t()).toLocaleTimeString()}
+                    </span>
+                  )}
+                </Show>
+              </div>
+            );
+          }}
+        </For>
+      </section>
+    </Show>
+  );
+}
+
 function HostView(props: {
   host: string;
   scopes: ScopedByEntry<string, HostScope>;
+  raisedSince: (host: string, id: AlertId) => number | undefined;
 }) {
   // `hostMap.entry(...)` is a PURE lens over the ONE admin transport's
   // key-folded link — the same map the tab chip's dot reads. Multiple
@@ -966,6 +1075,17 @@ function HostView(props: {
     onError: (err) => console.error("connection subscription failed", err),
   });
   const entryState = createMemo<EntryState>(() => entry.state());
+
+  // The host's raised-alert set (kolu W5 `alerts` cell). The fleet card shows a
+  // count pip and the app fires an OS notification; the DETAIL view must EXPLAIN
+  // the alert — which metric, how far over threshold, since when. A badge that
+  // deep-links to a page with no trace of its cause is the honest-connect defect
+  // (an indicator you can't act on); `AlertsPanel` below closes it. Same cell,
+  // same source of truth as the card pip and the notification.
+  const alerts = entry.cells.alerts.use({
+    onError: (err) => console.error("alerts subscription failed", err),
+  });
+  const raisedIds = createMemo<AlertId[]>(() => alerts.value()?.items ?? []);
 
   // Re-arm the parent's session after it gave up (state === "failed").
   // Routed straight to the admin surface rather than through the root's
@@ -1207,6 +1327,11 @@ function HostView(props: {
         when={currentConnection().phase === "connected"}
         fallback={connectingView()}
       >
+        <AlertsPanel
+          ids={raisedIds()}
+          system={currentSystem()}
+          raisedAt={(id) => props.raisedSince(props.host, id)}
+        />
         <HistoryChart
           points={points()}
           latest={latestSample()}

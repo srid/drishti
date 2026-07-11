@@ -60,11 +60,15 @@ export const AlertsSchema = z.object({
  *  durable state), so booting with "nothing raised" is the honest start. */
 export const NO_ALERTS: Alerts = { items: [] };
 
-/** Raise once a metric reaches this percentage (0-100). */
-const RAISE_PCT = 80;
+/** Raise once a metric reaches this percentage (0-100). Exported so the client's
+ *  host-detail alert panel can show the honest shipped threshold a raised metric
+ *  crossed ("85% ≥ 80%"), rather than hard-coding a second copy of the number. */
+export const RAISE_PCT = 80;
 /** Clear only once a metric falls below this — the lower edge of the dead band
- *  that stops a hovering metric from flapping. */
-const CLEAR_PCT = 70;
+ *  that stops a hovering metric from flapping. Exported alongside `RAISE_PCT` so
+ *  the panel can state the release point ("clears below 70%") — the hysteresis
+ *  is why a metric between 70 and 80 stays raised, which the UI must explain. */
+export const CLEAR_PCT = 70;
 
 /**
  * Threshold+hysteresis fold: step the raised-alert set forward by one metric

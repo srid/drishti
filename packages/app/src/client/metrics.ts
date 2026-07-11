@@ -13,7 +13,7 @@
 
 import type { SystemInfo } from "drishti-common";
 
-export { diskPct, memPct, pctOf } from "drishti-common/metrics";
+export { diskPct, memPct, metricPercents, pctOf } from "drishti-common/metrics";
 
 /** Used / total memory in gigabytes, formatted to one decimal — the
  *  string form the header and the fleet cards both render. */
