@@ -18,4 +18,5 @@ dependencies:
     - anthropics/claude-code/plugins/frontend-design/skills/frontend-design#main
     - juspay/skills/skills/nix-for-dev
     - juspay/skills/skills/nix-justfile
+    - juspay/skills/skills/nix-oss-cache
     - juspay/nix-chrome-devtools-mcp

@@ -14,6 +14,14 @@
 {
   inputs.bun2nix.url = "github:juspay/bun2nix/rawflake";
 
+  # Pull prebuilt closures from Juspay's shared OSS Attic cache. CI (see
+  # .github/workflows/nix-cache.yml) pushes each build here, warming both CI
+  # and local `nix build`s.
+  nixConfig = {
+    extra-substituters = "https://cache.nixos.asia/oss";
+    extra-trusted-public-keys = "oss:KO872wNJkCDgmGN3xy9dT89WAhvv13EiKncTtHDItVU=";
+  };
+
   outputs = { self, bun2nix, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
