@@ -37,7 +37,12 @@ import {
   type Signal,
   useContext,
 } from "solid-js";
-import { scopedByEntry, type ScopedByEntry } from "@kolu/surface-map/client";
+import {
+  scopedByEntry,
+  type ScopedByEntry,
+  watchByEntry,
+} from "@kolu/surface-map/client";
+import type { AlertId, Alerts } from "drishti-common/alerts";
 import {
   type CoreId,
   type CpuCore,
@@ -110,6 +115,7 @@ import {
   adminSocket,
   hostMap,
   hostRpc,
+  notify,
   onHostMembershipError,
   rememberServerProcessId,
   surfaceAppClient,
@@ -117,6 +123,22 @@ import {
 
 const SORT_KEYS = ["cpu", "mem", "pid", "user"] as const;
 type SortKey = (typeof SORT_KEYS)[number];
+
+// The label for a raised alert id, read off the alert value the watcher hands
+// back (the agent single-sources the word — "CPU"/"Memory"/"Disk"). Falls back
+// to the bare id if the item somehow isn't in the value (it always is at a
+// raise), so the notification title never renders "undefined".
+function labelOf(value: Alerts, id: AlertId): string {
+  return value.items.find((i) => i.id === id)?.label ?? id;
+}
+
+// The Badging API isn't in the DOM lib types; narrow `navigator` to the two
+// methods drishti calls (both optional — absent on browsers without the API,
+// where the alert count simply isn't badged). Feature-detected at the call site.
+type BadgingNavigator = Navigator & {
+  setAppBadge?: (count?: number) => Promise<void>;
+  clearAppBadge?: () => Promise<void>;
+};
 
 // Human labels for the kernel single-char process state codes (linux
 // `/proc/<pid>/stat` field 3; the leading char of darwin `ps -o state=`).
@@ -522,6 +544,49 @@ function MultiHostApp() {
     },
   );
 
+  // ── Cross-host attention (kolu W5: watchByEntry + notify) ──────────────
+  // The FRAMEWORK-GATE consumer of the new `alerts` cell: watch EVERY host's
+  // alerts EAGERLY (a background host in trouble is exactly the one you need to
+  // hear from) and fire an OS notification per newly-raised metric. Raise
+  // detection is the framework's pure set-diff over the stable alert ids; this
+  // runs under `MultiHostApp`'s reactive owner (watchByEntry throws otherwise)
+  // and every per-host subscription tears down when the host leaves the fleet.
+  // Permission is requested once (idempotent); delivery is a silent no-op until
+  // granted, so an un-permissioned browser costs nothing.
+  void notify.requestPermission();
+  const alertsWatch = watchByEntry(
+    hostMap,
+    (e) => e.cells.alerts,
+    (v) => v.items.map((i) => i.id),
+    (host, raised, value) =>
+      raised.forEach((id) =>
+        void notify.show({
+          tag: `${host}/${id}`,
+          title: `${host}: ${labelOf(value, id)} alert`,
+          data: { host, id },
+        }),
+      ),
+  );
+  // A notification click drills into the host it fired for — drishti's
+  // host-select is just setting the `view` intent. Torn down with the app.
+  onCleanup(notify.onClick(({ host }) => setView({ kind: "host", host })));
+
+  // App badge = the COUNT OF HOSTS with any LIVE alert (drishti's own fold — a
+  // host in trouble is one unit of attention, NOT the sum of its raised
+  // metrics). A stale host (its link down) keeps its last value marked stale
+  // and is deliberately NOT counted — a badge should reflect what's live. Guard
+  // the Badging API (absent on some browsers) at the call site.
+  createEffect(() => {
+    const count = hostList().reduce((n, host) => {
+      const w = alertsWatch.get(host);
+      return n + (w?.kind === "live" && w.value.items.length > 0 ? 1 : 0);
+    }, 0);
+    if (typeof navigator === "undefined") return;
+    const nav = navigator as BadgingNavigator;
+    if (count > 0) void nav.setAppBadge?.(count);
+    else void nav.clearAppBadge?.();
+  });
+
   // Theme is global app chrome (like `view`), so it lives here, not per
   // host. The signal seeds from the attribute the pre-paint bootstrap in
   // index.html already applied; toggling flips the attribute and persists
@@ -688,6 +753,11 @@ function HostCard(props: { host: string; onSelect: () => void }) {
   const entry = hostMap.entry(props.host);
   const system = entry.cells.system.use({});
   const connection = entry.cells.connection.use({});
+  // The host's raised-alert set (kolu W5 `alerts` cell). A minimal pip on the
+  // card surfaces "this host is in trouble" at a glance, alongside the OS
+  // notification the app-scope `watchByEntry` fires — same source of truth.
+  const alerts = entry.cells.alerts.use({});
+  const alertCount = createMemo(() => alerts.value()?.items.length ?? 0);
 
   const sys = createMemo<SystemInfo>(() => system.value() ?? DEFAULT_SYSTEM);
   const state = createMemo<ConnectionState>(
@@ -731,6 +801,14 @@ function HostCard(props: { host: string; onSelect: () => void }) {
         <span class="truncate font-semibold" title={props.host}>
           {props.host}
         </span>
+        <Show when={alertCount() > 0}>
+          <span
+            class="shrink-0 rounded-full bg-red-500/15 px-1.5 text-xs font-semibold text-red-600 dark:text-red-400"
+            title={`${alertCount()} alert${alertCount() === 1 ? "" : "s"}`}
+          >
+            {alertCount()}
+          </span>
+        </Show>
         <span class={`ml-auto shrink-0 text-xs ${STATE[state()].text}`}>
           {state()}
         </span>

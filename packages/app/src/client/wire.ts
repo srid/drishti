@@ -25,6 +25,7 @@
 
 import type { ContractRouterClient } from "@orpc/contract";
 import { createProcessIdEcho } from "@kolu/surface-app/connect";
+import { createNotify } from "@kolu/surface-app/notify";
 import { connectSurfaces } from "@kolu/surface-app/solid";
 import { connectSurfaceMap } from "@kolu/surface-map/client";
 import { adminContract, adminSurfaces } from "../common/admin-surface";
@@ -94,6 +95,14 @@ export const ws = conn.ws;
 //    real socket — there is no raw `{ live }` seam to pass a
 //    green-over-dead accessor through.
 export const hostMap = connectSurfaceMap(hostSurfaceMap, conn.transport, "hosts");
+
+// The origin's ONE notification seam (kolu W5, `@kolu/surface-app/notify`) —
+// the last hop of cross-host attention. App-scoped alongside the host map it
+// draws from: `App.tsx`'s `watchByEntry` over `hostMap` fires `notify.show`
+// per newly-raised alert, and `notify.onClick` routes a click's `{ host, id }`
+// back to drill into that host. The payload shape `D` is drishti's own routing
+// key — the framework carries it opaquely and hands it back verbatim.
+export const notify = createNotify<{ host: string; id: string }>();
 
 /** The ONE membership-error handler for `hostMap.entries` — shared by every
  *  whole-collection consumer (`App.tsx`'s reconcile effect, `TabStrip`'s

@@ -1,0 +1,109 @@
+import { describe, expect, it } from "bun:test";
+import {
+  type Alerts,
+  applyHysteresis,
+  alertsEqual,
+  type MetricsFrame,
+  metricsFrameOf,
+  NO_ALERTS,
+} from "./alerts";
+import { DEFAULT_SYSTEM, type SystemInfo } from "./surface";
+
+const frame = (over: Partial<MetricsFrame>): MetricsFrame => ({
+  cpu: 0,
+  mem: 0,
+  disk: 0,
+  ...over,
+});
+
+describe("applyHysteresis", () => {
+  it("raises a metric at the 80% threshold", () => {
+    const next = applyHysteresis(NO_ALERTS, frame({ cpu: 80 }));
+    expect(next.items).toEqual([{ id: "cpu", label: "CPU", pct: 80 }]);
+  });
+
+  it("does not raise just below the threshold", () => {
+    const next = applyHysteresis(NO_ALERTS, frame({ cpu: 79.9 }));
+    expect(next.items).toEqual([]);
+  });
+
+  it("holds by returning the PREV reference in the 70-80 dead band", () => {
+    const raised = applyHysteresis(NO_ALERTS, frame({ cpu: 85 }));
+    // Falls into the dead band (>=70, <80): an already-raised alert stays
+    // raised, and — crucially — the SAME reference comes back so `scan`
+    // publishes nothing.
+    const held = applyHysteresis(raised, frame({ cpu: 75 }));
+    expect(held).toBe(raised);
+  });
+
+  it("holds (prev reference) when an un-raised metric sits in the dead band", () => {
+    const held = applyHysteresis(NO_ALERTS, frame({ cpu: 75 }));
+    expect(held).toBe(NO_ALERTS);
+  });
+
+  it("clears only once the metric falls below 70%", () => {
+    const raised = applyHysteresis(NO_ALERTS, frame({ cpu: 90 }));
+    // 70 is still in the dead band — held.
+    expect(applyHysteresis(raised, frame({ cpu: 70 }))).toBe(raised);
+    // Below 70 clears.
+    const cleared = applyHysteresis(raised, frame({ cpu: 69 }));
+    expect(cleared.items).toEqual([]);
+  });
+
+  it("tracks each metric independently", () => {
+    let state: Alerts = NO_ALERTS;
+    state = applyHysteresis(state, frame({ cpu: 95, mem: 10, disk: 10 }));
+    expect(state.items.map((i) => i.id)).toEqual(["cpu"]);
+
+    // Raise mem and disk while cpu stays high; items stay in metric order.
+    state = applyHysteresis(state, frame({ cpu: 95, mem: 88, disk: 82 }));
+    expect(state.items.map((i) => i.id)).toEqual(["cpu", "mem", "disk"]);
+    expect(state.items).toContainEqual({ id: "mem", label: "Memory", pct: 88 });
+    expect(state.items).toContainEqual({ id: "disk", label: "Disk", pct: 82 });
+
+    // Drop cpu below the clear edge; mem/disk remain raised.
+    state = applyHysteresis(state, frame({ cpu: 20, mem: 88, disk: 82 }));
+    expect(state.items.map((i) => i.id)).toEqual(["mem", "disk"]);
+  });
+
+  it("re-raises the pct at the moment of a fresh raise", () => {
+    let state = applyHysteresis(NO_ALERTS, frame({ mem: 81 }));
+    expect(state.items[0]?.pct).toBe(81);
+    // clear then raise again at a different pct
+    state = applyHysteresis(state, frame({ mem: 10 }));
+    state = applyHysteresis(state, frame({ mem: 99 }));
+    expect(state.items[0]?.pct).toBe(99);
+  });
+});
+
+describe("alertsEqual", () => {
+  it("equal iff the same set of ids is raised", () => {
+    const a: Alerts = { items: [{ id: "cpu", label: "CPU", pct: 80 }] };
+    // Same id set, different pct — still equal (pct drift within a level
+    // publishes nothing).
+    const b: Alerts = { items: [{ id: "cpu", label: "CPU", pct: 95 }] };
+    expect(alertsEqual(a, b)).toBe(true);
+
+    const c: Alerts = { items: [{ id: "mem", label: "Memory", pct: 80 }] };
+    expect(alertsEqual(a, c)).toBe(false);
+    expect(alertsEqual(a, NO_ALERTS)).toBe(false);
+  });
+});
+
+describe("metricsFrameOf", () => {
+  it("reads cpuPct directly and derives mem/disk as guarded shares", () => {
+    const system: SystemInfo = {
+      ...DEFAULT_SYSTEM,
+      cpuPct: 42,
+      memUsed: 8,
+      memTotal: 16,
+      diskUsed: 30,
+      diskTotal: 120,
+    };
+    expect(metricsFrameOf(system)).toEqual({ cpu: 42, mem: 50, disk: 25 });
+  });
+
+  it("guards against a zero total (never NaN)", () => {
+    expect(metricsFrameOf(DEFAULT_SYSTEM)).toEqual({ cpu: 0, mem: 0, disk: 0 });
+  });
+});
