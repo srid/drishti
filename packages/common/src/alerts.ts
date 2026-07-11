@@ -39,11 +39,11 @@ export type MetricsFrame = Record<MetricKey, number>;
  *  so they must not churn. */
 export type AlertId = MetricKey;
 
-/** One raised alert: which metric, its human label, and the pct at the moment it
- *  (last) raised. */
+/** One raised alert: which metric, and the pct at the moment it (last) raised.
+ *  The human word is NOT carried here — it is a client-owned presentation
+ *  lookup (`LABELS` in the app), not an agent/wire fact. */
 export interface AlertItem {
   id: AlertId;
-  label: string;
   pct: number;
 }
 
@@ -56,7 +56,6 @@ export const AlertsSchema = z.object({
   items: z.array(
     z.object({
       id: z.enum(["cpu", "mem", "disk"]),
-      label: z.string(),
       pct: z.number(),
     }),
   ),
@@ -72,13 +71,6 @@ const RAISE_PCT = 80;
 /** Clear only once a metric falls below this — the lower edge of the dead band
  *  that stops a hovering metric from flapping. */
 const CLEAR_PCT = 70;
-
-/** Human labels, single-sourced so the fold and any UI read the same word. */
-const LABELS: Record<AlertId, string> = {
-  cpu: "CPU",
-  mem: "Memory",
-  disk: "Disk",
-};
 
 /** The metrics folded, in a fixed order, so `applyHysteresis` iterates one list
  *  rather than three hand-copied blocks. */
@@ -102,7 +94,7 @@ export function applyHysteresis(state: Alerts, frame: MetricsFrame): Alerts {
     const pct = frame[id];
     const isRaised = raised.has(id);
     if (!isRaised && pct >= RAISE_PCT) {
-      raised.set(id, { id, label: LABELS[id], pct });
+      raised.set(id, { id, pct });
       changed = true;
     } else if (isRaised && pct < CLEAR_PCT) {
       raised.delete(id);

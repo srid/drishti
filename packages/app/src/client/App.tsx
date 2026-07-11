@@ -42,7 +42,7 @@ import {
   type ScopedByEntry,
   watchByEntry,
 } from "@kolu/surface-map/client";
-import type { AlertId, Alerts } from "drishti-common/alerts";
+import type { AlertId } from "drishti-common/alerts";
 import {
   type CoreId,
   type CpuCore,
@@ -124,13 +124,14 @@ import {
 const SORT_KEYS = ["cpu", "mem", "pid", "user"] as const;
 type SortKey = (typeof SORT_KEYS)[number];
 
-// The label for a raised alert id, read off the alert value the watcher hands
-// back (the agent single-sources the word — "CPU"/"Memory"/"Disk"). Falls back
-// to the bare id if the item somehow isn't in the value (it always is at a
-// raise), so the notification title never renders "undefined".
-function labelOf(value: Alerts, id: AlertId): string {
-  return value.items.find((i) => i.id === id)?.label ?? id;
-}
+// The human word for a raised alert id — a CLIENT-owned presentation lookup
+// (rename/localize here, no agent or wire change). Exhaustive over `AlertId`,
+// so `LABELS[id]` always resolves; the word never rides the wire.
+const LABELS: Record<AlertId, string> = {
+  cpu: "CPU",
+  mem: "Memory",
+  disk: "Disk",
+};
 
 // The Badging API isn't in the DOM lib types; narrow `navigator` to the two
 // methods drishti calls (both optional — absent on browsers without the API,
@@ -558,11 +559,11 @@ function MultiHostApp() {
     hostMap,
     (e) => e.cells.alerts,
     (v) => v.items.map((i) => i.id),
-    (host, raised, value) =>
+    (host, raised) =>
       raised.forEach((id) =>
         void notify.show({
           tag: `${host}/${id}`,
-          title: `${host}: ${labelOf(value, id)} alert`,
+          title: `${host}: ${LABELS[id]} alert`,
           data: { host, id },
         }),
       ),
