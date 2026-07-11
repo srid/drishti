@@ -4,10 +4,8 @@ import {
   applyHysteresis,
   alertsEqual,
   type MetricsFrame,
-  metricsFrameOf,
   NO_ALERTS,
 } from "./alerts";
-import { DEFAULT_SYSTEM, type SystemInfo } from "./surface";
 
 const frame = (over: Partial<MetricsFrame>): MetricsFrame => ({
   cpu: 0,
@@ -87,23 +85,5 @@ describe("alertsEqual", () => {
     const c: Alerts = { items: [{ id: "mem", label: "Memory", pct: 80 }] };
     expect(alertsEqual(a, c)).toBe(false);
     expect(alertsEqual(a, NO_ALERTS)).toBe(false);
-  });
-});
-
-describe("metricsFrameOf", () => {
-  it("reads cpuPct directly and derives mem/disk as guarded shares", () => {
-    const system: SystemInfo = {
-      ...DEFAULT_SYSTEM,
-      cpuPct: 42,
-      memUsed: 8,
-      memTotal: 16,
-      diskUsed: 30,
-      diskTotal: 120,
-    };
-    expect(metricsFrameOf(system)).toEqual({ cpu: 42, mem: 50, disk: 25 });
-  });
-
-  it("guards against a zero total (never NaN)", () => {
-    expect(metricsFrameOf(DEFAULT_SYSTEM)).toEqual({ cpu: 0, mem: 0, disk: 0 });
   });
 });

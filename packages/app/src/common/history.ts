@@ -16,10 +16,11 @@
  */
 
 import type { MetricSample, SystemInfo } from "drishti-common";
-import { diskPct, memPct } from "./metrics";
+import { type MetricKey, metricPercents } from "drishti-common/metrics";
 
-/** The series the chart draws. */
-export type MetricKey = "cpu" | "mem" | "disk";
+/** The series the chart draws — the shared metric vocabulary, re-exported so the
+ *  client keeps importing it from this history module. */
+export type { MetricKey };
 
 /** Selectable chart windows, mirroring the time-range chips popular
  *  monitors (Netdata, btop, Datadog) put above their graphs. Ascending by
@@ -69,21 +70,14 @@ export function isHistoryWindowKey(raw: string): boolean {
 }
 
 /** Assemble a `MetricSample` from a live system snapshot — the single home for
- *  "what a captured sample is." Every series reads off the `system` cell: `cpu`
- *  is the agent-computed `system.cpuPct` (the ONE host-CPU mean, no longer
- *  re-averaged from the parent's `coreCache` — which could lag the system tick
- *  by a frame under concurrent pumping), `mem`/`disk` reuse the canonical
- *  `metrics.ts` shares. Adding a series touches the data layer it comes from
- *  (the `MetricKey` union, the `MetricSample` schema, and this assembler); the
- *  *render* side is single-sourced separately in the client's `SERIES` table.
- *  Pure: `t` is passed in. */
+ *  "what a captured sample is." The per-metric percentages come from the ONE
+ *  shared system→% projection (`metricPercents` in `drishti-common/metrics`, the
+ *  same projection the agent's alert fold consumes), stamped with the capture
+ *  time. Adding a series touches that projection and the `MetricSample` schema;
+ *  the *render* side is single-sourced separately in the client's `SERIES`
+ *  table. Pure: `t` is passed in. */
 export function captureSample(t: number, system: SystemInfo): MetricSample {
-  return {
-    t,
-    cpu: system.cpuPct,
-    mem: memPct(system),
-    disk: diskPct(system),
-  };
+  return { t, ...metricPercents(system) };
 }
 
 /** Append a sample and evict any older than `retentionMs` behind the

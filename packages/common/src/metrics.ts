@@ -41,3 +41,22 @@ export function memPct(system: SystemInfo): number {
 export function diskPct(system: SystemInfo): number {
   return pctOf(system.diskUsed, system.diskTotal);
 }
+
+/** The metric-series names — the single vocabulary of "which host metrics
+ *  exist." The alert fold (`AlertId`) and the history chart (`MetricKey` in
+ *  `common/history.ts`) both key on these, so adding a metric touches this union
+ *  and the projection below, not a parallel copy per tier. */
+export type MetricKey = "cpu" | "mem" | "disk";
+
+/** Project a live `system` snapshot to its per-metric percentages (0-100) — the
+ *  ONE system→% projection, consumed by BOTH the parent's history sampler
+ *  (`captureSample`) and the agent's alert fold. `cpu` is the agent's
+ *  pre-computed `cpuPct`; `mem`/`disk` are the guarded shares above, so no tier
+ *  re-derives the formula. */
+export function metricPercents(system: SystemInfo): Record<MetricKey, number> {
+  return {
+    cpu: system.cpuPct,
+    mem: memPct(system),
+    disk: diskPct(system),
+  };
+}

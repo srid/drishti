@@ -55,10 +55,9 @@ import {
 import {
   applyHysteresis,
   type MetricsFrame,
-  metricsFrameOf,
   NO_ALERTS,
 } from "drishti-common/alerts";
-import { averageCoreUsage } from "drishti-common/metrics";
+import { averageCoreUsage, metricPercents } from "drishti-common/metrics";
 import { createProcReader, type ProcReader } from "./proc";
 
 const POLL_INTERVAL_MS = 2000;
@@ -319,7 +318,7 @@ export async function serveAgent(
       // until a subscriber installs the source tap (the `derived.cell` connect
       // effect), so a tick before wiring is a no-op — the fold re-derives from
       // subsequent frames.
-      emitMetrics?.(metricsFrameOf(sys));
+      emitMetrics?.(metricPercents(sys));
       const upserts: Array<[Pid, Process]> = [];
       const removes: Pid[] = [];
       for (const [pid, value] of nextProcesses) {

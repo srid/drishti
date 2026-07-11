@@ -25,22 +25,19 @@
  */
 
 import { z } from "zod";
-import { diskPct, memPct } from "./metrics";
-import type { SystemInfo } from "./surface";
+import type { MetricKey } from "./metrics";
 
 /** A host's raw metric percentages for one poll tick (0-100). The fold's input
- *  frame — decoupled from the wider `system` cell so the alert graph steps on
- *  exactly the three numbers it thresholds, nothing more. */
-export interface MetricsFrame {
-  cpu: number;
-  mem: number;
-  disk: number;
-}
+ *  frame — one number per metric, keyed by the shared `MetricKey`, decoupled
+ *  from the wider `system` cell so the alert graph steps on exactly the numbers
+ *  it thresholds, nothing more. */
+export type MetricsFrame = Record<MetricKey, number>;
 
-/** The three metrics an alert can fire for. Stable ids — `watchByEntry`'s
- *  set-diff decides "same alert, not a new one" on these, so they must not
- *  churn. */
-export type AlertId = "cpu" | "mem" | "disk";
+/** The metrics an alert can fire for — the SAME vocabulary the history chart
+ *  keys on (`MetricKey`, single-sourced in `drishti-common/metrics`). Stable
+ *  ids: `watchByEntry`'s set-diff decides "same alert, not a new one" on these,
+ *  so they must not churn. */
+export type AlertId = MetricKey;
 
 /** One raised alert: which metric, its human label, and the pct at the moment it
  *  (last) raised. */
@@ -135,17 +132,4 @@ export function alertsEqual(a: Alerts, b: Alerts): boolean {
   if (a.items.length !== b.items.length) return false;
   const ids = new Set(a.items.map((i) => i.id));
   return b.items.every((i) => ids.has(i.id));
-}
-
-/** Turn a live `system` snapshot into the fold's `MetricsFrame`: cpu is the
- *  agent's pre-computed `cpuPct`; mem/disk are the SAME guarded shares the UI
- *  reads (`memPct`/`diskPct` from the agent-shared `drishti-common/metrics`, not
- *  a re-derived formula). The agent feeds this into the alert graph every poll
- *  tick. */
-export function metricsFrameOf(system: SystemInfo): MetricsFrame {
-  return {
-    cpu: system.cpuPct,
-    mem: memPct(system),
-    disk: diskPct(system),
-  };
 }
