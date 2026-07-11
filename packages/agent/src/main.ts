@@ -296,6 +296,22 @@ export async function serveAgent(
     },
   });
 
+  // Assert the eager-subscribe invariant the `emitMetrics` comment above rests
+  // on: `scan(metrics, …)` subscribed to the source while the `cells` literal
+  // was evaluated, so `emitMetrics` is installed by now. If a future reactor
+  // change made that subscription lazy (deferred to the `derived.cell` connect),
+  // `emitMetrics` would be null here and every poll tick's `?.` would silently
+  // no-op FOREVER — a host that never raises an alert, with no crash and no log.
+  // Fail LOUD at boot instead: a one-time check that turns a silent-forever
+  // regression into an immediate, obvious agent-startup crash (drishti CI's e2e
+  // would go red on the first boot). The `?.` at the tick's call site then means
+  // exactly one thing — a late tick after dispose — not "maybe never installed".
+  if (emitMetrics === null)
+    throw new Error(
+      "alerts reactor: metrics source was never subscribed during surface " +
+        "construction — the scan→source eager-subscribe invariant broke",
+    );
+
   // Poll loop: refresh system + processes, diff against current
   // `processSnapshot`, push deltas through the framework's ctx (which
   // mutates the snapshot AND publishes to subscribers in one step).
