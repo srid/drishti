@@ -213,6 +213,10 @@ One upstream issue currently shapes how CI runs:
 
 - **crates.io blocks `curl/*` User-Agent.** Every `crate-*.tar.gz` fetched by `bun2nix`'s rust dep tree fails its `pkgs.fetchurl` with HTTP 403. `ci/mod.just`'s `_prefetch-crates` recipe (`scripts/ci-prefetch-crates.sh`) sidesteps this by fetching missing crates with a Mozilla UA and injecting them via `nix-store --add-fixed`. Idempotent and content-addressed, so the workaround disappears the first time upstream fetchurl learns to set a non-curl UA — or once bun2nix's Rust deps fetch from `static.crates.io` directly. Tracking issue: TBD.
 
+### Binary cache
+
+Builds are pushed to Juspay's shared OSS Attic cache at [`cache.nixos.asia/oss`](https://cache.nixos.asia). The `.github/workflows/nix-cache.yml` workflow builds the default package on linux + darwin for every push and PR and pushes each closure via [`ryanccn/attic-action`](https://github.com/ryanccn/attic-action). The cache is wired in as a substituter through the flake's `nixConfig`, so a local `nix build` pulls prebuilt closures instead of rebuilding — accept the flake config (`accept-flake-config = true`, or answer `y` when prompted) to opt in.
+
 ### License
 
 AGPL-3.0-or-later (matches upstream `@kolu/surface`).

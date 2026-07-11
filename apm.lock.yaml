@@ -1,5 +1,5 @@
 lockfile_version: '1'
-generated_at: '2026-06-13T15:01:42.893566+00:00'
+generated_at: '2026-07-11T16:37:55.216242+00:00'
 apm_version: 0.20.0
 dependencies:
 - repo_url: anthropics/claude-code
@@ -66,6 +66,19 @@ dependencies:
   deployed_file_hashes:
     .claude/skills/nix-justfile/SKILL.md: sha256:730345294a6536793ede474dc7f624faa83af6e97dbcbeb10fed1954a0d408fd
   content_hash: sha256:8f48e067e59da48c3ac90b4e2228ebb4ecfd988375b40efe831339d9a493accd
+- repo_url: juspay/skills
+  host: github.com
+  resolved_commit: f9acd37c52b0af1a80b53cd871ef04f81a20ed87
+  resolved_ref: nix-oss-cache
+  virtual_path: skills/nix-oss-cache
+  is_virtual: true
+  package_type: claude_skill
+  deployed_files:
+  - .claude/skills/nix-oss-cache
+  - .claude/skills/nix-oss-cache/SKILL.md
+  deployed_file_hashes:
+    .claude/skills/nix-oss-cache/SKILL.md: sha256:6075a2e030cc7cebaaf0cf00878006f5f86d7e1b533be9b672fd1e0ab000acf9
+  content_hash: sha256:127f072350623c9004ea47c004ffae7acd67519a6abd442d6af1a7387cd28cb4
 - repo_url: srid/agency
   host: github.com
   resolved_commit: d274039c47ee8d0cc13e9d42d1bbf61e5f5b706f
