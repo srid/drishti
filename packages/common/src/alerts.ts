@@ -39,24 +39,15 @@ export type MetricsFrame = Record<MetricKey, number>;
  *  so they must not churn. */
 export type AlertId = MetricKey;
 
-/** One raised alert: which metric. Nothing else — the human word is a
- *  client-owned presentation lookup (`LABELS` in the app), and no consumer
- *  reads a pct, so neither rides the wire. */
-export interface AlertItem {
-  id: AlertId;
-}
-
-/** The set of currently-raised alerts for one host. */
+/** The set of currently-raised alerts for one host — just the raised ids. The
+ *  concept IS a set of metric ids, so the shape says so; the human word is a
+ *  client-owned presentation lookup (`LABELS` in the app), never a wire fact. */
 export interface Alerts {
-  items: AlertItem[];
+  items: AlertId[];
 }
 
 export const AlertsSchema = z.object({
-  items: z.array(
-    z.object({
-      id: z.enum(["cpu", "mem", "disk"]),
-    }),
-  ),
+  items: z.array(z.enum(["cpu", "mem", "disk"])),
 });
 
 /** The empty alert set — the fold's seed and the cell's gate-closed default. A
@@ -78,21 +69,21 @@ const METRIC_IDS: readonly AlertId[] = ["cpu", "mem", "disk"];
  * Threshold+hysteresis fold: step the raised-alert set forward by one metric
  * frame.
  *
- * Per metric: RAISE (add the item) when it crosses up to `RAISE_PCT` while not
+ * Per metric: RAISE (add the id) when it crosses up to `RAISE_PCT` while not
  * already raised; CLEAR (remove it) when it falls below `CLEAR_PCT` while raised;
  * otherwise HOLD. When NOTHING crosses — the common case — the PREV `state`
  * reference is returned unchanged, which the reactor's `scan` reads as "no
  * publish" (see the module docstring). A raise/clear returns a fresh `Alerts`.
  */
 export function applyHysteresis(state: Alerts, frame: MetricsFrame): Alerts {
-  const raised = new Map(state.items.map((i) => [i.id, i]));
+  const raised = new Set(state.items);
   let changed = false;
 
   for (const id of METRIC_IDS) {
     const pct = frame[id];
     const isRaised = raised.has(id);
     if (!isRaised && pct >= RAISE_PCT) {
-      raised.set(id, { id });
+      raised.add(id);
       changed = true;
     } else if (isRaised && pct < CLEAR_PCT) {
       raised.delete(id);
@@ -105,21 +96,15 @@ export function applyHysteresis(state: Alerts, frame: MetricsFrame): Alerts {
   // step the graph every quiet tick.
   if (!changed) return state;
 
-  // Rebuild in the fixed metric order so the item list is deterministic
+  // Rebuild in the fixed metric order so the id list is deterministic
   // regardless of raise sequence.
-  return {
-    items: METRIC_IDS.flatMap((id) => {
-      const item = raised.get(id);
-      return item ? [item] : [];
-    }),
-  };
+  return { items: METRIC_IDS.filter((id) => raised.has(id)) };
 }
 
-/** Equal iff the SAME set of alert ids is raised — the cell's `equals` gate. A
- *  metric whose pct drifts within the same raised level publishes nothing (the
- *  id set is unchanged); only a raise or a clear crosses the wire. */
+/** Equal iff the SAME set of alert ids is raised — the cell's `equals` gate.
+ *  Only a raise or a clear (a change to the id set) crosses the wire. */
 export function alertsEqual(a: Alerts, b: Alerts): boolean {
   if (a.items.length !== b.items.length) return false;
-  const ids = new Set(a.items.map((i) => i.id));
-  return b.items.every((i) => ids.has(i.id));
+  const ids = new Set(a.items);
+  return b.items.every((id) => ids.has(id));
 }

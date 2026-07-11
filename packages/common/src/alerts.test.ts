@@ -17,7 +17,7 @@ const frame = (over: Partial<MetricsFrame>): MetricsFrame => ({
 describe("applyHysteresis", () => {
   it("raises a metric at the 80% threshold", () => {
     const next = applyHysteresis(NO_ALERTS, frame({ cpu: 80 }));
-    expect(next.items).toEqual([{ id: "cpu" }]);
+    expect(next.items).toEqual(["cpu"]);
   });
 
   it("does not raise just below the threshold", () => {
@@ -51,27 +51,25 @@ describe("applyHysteresis", () => {
   it("tracks each metric independently", () => {
     let state: Alerts = NO_ALERTS;
     state = applyHysteresis(state, frame({ cpu: 95, mem: 10, disk: 10 }));
-    expect(state.items.map((i) => i.id)).toEqual(["cpu"]);
+    expect(state.items).toEqual(["cpu"]);
 
-    // Raise mem and disk while cpu stays high; items stay in metric order.
+    // Raise mem and disk while cpu stays high; ids stay in metric order.
     state = applyHysteresis(state, frame({ cpu: 95, mem: 88, disk: 82 }));
-    expect(state.items.map((i) => i.id)).toEqual(["cpu", "mem", "disk"]);
-    expect(state.items).toContainEqual({ id: "mem" });
-    expect(state.items).toContainEqual({ id: "disk" });
+    expect(state.items).toEqual(["cpu", "mem", "disk"]);
 
     // Drop cpu below the clear edge; mem/disk remain raised.
     state = applyHysteresis(state, frame({ cpu: 20, mem: 88, disk: 82 }));
-    expect(state.items.map((i) => i.id)).toEqual(["mem", "disk"]);
+    expect(state.items).toEqual(["mem", "disk"]);
   });
 });
 
 describe("alertsEqual", () => {
   it("equal iff the same set of ids is raised", () => {
-    const a: Alerts = { items: [{ id: "cpu" }] };
-    const b: Alerts = { items: [{ id: "cpu" }] };
+    const a: Alerts = { items: ["cpu"] };
+    const b: Alerts = { items: ["cpu"] };
     expect(alertsEqual(a, b)).toBe(true);
 
-    const c: Alerts = { items: [{ id: "mem" }] };
+    const c: Alerts = { items: ["mem"] };
     expect(alertsEqual(a, c)).toBe(false);
     expect(alertsEqual(a, NO_ALERTS)).toBe(false);
   });

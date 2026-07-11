@@ -558,7 +558,7 @@ function MultiHostApp() {
   const alertsWatch = watchByEntry(
     hostMap,
     (e) => e.cells.alerts,
-    (v) => v.items.map((i) => i.id),
+    (v) => v.items,
     (host, raised) =>
       raised.forEach((id) =>
         void notify.show({
