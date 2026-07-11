@@ -593,13 +593,19 @@ function MultiHostApp() {
   // App badge = the COUNT OF HOSTS with any LIVE alert (drishti's own fold — a
   // host in trouble is one unit of attention, NOT the sum of its raised
   // metrics). A stale host (its link down) keeps its last value marked stale
-  // and is deliberately NOT counted — a badge should reflect what's live. Guard
-  // the Badging API (absent on some browsers) at the call site.
-  createEffect(() => {
-    const count = hostList().reduce((n, host) => {
+  // and is deliberately NOT counted — a badge should reflect what's live.
+  // Memoized so the OS badge write below fires only when the INTEGER moves: a
+  // host raising a second metric (count unchanged) or a stale host churning
+  // must not spend an async Badging-API call on a number that didn't change.
+  const badgeCount = createMemo(() =>
+    hostList().reduce((n, host) => {
       const w = alertsWatch.get(host);
       return n + (w?.kind === "live" && w.value.items.length > 0 ? 1 : 0);
-    }, 0);
+    }, 0),
+  );
+  // Guard the Badging API (absent on some browsers) at the call site.
+  createEffect(() => {
+    const count = badgeCount();
     if (typeof navigator === "undefined") return;
     const nav = navigator as BadgingNavigator;
     // The Badging API can REJECT even when present (permission, security, or

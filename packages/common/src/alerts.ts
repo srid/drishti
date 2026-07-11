@@ -46,8 +46,13 @@ export interface Alerts {
   items: AlertId[];
 }
 
+/** The metrics folded, in a fixed order, so `applyHysteresis` iterates one list
+ *  rather than three hand-copied blocks — and the SINGLE runtime source the wire
+ *  schema's `z.enum` derives from, so a fourth metric touches one array, not two. */
+const METRIC_IDS = ["cpu", "mem", "disk"] as const satisfies readonly AlertId[];
+
 export const AlertsSchema = z.object({
-  items: z.array(z.enum(["cpu", "mem", "disk"])),
+  items: z.array(z.enum(METRIC_IDS)),
 });
 
 /** The empty alert set — the fold's seed and the cell's gate-closed default. A
@@ -60,10 +65,6 @@ const RAISE_PCT = 80;
 /** Clear only once a metric falls below this — the lower edge of the dead band
  *  that stops a hovering metric from flapping. */
 const CLEAR_PCT = 70;
-
-/** The metrics folded, in a fixed order, so `applyHysteresis` iterates one list
- *  rather than three hand-copied blocks. */
-const METRIC_IDS: readonly AlertId[] = ["cpu", "mem", "disk"];
 
 /**
  * Threshold+hysteresis fold: step the raised-alert set forward by one metric

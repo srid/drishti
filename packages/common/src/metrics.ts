@@ -7,8 +7,8 @@
  * `system` cell's `cpuPct` (see `agent/src/main.ts`). The `pctOf` / `memPct` /
  * `diskPct` share-of-total helpers live here too, so the agent's `alerts` fold
  * (`./alerts`) derives mem%/disk% from the SAME formula the app-tier UI does — the
- * app module (`app/src/common/metrics.ts`) re-exports them so its consumers keep
- * resolving against one module, and no tier re-derives the math.
+ * app's client module (`app/src/client/metrics.ts`) re-exports them so its
+ * consumers keep resolving against one module, and no tier re-derives the math.
  */
 
 import type { SystemInfo } from "./surface";
