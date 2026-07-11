@@ -102,7 +102,17 @@ export const hostMap = connectSurfaceMap(hostSurfaceMap, conn.transport, "hosts"
 // per newly-raised alert, and `notify.onClick` routes a click's `{ host, id }`
 // back to drill into that host. The payload shape `D` is drishti's own routing
 // key — the framework carries it opaquely and hands it back verbatim.
-export const notify = createNotify<{ host: string; id: string }>();
+export const notify = createNotify<{ host: string; id: string }>((data) => {
+  // Validate the click envelope the framework relays (a live postMessage or a
+  // cold-start URL param) before routing — a stale/pre-upgrade notification, or a
+  // `{}` a degraded worker substitutes, is dropped rather than routed to
+  // `expandHost(undefined)`. Both fields are plain strings here (a host key and a
+  // metric-series id), so a shape check is the whole validation.
+  if (typeof data !== "object" || data === null) return undefined;
+  const d = data as Record<string, unknown>;
+  if (typeof d.host !== "string" || typeof d.id !== "string") return undefined;
+  return { host: d.host, id: d.id };
+});
 
 /** The ONE membership-error handler for `hostMap.entries` — shared by every
  *  whole-collection consumer (`App.tsx`'s reconcile effect, `TabStrip`'s
