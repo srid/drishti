@@ -169,7 +169,17 @@ function TabChip(props: {
   onSelect: () => void;
   onClose: () => void;
 }) {
-  const state = () => hostMap.entry(props.host).state();
+  const entry = hostMap.entry(props.host);
+  const state = () => entry.state();
+  // The host's raised-alert set (kolu W5 `alerts` cell) — read straight off
+  // `hostMap` the same way the dot reads `state()`, so the chip needs no new
+  // prop threaded through `TabStrip`. A compact red count pip mirrors the fleet
+  // card's pip and the app badge, sharing their ONE source of truth so a host in
+  // trouble is visible even from another tab. It's gated on a LIVE connection
+  // (below) — a disconnected host's last-known set is stale and must not paint as
+  // a live alert, matching the connected-only policy across the card pip and badge.
+  const alerts = entry.cells.alerts.use({});
+  const alertCount = () => (alerts.value()?.items ?? []).length;
 
   return (
     <div class={`${TAB_BASE} ${props.active ? TAB_ACTIVE : TAB_INACTIVE}`}>
@@ -181,6 +191,15 @@ function TabChip(props: {
       >
         <HostDot state={state} />
         <span class="font-semibold">{props.host}</span>
+        <Show when={state().kind === "connected" && alertCount() > 0}>
+          <span
+            data-testid={`tab-alert-${props.host}`}
+            class="shrink-0 rounded-full bg-red-500/15 px-1.5 text-xs font-semibold text-red-600 dark:text-red-400"
+            title={`${alertCount()} alert${alertCount() === 1 ? "" : "s"}`}
+          >
+            {alertCount()}
+          </span>
+        </Show>
       </button>
       <button
         type="button"
