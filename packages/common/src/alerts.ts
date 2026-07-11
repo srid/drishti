@@ -25,6 +25,7 @@
  */
 
 import { z } from "zod";
+import { diskPct, memPct } from "./metrics";
 import type { SystemInfo } from "./surface";
 
 /** A host's raw metric percentages for one poll tick (0-100). The fold's input
@@ -136,21 +137,15 @@ export function alertsEqual(a: Alerts, b: Alerts): boolean {
   return b.items.every((i) => ids.has(i.id));
 }
 
-/** Guarded share-of-total, local to keep this pure agent-shared module from
- *  reaching UP into the app-tier `pctOf` (dependency arrow points the wrong
- *  way). 0 when the total is 0 — a freshly-connected host whose first `system`
- *  tick reports a 0 total never divides by zero or yields NaN. */
-function pctOf(part: number, whole: number): number {
-  return whole > 0 ? (100 * part) / whole : 0;
-}
-
 /** Turn a live `system` snapshot into the fold's `MetricsFrame`: cpu is the
- *  agent's pre-computed `cpuPct`; mem/disk are guarded shares of their totals.
- *  The agent feeds this into the alert graph every poll tick. */
+ *  agent's pre-computed `cpuPct`; mem/disk are the SAME guarded shares the UI
+ *  reads (`memPct`/`diskPct` from the agent-shared `drishti-common/metrics`, not
+ *  a re-derived formula). The agent feeds this into the alert graph every poll
+ *  tick. */
 export function metricsFrameOf(system: SystemInfo): MetricsFrame {
   return {
     cpu: system.cpuPct,
-    mem: pctOf(system.memUsed, system.memTotal),
-    disk: pctOf(system.diskUsed, system.diskTotal),
+    mem: memPct(system),
+    disk: diskPct(system),
   };
 }
