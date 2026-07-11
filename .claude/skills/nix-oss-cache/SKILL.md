@@ -121,6 +121,29 @@ gh secret list --repo <owner>/<repo>   # ATTIC_TOKEN should appear
 
 If it's missing, tell them and ask again — loop until `gh secret list` shows `ATTIC_TOKEN`. The workflow fails loudly without this secret; there is no silent skip.
 
-## Verify
+## 4. Open a PR
 
-Push to the default branch (or trigger via **Actions → nix-cache → Run workflow**). A green run means the closure was pushed. To confirm the pull side works, on another machine run `nix build` and check the log shows paths fetched from `cache.nixos.asia/oss`.
+Commit the `flake.nix` and workflow changes on a branch and open a PR:
+
+```bash
+gh pr create --title "Push Nix builds to the OSS Attic cache" --body "..."
+```
+
+The workflow's `pull_request` trigger means the run fires on the PR itself, so you get a green/red signal before merge — no need to merge blind.
+
+## 5. Monitor the run to success
+
+Watch the run and don't declare success until it's actually green:
+
+```bash
+gh run list --workflow nix-cache.yml --limit 1     # find the run
+gh run watch <run-id>                              # stream to completion
+```
+
+If it fails, diagnose with `gh run view <run-id> --log-failed` and fix. Common causes:
+
+- **`ATTIC_TOKEN` missing / unauthorized** — the secret isn't set or lacks push scope; loop back to step 3.
+- **Build failure** — `nix build` itself is broken; that's a repo problem, not a cache one. Fix the build.
+- **Unpinned-action / permissions warnings** — check the pins and `permissions:` block from step 2.
+
+A green run means the closure was pushed. To confirm the pull side, on another machine run `nix build` and check the log shows paths fetched from `cache.nixos.asia/oss`.

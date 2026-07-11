@@ -68,8 +68,7 @@ dependencies:
   content_hash: sha256:8f48e067e59da48c3ac90b4e2228ebb4ecfd988375b40efe831339d9a493accd
 - repo_url: juspay/skills
   host: github.com
-  resolved_commit: f9acd37c52b0af1a80b53cd871ef04f81a20ed87
-  resolved_ref: nix-oss-cache
+  resolved_commit: 77c6a360a04a5a3a099ab5fea004b6ea65be919b
   virtual_path: skills/nix-oss-cache
   is_virtual: true
   package_type: claude_skill
@@ -77,8 +76,8 @@ dependencies:
   - .claude/skills/nix-oss-cache
   - .claude/skills/nix-oss-cache/SKILL.md
   deployed_file_hashes:
-    .claude/skills/nix-oss-cache/SKILL.md: sha256:6075a2e030cc7cebaaf0cf00878006f5f86d7e1b533be9b672fd1e0ab000acf9
-  content_hash: sha256:127f072350623c9004ea47c004ffae7acd67519a6abd442d6af1a7387cd28cb4
+    .claude/skills/nix-oss-cache/SKILL.md: sha256:bd5b9e9f646612337932b3bc2bffe0b7576dd96e8dc60741cd08b36ba728a393
+  content_hash: sha256:d11c43caf068a63ac55a04307b4f1d5c61d47d080170db956fbdb5dd1ca7d198
 - repo_url: srid/agency
   host: github.com
   resolved_commit: d274039c47ee8d0cc13e9d42d1bbf61e5f5b706f
