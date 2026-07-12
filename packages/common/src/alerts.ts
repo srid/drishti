@@ -49,7 +49,12 @@ export interface Alerts {
 /** The metrics folded, in a fixed order, so `applyHysteresis` iterates one list
  *  rather than three hand-copied blocks — and the SINGLE runtime source the wire
  *  schema's `z.enum` derives from, so a fourth metric touches one array, not two. */
-const METRIC_IDS = ["cpu", "mem", "disk"] as const satisfies readonly AlertId[];
+const METRIC_IDS = [
+  "cpu",
+  "mem",
+  "swap",
+  "disk",
+] as const satisfies readonly AlertId[];
 
 export const AlertsSchema = z.object({
   items: z.array(z.enum(METRIC_IDS)),

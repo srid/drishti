@@ -77,6 +77,8 @@ import {
   memPct,
   metricPercents,
   pctOf,
+  swapGb,
+  swapPct,
 } from "./metrics";
 import { isActiveNic } from "./nic";
 import { foldProcessesMessage } from "./processesStream";
@@ -133,6 +135,7 @@ type SortKey = (typeof SORT_KEYS)[number];
 const LABELS: Record<AlertId, string> = {
   cpu: "CPU",
   mem: "Memory",
+  swap: "Swap",
   disk: "Disk",
 };
 
@@ -302,6 +305,12 @@ const SERIES_META = {
     line: "text-indigo-500",
     swatch: "bg-indigo-500",
     chip: "text-indigo-600 dark:text-indigo-400",
+  },
+  swap: {
+    label: "swap",
+    line: "text-sky-500",
+    swatch: "bg-sky-500",
+    chip: "text-sky-600 dark:text-sky-400",
   },
   disk: {
     label: "disk",
@@ -861,6 +870,11 @@ function HostCard(props: { host: string; onSelect: () => void }) {
     const gb = memGb(sys());
     return `${gb.used}/${gb.total} GB · ${mem().toFixed(0)}%`;
   });
+  const swap = createMemo(() => swapPct(sys()));
+  const swapText = createMemo(() => {
+    const gb = swapGb(sys());
+    return `${gb.used}/${gb.total} GB · ${swap().toFixed(0)}%`;
+  });
   const disk = createMemo(() => diskPct(sys()));
   const diskText = createMemo(() => {
     const gb = diskGb(sys());
@@ -905,6 +919,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
           detail={`${cpuPct().toFixed(0)}% · ${coreCount()} cores`}
         />
         <CardMetric label="mem" pct={mem()} detail={memText()} />
+        <CardMetric label="swap" pct={swap()} detail={swapText()} />
         <CardMetric label="disk" pct={disk()} detail={diskText()} />
         <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400">
           <span>
@@ -1418,6 +1433,8 @@ function Header(props: {
   // memory readout at "0.0/0.0 GB (0%)" forever. Mirrors HostCard.
   const pct = createMemo(() => memPct(props.system));
   const gb = createMemo(() => memGb(props.system));
+  const swapP = createMemo(() => swapPct(props.system));
+  const swapG = createMemo(() => swapGb(props.system));
   const diskP = createMemo(() => diskPct(props.system));
   const diskG = createMemo(() => diskGb(props.system));
   return (
@@ -1465,6 +1482,11 @@ function Header(props: {
           <span class="ml-1 text-gray-400">
             ({pct().toFixed(0)}%)
           </span>
+        </span>
+        <span>
+          swap <span class="font-semibold">{swapG().used}</span>
+          <span class="text-gray-400">/{swapG().total} GB</span>
+          <span class="ml-1 text-gray-400">({swapP().toFixed(0)}%)</span>
         </span>
         <span>
           disk <span class="font-semibold">{diskG().used}</span>

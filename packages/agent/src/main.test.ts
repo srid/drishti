@@ -13,6 +13,8 @@ function gatedReader(processesGate: Promise<void>): ProcReader {
       loadAvg: [0, 0, 0],
       memUsed: 0,
       memTotal: 1,
+      swapUsed: 0,
+      swapTotal: 1,
       diskUsed: 0,
       diskTotal: 1,
       uptime: 0,

@@ -24,8 +24,8 @@ export function averageCoreUsage(usages: readonly number[]): number {
 /** `part` as a percentage of `whole`, guarded: 0 when `whole` is 0 (or negative)
  *  so callers never divide by zero — a freshly-connected host whose first `system`
  *  tick hasn't landed yet reports a 0 total. The single "share of a total" formula,
- *  used for host memory (`memPct`), root-fs (`diskPct`), and a process's share of
- *  host RAM in the detail panel. */
+ *  used for host memory (`memPct`), swap (`swapPct`), root-fs (`diskPct`), and a
+ *  process's share of host RAM in the detail panel. */
 export function pctOf(part: number, whole: number): number {
   return whole > 0 ? (100 * part) / whole : 0;
 }
@@ -33,6 +33,13 @@ export function pctOf(part: number, whole: number): number {
 /** Memory used as a percentage of total. */
 export function memPct(system: SystemInfo): number {
   return pctOf(system.memUsed, system.memTotal);
+}
+
+/** Swap used as a percentage of total — the memory twin of `memPct`, reusing
+ *  the same guarded `pctOf`. 0 when the host reports no swap total (swap
+ *  disabled, or an unknown platform), never NaN. */
+export function swapPct(system: SystemInfo): number {
+  return pctOf(system.swapUsed, system.swapTotal);
 }
 
 /** Root-filesystem used as a percentage of total — the disk twin of `memPct`,
@@ -46,7 +53,7 @@ export function diskPct(system: SystemInfo): number {
  *  exist." The alert fold (`AlertId`) and the history chart (`MetricKey` in
  *  `common/history.ts`) both key on these, so adding a metric touches this union
  *  and the projection below, not a parallel copy per tier. */
-export type MetricKey = "cpu" | "mem" | "disk";
+export type MetricKey = "cpu" | "mem" | "swap" | "disk";
 
 /** Project a live `system` snapshot to its per-metric percentages (0-100) — the
  *  ONE system→% projection, consumed by BOTH the parent's history sampler
@@ -57,6 +64,7 @@ export function metricPercents(system: SystemInfo): Record<MetricKey, number> {
   return {
     cpu: system.cpuPct,
     mem: memPct(system),
+    swap: swapPct(system),
     disk: diskPct(system),
   };
 }

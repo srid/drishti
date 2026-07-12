@@ -9,6 +9,7 @@ import {
   parseProcNetDev,
   parseProcStat,
   parsePsLine,
+  parseSwapusage,
   parseVmStat,
 } from "./proc";
 
@@ -248,18 +249,57 @@ describe("parseVmStat", () => {
 });
 
 describe("parseMeminfo", () => {
-  it("reads MemTotal/MemAvailable as bytes (kB × 1024)", () => {
+  it("reads MemTotal/MemAvailable + SwapTotal/SwapFree as bytes (kB × 1024)", () => {
     const sample = [
       "MemTotal:       16384000 kB",
       "MemFree:         1000000 kB",
       "MemAvailable:    8192000 kB",
       "Buffers:          500000 kB",
+      "SwapTotal:       2048000 kB",
+      "SwapFree:         512000 kB",
       "",
     ].join("\n");
     expect(parseMeminfo(sample)).toEqual({
       total: 16384000 * 1024,
       available: 8192000 * 1024,
+      swapTotal: 2048000 * 1024,
+      swapFree: 512000 * 1024,
     });
+  });
+
+  it("reports 0 swap when the host has none (fields absent)", () => {
+    const sample = ["MemTotal:  16384000 kB", "MemAvailable: 8192000 kB"].join(
+      "\n",
+    );
+    const mem = parseMeminfo(sample);
+    expect(mem.swapTotal).toBe(0);
+    expect(mem.swapFree).toBe(0);
+  });
+});
+
+describe("parseSwapusage", () => {
+  it("reads used/total from `sysctl -n vm.swapusage`, scaling M by 1024²", () => {
+    const sample =
+      "total = 2048.00M  used = 1234.50M  free = 813.50M  (encrypted)";
+    expect(parseSwapusage(sample)).toEqual({
+      swapUsed: Math.round(1234.5 * 1024 ** 2),
+      swapTotal: 2048 * 1024 ** 2,
+    });
+  });
+
+  it("scales a G suffix by 1024³", () => {
+    expect(parseSwapusage("total = 6.00G  used = 1.50G  free = 4.50G")).toEqual({
+      swapUsed: Math.round(1.5 * 1024 ** 3),
+      swapTotal: 6 * 1024 ** 3,
+    });
+  });
+
+  it("reads 0/0 for a swapless mac and empty output (never NaN)", () => {
+    expect(parseSwapusage("total = 0.00M  used = 0.00M  free = 0.00M")).toEqual({
+      swapUsed: 0,
+      swapTotal: 0,
+    });
+    expect(parseSwapusage("")).toEqual({ swapUsed: 0, swapTotal: 0 });
   });
 });
 

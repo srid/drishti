@@ -10,6 +10,7 @@ import {
 const frame = (over: Partial<MetricsFrame>): MetricsFrame => ({
   cpu: 0,
   mem: 0,
+  swap: 0,
   disk: 0,
   ...over,
 });
@@ -59,6 +60,16 @@ describe("applyHysteresis", () => {
 
     // Drop cpu below the clear edge; mem/disk remain raised.
     state = applyHysteresis(state, frame({ cpu: 20, mem: 88, disk: 82 }));
+    expect(state.items).toEqual(["mem", "disk"]);
+  });
+
+  it("raises swap and orders it between mem and disk", () => {
+    let state: Alerts = NO_ALERTS;
+    state = applyHysteresis(state, frame({ mem: 85, swap: 90, disk: 85 }));
+    expect(state.items).toEqual(["mem", "swap", "disk"]);
+
+    // Swap clears independently once it falls below the release edge.
+    state = applyHysteresis(state, frame({ mem: 85, swap: 65, disk: 85 }));
     expect(state.items).toEqual(["mem", "disk"]);
   });
 });
