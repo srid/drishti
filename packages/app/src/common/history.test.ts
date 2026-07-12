@@ -15,8 +15,8 @@ import {
   windowSlice,
 } from "./history";
 
-function sample(t: number, cpu = 0, mem = 0, disk = 0): MetricSample {
-  return { t, cpu, mem, disk };
+function sample(t: number, cpu = 0, mem = 0, disk = 0, swap = 0): MetricSample {
+  return { t, cpu, mem, swap, disk };
 }
 
 function sys(over: Partial<SystemInfo> = {}): SystemInfo {
@@ -26,6 +26,8 @@ function sys(over: Partial<SystemInfo> = {}): SystemInfo {
     coreCount: 0,
     memUsed: 0,
     memTotal: 0,
+    swapUsed: 0,
+    swapTotal: 0,
     diskUsed: 0,
     diskTotal: 0,
     uptime: 0,
@@ -74,18 +76,20 @@ describe("isHistoryWindowKey", () => {
 });
 
 describe("captureSample", () => {
-  it("reads cpu from system.cpuPct and computes memory + disk %", () => {
+  it("reads cpu from system.cpuPct and computes memory + swap + disk %", () => {
     const s = captureSample(
       5000,
       sys({
         cpuPct: 25,
         memUsed: 4e9,
         memTotal: 16e9,
+        swapUsed: 1e9,
+        swapTotal: 2e9,
         diskUsed: 75e9,
         diskTotal: 100e9,
       }),
     );
-    expect(s).toEqual({ t: 5000, cpu: 25, mem: 25, disk: 75 });
+    expect(s).toEqual({ t: 5000, cpu: 25, mem: 25, swap: 50, disk: 75 });
   });
 
   it("carries the agent's cpuPct through verbatim (no re-derivation)", () => {

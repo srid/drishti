@@ -13,7 +13,13 @@
 
 import type { SystemInfo } from "drishti-common";
 
-export { diskPct, memPct, metricPercents, pctOf } from "drishti-common/metrics";
+export {
+  diskPct,
+  memPct,
+  metricPercents,
+  pctOf,
+  swapPct,
+} from "drishti-common/metrics";
 
 /** Used / total memory in gigabytes, formatted to one decimal — the
  *  string form the header and the fleet cards both render. */
@@ -30,6 +36,15 @@ export function diskGb(system: SystemInfo): { used: string; total: string } {
   return {
     used: (system.diskUsed / 1e9).toFixed(1),
     total: (system.diskTotal / 1e9).toFixed(1),
+  };
+}
+
+/** Used / total swap in gigabytes, formatted to one decimal — the swap twin of
+ *  `memGb`, same decimal-GB convention. "0.0/0.0 GB" on a swapless host. */
+export function swapGb(system: SystemInfo): { used: string; total: string } {
+  return {
+    used: (system.swapUsed / 1e9).toFixed(1),
+    total: (system.swapTotal / 1e9).toFixed(1),
   };
 }
 

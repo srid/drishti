@@ -112,6 +112,13 @@ const SystemSchema = z.object({
   /** Bytes used / total — UI converts to GB. */
   memUsed: z.number(),
   memTotal: z.number(),
+  /** Swap bytes used / total. `swapUsed = SwapTotal − SwapFree` on linux
+   *  (`/proc/meminfo`); `total`/`used` from `sysctl vm.swapusage` on darwin.
+   *  Both 0 on a host with swap disabled (no swap device, or an unknown
+   *  platform) — `swapPct` guards the divide, so it reads as 0% rather than
+   *  NaN, the same "unavailable → 0" convention memory and disk use. */
+  swapUsed: z.number(),
+  swapTotal: z.number(),
   /** Bytes used / total on the **root filesystem** (`/`), via `statfs("/")`
    *  in the agent. `diskUsed = (blocks − bfree) × bsize`, the bytes-occupied
    *  parity of `memUsed = memTotal − available` — so `diskPct` reuses the
@@ -156,6 +163,8 @@ export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
   coreCount: 0,
   memUsed: 0,
   memTotal: 0,
+  swapUsed: 0,
+  swapTotal: 0,
   diskUsed: 0,
   diskTotal: 0,
   uptime: 0,
@@ -199,6 +208,8 @@ const MetricSampleSchema = z.object({
   cpu: z.number(),
   /** Memory used as a percentage of total at capture (0-100). */
   mem: z.number(),
+  /** Swap used as a percentage of total at capture (0-100). */
+  swap: z.number(),
   /** Root-filesystem used as a percentage of total at capture (0-100). */
   disk: z.number(),
 });

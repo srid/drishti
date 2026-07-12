@@ -9,6 +9,8 @@ import {
   memGb,
   memPct,
   pctOf,
+  swapGb,
+  swapPct,
 } from "./metrics";
 
 function sys(over: Partial<SystemInfo> = {}): SystemInfo {
@@ -18,6 +20,8 @@ function sys(over: Partial<SystemInfo> = {}): SystemInfo {
     coreCount: 0,
     memUsed: 0,
     memTotal: 0,
+    swapUsed: 0,
+    swapTotal: 0,
     diskUsed: 0,
     diskTotal: 0,
     uptime: 0,
@@ -53,6 +57,25 @@ describe("memGb", () => {
     expect(memGb(sys({ memUsed: 4.2e9, memTotal: 16e9 }))).toEqual({
       used: "4.2",
       total: "16.0",
+    });
+  });
+});
+
+describe("swapPct", () => {
+  it("computes used/total as a percentage", () => {
+    expect(swapPct(sys({ swapUsed: 1e9, swapTotal: 4e9 }))).toBe(25);
+  });
+
+  it("returns 0 when total is unknown (no divide-by-zero)", () => {
+    expect(swapPct(sys({ swapUsed: 1e9, swapTotal: 0 }))).toBe(0);
+  });
+});
+
+describe("swapGb", () => {
+  it("formats bytes to one-decimal gigabytes", () => {
+    expect(swapGb(sys({ swapUsed: 0.4e9, swapTotal: 2e9 }))).toEqual({
+      used: "0.4",
+      total: "2.0",
     });
   });
 });

@@ -324,6 +324,10 @@ function linuxReader(): ProcReader {
         loadAvg: [loadAvgs[0] ?? 0, loadAvgs[1] ?? 0, loadAvgs[2] ?? 0],
         memUsed: mem.total - mem.available,
         memTotal: mem.total,
+        // Swap parity of memUsed = total − available: used is what's committed
+        // to swap (SwapTotal − SwapFree). 0/0 when swap is off.
+        swapUsed: mem.swapTotal - mem.swapFree,
+        swapTotal: mem.swapTotal,
         ...disk,
         uptime: up,
         os: "linux",
@@ -390,6 +394,11 @@ function linuxReader(): ProcReader {
 interface MemInfo {
   total: number;
   available: number;
+  /** Swap total / free in bytes, from `SwapTotal` / `SwapFree`. Both 0 on a
+   *  host with no swap configured — the reader derives `swapUsed = total −
+   *  free`, the swap parity of `memUsed = total − available`. */
+  swapTotal: number;
+  swapFree: number;
 }
 
 export function parseMeminfo(s: string): MemInfo {
@@ -397,7 +406,12 @@ export function parseMeminfo(s: string): MemInfo {
     const m = s.match(new RegExp(`^${key}:\\s+(\\d+)\\s+kB`, "m"));
     return m && m[1] !== undefined ? Number(m[1]) * 1024 : 0;
   };
-  return { total: get("MemTotal"), available: get("MemAvailable") };
+  return {
+    total: get("MemTotal"),
+    available: get("MemAvailable"),
+    swapTotal: get("SwapTotal"),
+    swapFree: get("SwapFree"),
+  };
 }
 
 interface LinuxProcRaw {
@@ -638,6 +652,26 @@ export function parseVmStat(
   return { available: size * reclaimable };
 }
 
+/** Parse `sysctl -n vm.swapusage` (darwin) into used/total swap bytes — the
+ *  darwin source for the same `swapUsed`/`swapTotal` linux reads from
+ *  `/proc/meminfo`. The line is `total = 2048.00M  used = 1234.50M  free =
+ *  813.50M  (encrypted)`; sizes carry a `M`/`G` suffix that macOS scales by
+ *  1024 (MiB/GiB), so we multiply accordingly. Absent/garbage fields default to
+ *  0, so a host with swap disabled (`total = 0.00M`) reads as 0/0. Pure — no
+ *  subprocess — to stay unit-testable, mirroring parseVmStat / parseMeminfo. */
+export function parseSwapusage(stdout: string): {
+  swapUsed: number;
+  swapTotal: number;
+} {
+  const UNIT: Record<string, number> = { K: 1024, M: 1024 ** 2, G: 1024 ** 3 };
+  const bytesFor = (field: string): number => {
+    const m = stdout.match(new RegExp(`${field}\\s*=\\s*([\\d.]+)([KMG])`));
+    if (!m || m[1] === undefined || m[2] === undefined) return 0;
+    return Math.round(Number(m[1]) * (UNIT[m[2]] ?? 1));
+  };
+  return { swapUsed: bytesFor("used"), swapTotal: bytesFor("total") };
+}
+
 function darwinReader(): ProcReader {
   const readCpuCores = createCpuCoresReader();
   const readNetwork = createNetReader(async () => {
@@ -659,8 +693,12 @@ function darwinReader(): ProcReader {
       // the authoritative physical total — vm_stat reports only page
       // counts, so total and available come from the two distinct sources
       // and are assembled here.
-      const [{ stdout }, disk] = await Promise.all([
+      // swapusage is a separate sysctl from vm_stat (which reports swapin/out
+      // *counts*, not usage), so it rides alongside as its own subprocess.
+      // Degrade to empty on failure so the snapshot still resolves as 0/0 swap.
+      const [{ stdout }, swapOut, disk] = await Promise.all([
         exec("vm_stat"),
+        exec("sysctl -n vm.swapusage").catch(() => ({ stdout: "" })),
         readRootDiskUsage(),
       ]);
       const total = totalmem();
@@ -672,6 +710,7 @@ function darwinReader(): ProcReader {
         // negative usage.
         memUsed: Math.max(0, total - available),
         memTotal: total,
+        ...parseSwapusage(swapOut.stdout),
         ...disk,
         uptime: uptime(),
         os: "darwin",
@@ -737,6 +776,10 @@ function stubReader(): ProcReader {
         loadAvg: [la[0] ?? 0, la[1] ?? 0, la[2] ?? 0],
         memUsed: totalmem() - freemem(),
         memTotal: totalmem(),
+        // No universal swap source off linux/darwin — report 0/0 rather than
+        // guess; `swapPct` reads it as "unavailable".
+        swapUsed: 0,
+        swapTotal: 0,
         ...disk,
         uptime: uptime(),
         os: "unknown",
