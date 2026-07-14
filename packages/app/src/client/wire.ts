@@ -87,12 +87,13 @@ export const ws = conn.ws;
 //    `connection` rides `hostMap.entry(host)` (a pure point lens) or
 //    `hostMap.useEntry(activeHost)` (a reactive lens that re-keys on
 //    switch). The map is dialled over the `hosts` SIBLING of `conn`'s
-//    BRANDED transport handle: `connectSurfaceMap` slices `hosts` from it
-//    and recovers the parent `connectSurfaces` watchdog `live` by
+//    BRANDED transport handle: `connectSurfaceMap` slices the sibling named
+//    by the map itself (`hostSurfaceMap.name === "hosts"`, PR3 — no separate
+//    siblingKey arg) and recovers the parent `connectSurfaces` watchdog `live` by
 //    construction (the handle is unforgeable), so every chip floors on the
 //    real socket — there is no raw `{ live }` seam to pass a
 //    green-over-dead accessor through.
-export const hostMap = connectSurfaceMap(hostSurfaceMap, conn.transport, "hosts");
+export const hostMap = connectSurfaceMap(hostSurfaceMap, conn.transport);
 
 // The origin's ONE notification seam (kolu W5, `@kolu/surface-app/notify`) —
 // the last hop of cross-host attention. App-scoped alongside the host map it

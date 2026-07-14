@@ -45,6 +45,7 @@ export type HostFailure = z.infer<typeof hostFailureSchema>;
  *  (`serveHostMap`, in `admin-router.ts`) and client (`connectSurfaceMap`,
  *  in `wire.ts`) share this ONE definition, so the two sides can't drift. */
 export const hostSurfaceMap = defineSurfaceMap({
+  name: "hosts",
   key: HostKeySchema,
   entry: browserSurface,
   codec: hostKeyCodec,

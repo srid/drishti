@@ -157,11 +157,11 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // kill forward) that used to back a dedicated `?host=` `RPCHandler`, folded
   // into the map's one combined link instead of a separate socket.
   //
-  // `offsetOf: () => 0` is drishti's OWN honest offset story: the clock offset
-  // is no longer a type BOUND on the session (which is exactly what forced the
-  // clone — drishti's ssh sessions measure none), it's an INJECTED capability.
-  // drishti stamps every metric with the PARENT's own clock, never a
-  // host-stamped one, so there is no true offset being hidden behind the `0`.
+  // No `offsetOf` (PR3 removed it): the clock offset is no longer an injected
+  // capability NOR a type BOUND on the session — the framework measures it at
+  // admit off the reserved `system.clockNow` and rides it on the `connected`
+  // arm. drishti stamps every metric with the PARENT's own clock, so it simply
+  // reads whatever the framework measures; it fabricates no offset.
   //
   // `failureOf` is REQUIRED and TOTAL now (PR4 — no framework fallback cause).
   // drishti carries no domain taxonomy, so it classifies structurally on the
@@ -174,7 +174,6 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   const hostsMap = serveHostMap(hostSurfaceMap, opts.pool, {
     linkFor: (host, session) =>
       directLink(buildRouter({ host, session }).router as never),
-    offsetOf: () => 0,
     failureOf: (_host, _session, state) =>
       state.phase === "failed"
         ? { reason: (state as { error: string }).error }
@@ -188,19 +187,17 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // what extra keys the handlers object carries (confirmed live: the
   // `entries` subscription 404s). A SERVER-ONLY WIDENED contract is
   // required — mirroring kolu's own `servedContract` (`packages/server/src/
-  // surface.ts`), which composes the client contract + `padiHostMap.contract`
-  // the identical way. `hostSurfaceMap.contract` is `SurfaceMapContract`
-  // (structurally `{ surface: { <member>: contract, entries: contract } }`,
-  // the contract-level twin of `serveSurfaceMap`'s router shape) — spread its
-  // `.surface` in as the `hosts` key, never shared with the client (the
-  // client dials the map SEPARATELY via `connectSurfaceMap`, never through
-  // this widened contract).
+  // surface.ts`), which composes the client contract + `padiHostMap.surfaceContract`
+  // the identical way. `hostSurfaceMap.surfaceContract` (PR3) is the first-class
+  // folded fragment `{ <member>: contract, entries: contract }` the map exposes
+  // for exactly this splice — spliced in as the `hosts` key with no `as any`,
+  // never shared with the client (the client dials the map SEPARATELY via
+  // `connectSurfaceMap`, never through this widened contract).
   const servedAdminContract = oc.router({
     ...adminContract,
     surface: {
       ...adminContract.surface,
-      // biome-ignore lint/suspicious/noExplicitAny: SurfaceMapContract is AnyContractRouter; its `.surface` is the folded map fragment (mirrors kolu's identical cast in surface.ts).
-      hosts: (hostSurfaceMap.contract as any).surface,
+      hosts: hostSurfaceMap.surfaceContract,
     },
   });
 
