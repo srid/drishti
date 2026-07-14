@@ -54,7 +54,6 @@ import {
   type NetInterface,
   type Pid,
   type Process,
-  type ProcessesSnapshotMsg,
   type SystemInfo,
 } from "drishti-common";
 import {
@@ -81,7 +80,27 @@ import {
   swapPct,
 } from "./metrics";
 import { isActiveNic } from "./nic";
-import { foldProcessesMessage } from "./processesStream";
+import type { CollectionDeltasMsg } from "@kolu/surface/define";
+
+/** Fold one `processes` collection `deltas` frame into the accumulated process map
+ *  (SR5 — the collection's `deltas` verb replaced the hand-rolled `processesSnapshot`
+ *  stream; `CollectionDeltasMsg<Pid, Process>` is the same snapshot/delta shape the
+ *  old `foldProcessesMessage` folded, so the accumulator is byte-identical). A
+ *  `snapshot` replaces the whole set; a `delta` applies upserts then removes. */
+function foldProcessDeltas(
+  prev: Record<Pid, Process>,
+  msg: CollectionDeltasMsg<Pid, Process>,
+): Record<Pid, Process> {
+  if (msg.kind === "snapshot") {
+    const next: Record<Pid, Process> = {};
+    for (const [pid, value] of msg.entries) next[pid] = value;
+    return next;
+  }
+  const next = { ...prev };
+  for (const [pid, value] of msg.upserts) next[pid] = value;
+  for (const pid of msg.removes) delete next[pid];
+  return next;
+}
 import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
 import {
   CHART_MAX_POINTS,
@@ -118,6 +137,7 @@ import {
   adminClient,
   adminRpc,
   adminSocket,
+  hostCollections,
   hostMap,
   hostRpc,
   hostStreams,
@@ -1128,25 +1148,25 @@ function HostView(props: {
   const processesCtl = new AbortController();
   onCleanup(() => processesCtl.abort());
   const processesSub = createSubscription<
-    ProcessesSnapshotMsg,
+    CollectionDeltasMsg<Pid, Process>,
     Record<Pid, Process>
   >(
     () =>
-      // The bare `unenrolledStreamCall` is the right primitive HERE — it is
-      // the raw stream FACTORY feeding `createSubscription`, which owns its
-      // own pending/error (`processesSnapshot.get` is a surface PROCEDURE,
-      // not a `.streams` primitive, so the framework has no bound hook for
-      // it). There is no per-host `health()` fact left to join it to —
-      // every host's data rides the ONE admin transport now — so a dead
-      // process feed surfaces via this subscription's own reactive
-      // `error()`, read below.
+      // The bare `unenrolledStreamCall` is the right primitive HERE — the raw
+      // batched-deltas stream FACTORY feeding `createSubscription`, which owns
+      // its own pending/error. `processes` is a `deltas`-declaring collection
+      // (SR5 — one protocol across the wire, replacing the old `processesSnapshot`
+      // stream), and `unenrolledDeltas` is its DELIBERATELY un-enrolled reach: there
+      // is no per-host `health()` fact to join it to — every host's data rides the
+      // ONE admin transport now — so a dead process feed surfaces via this
+      // subscription's own reactive `error()`, read below (never a gate flicker).
       unenrolledStreamCall(
-        hostStreams(props.host).processesSnapshot.unenrolled,
-        {},
+        hostCollections(props.host).processes.unenrolledDeltas,
+        undefined,
         { signal: processesCtl.signal },
       ),
     {
-      reduce: foldProcessesMessage,
+      reduce: foldProcessDeltas,
       initial: {},
       signal: processesCtl.signal,
     },

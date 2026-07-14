@@ -5,7 +5,7 @@
  * `connectSurface`; that's DELETED (`@kolu/surface-map` adoption). Now the
  * admin socket — drishti's control plane (host set + the surface-app
  * sibling) — is the ONLY connection. Every host's own data (`system` /
- * `cpuCores` / `processesSnapshot` / `connection` / …) rides the SAME
+ * `cpuCores` / `processes` / `connection` / …) rides the SAME
  * transport, key-folded through the `hosts` host MAP
  * (`../common/hostMap.ts`): `connectSurfaceMap(hostSurfaceMap,
  * conn.transport, "hosts")` slices the map's link off the admin socket's
@@ -131,11 +131,22 @@ export function hostRpc(host: string) {
 
 /** The per-host STREAM face — for the deliberately UN-ENROLLED stream reaches
  *  (`hostStreams(host).<key>.unenrolled`, fed to `unenrolledStreamCall`): the
- *  `processesSnapshot` / `metricHistory` mirror streams App consumes imperatively.
+ *  `metricHistory` mirror stream App consumes imperatively (the whole-process-set
+ *  protocol is the `processes` collection's `deltas` verb now, not a stream, SR5).
  *  Typed from the declaration, no cast — the streams' dual of `hostRpc`'s
  *  procedures face. */
 export function hostStreams(host: string) {
   return hostMap.entry(host).streams;
+}
+
+/** The per-host COLLECTION face — for the deliberately UN-ENROLLED deltas reach
+ *  (`hostCollections(host).processes.unenrolledDeltas`, fed to `unenrolledStreamCall`):
+ *  the process table watches the whole set OUTSIDE any per-host health fact (there is
+ *  none — every host's data rides the ONE admin transport), so a dead feed surfaces
+ *  via its own subscription's `error()`, not a gate flicker (kolu #1591, the deltas
+ *  form, SR5). Typed from the declaration, no cast. */
+export function hostCollections(host: string) {
+  return hostMap.entry(host).collections;
 }
 
 /** Get the admin surface client — drishti's OWN `admin` surface, used for
