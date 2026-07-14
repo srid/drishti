@@ -8,12 +8,19 @@ import {
   statusTitle,
 } from "./entryStatusTone";
 
-const CONNECTED: EntryState = { kind: "connected", clockOffset: 0 };
-const WARMING: EntryState = { kind: "warming" };
+// PR3: every published EntryStatus arm carries an opaque `membershipId` — a fixture
+// uses `""` since these tone/label helpers read `.kind`/`.failure`/`.clockOffset` only.
+const CONNECTED: EntryState = {
+  kind: "connected",
+  membershipId: "",
+  clockOffset: 0,
+};
+const WARMING: EntryState = { kind: "warming", membershipId: "" };
 // PR4: the failed arm carries a schema-valid domain `failure` value (drishti's is
 // `{ reason }`), not a bare `reason`/`cause` pair — read as `.failure.reason`.
 const FAILED: EntryState<{ reason: string }> = {
   kind: "failed",
+  membershipId: "",
   failure: { reason: "connection refused" },
 };
 const NOT_A_MEMBER: EntryState = { kind: "not-a-member" };

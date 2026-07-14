@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "master",
+      "branch": "surface-pr3-membership",
       "submodules": false,
-      "revision": "4bc19abb07be3be49539b62695581b498ef9340c",
-      "url": "https://github.com/juspay/kolu/archive/4bc19abb07be3be49539b62695581b498ef9340c.tar.gz",
-      "hash": "sha256-PoDdaUCccbEdvMzwagiTIXWqTDDBbk36c8FgsKj1IHE="
+      "revision": "0b97dc1973059b3ca1440dfcb5b459c2414b1699",
+      "url": "https://github.com/juspay/kolu/archive/0b97dc1973059b3ca1440dfcb5b459c2414b1699.tar.gz",
+      "hash": "sha256-DG9MyS5aS+lBaCRezucvVAIzYmvb2ntQ9648zeeu01k="
     },
     "nixpkgs": {
       "type": "Git",
