@@ -36,6 +36,7 @@
 import {
   type CellStore,
   type Channel,
+  extendSurface,
   implementSurface,
   inMemoryChannel,
   inMemoryStore,
@@ -48,7 +49,11 @@ import {
   type Session,
   type SshProv,
 } from "@kolu/surface-remote";
-import { browserSurface, type ConnectionInfo } from "drishti-common/browser";
+import {
+  type ConnectionInfo,
+  historySurface,
+  mirroredAgentSurface,
+} from "drishti-common/browser";
 import {
   type CoreId,
   type CpuCore,
@@ -59,7 +64,6 @@ import {
   type NetInterface,
   type Pid,
   type Process,
-  type ProcessesSnapshotMsg,
   type SystemInfo,
   surface,
 } from "drishti-common";
@@ -105,12 +109,10 @@ export function buildRouter(opts: BuildRouterOptions) {
   const processCache = new Map<Pid, Process>();
   const coreCache = new Map<CoreId, CpuCore>();
   const netCache = new Map<IfaceName, NetInterface>();
-  // Local snapshot bus — every msg the parent receives from the
-  // agent's snapshot stream is also re-published here so the parent's
-  // own `processesSnapshot` source (consumed by the browser) can
-  // forward the same data without re-subscribing to the agent.
-  const browserSnapshotBus: Channel<ProcessesSnapshotMsg> =
-    inMemoryChannel<ProcessesSnapshotMsg>();
+  // No browser snapshot bus: the whole-process-set protocol is the `processes`
+  // collection's `deltas` verb now. The pump mirrors the agent's process frames
+  // into `processCache` through the collection sink, and the framework re-serves
+  // that collection's coalesced deltas to the browser (SR5 — one protocol).
   // Parent-owned metric-history ring. Sampled once per agent poll tick (see
   // `recordSample`), bounded to the widest selectable window, and held for
   // the life of this session — independent of any browser. A new browser
@@ -136,7 +138,7 @@ export function buildRouter(opts: BuildRouterOptions) {
   // base primitives are forwarded/folded from the agent; `connection` is the
   // seeded local store the session pump writes — the agent's surface stays
   // connection-free.
-  const runtime = implementSurface(browserSurface, {
+  const runtime = implementSurface(mirroredAgentSurface, {
     cells: {
       system: { store: systemStore },
       alerts: { store: alertsStore },
@@ -180,37 +182,10 @@ export function buildRouter(opts: BuildRouterOptions) {
         },
       },
     },
-    streams: {
-      // Browser-facing snapshot stream — yields the parent's current
-      // process cache on subscribe (synchronous snapshot from local
-      // state, no agent round-trip needed) then forwards every delta
-      // / snapshot the agent publishes via the parent's local bus.
-      processesSnapshot: {
-        source: async function* (_input, signal) {
-          yield {
-            kind: "snapshot",
-            entries: [...processCache.entries()],
-          } satisfies ProcessesSnapshotMsg;
-          for await (const msg of browserSnapshotBus.subscribe(signal)) {
-            yield msg;
-          }
-        },
-      },
-      // Browser-facing metric-history stream — yields the parent's current
-      // ring on subscribe (the full history, so a reload/tab-switch replays
-      // it), then forwards each per-tick delta the sampler publishes.
-      metricHistory: {
-        source: async function* (_input, signal) {
-          yield {
-            kind: "snapshot",
-            samples: [...historyRing],
-          } satisfies MetricHistoryMsg;
-          for await (const msg of historyBus.subscribe(signal)) {
-            yield msg;
-          }
-        },
-      },
-    },
+    // No `streams` on the mirrored surface: `processes` is served to the browser as
+    // a `deltas` collection (framework-coalesced, folded from the agent by the pump),
+    // and `metricHistory` is a PARENT-LOCAL member composed on via `extendSurface`
+    // below (its own `historyRuntime`), not a member of the mirrored agent surface.
     // The browser-facing `kill` is a pure FORWARD: the parent owns no pids, so it
     // relays to the agent through the live mirror's procedure stub (the R7 proof).
     // No live link → an honest `{ ok: false }`, surfaced to the user; a stub call
@@ -272,7 +247,6 @@ export function buildRouter(opts: BuildRouterOptions) {
     // remote) is where a stuck reconnect lives.
     makeSink: ({ seq }) => {
       let firstSystemFrame = true;
-      let frames = 0;
       const issuedAt = Date.now();
       return {
         cells: {
@@ -308,6 +282,17 @@ export function buildRouter(opts: BuildRouterOptions) {
           // fresh mirror this spawn's carry-over keys; its first `keys` frame
           // prunes any the snapshot omits — no stale row, no empty flash
           // (kolu #1661; mirrors surface-remote's reServeSurface).
+          // `processes` rides the SAME collection-sink path (SR5). Because it
+          // declares the `deltas` verb, the mirror folds the agent's ONE coalesced
+          // snapshot-then-delta stream into `runtime.ctx.collections.processes`
+          // (which writes `processCache` AND re-serves the browser its own coalesced
+          // deltas) — no parallel stream fold, no `applySnapshotMessage` reducer.
+          processes: {
+            upsert: (key, value) =>
+              runtime.ctx.collections.processes.upsert(key, value),
+            remove: (key) => runtime.ctx.collections.processes.remove(key),
+            initialKeys: () => new Set(processCache.keys()),
+          },
           cpuCores: {
             upsert: (key, value) =>
               runtime.ctx.collections.cpuCores.upsert(key, value),
@@ -320,22 +305,6 @@ export function buildRouter(opts: BuildRouterOptions) {
             remove: (key) =>
               runtime.ctx.collections.networkInterfaces.remove(key),
             initialKeys: () => new Set(netCache.keys()),
-          },
-        },
-        streams: {
-          // Bulk discriminated-union stream — ONE long-lived stream regardless
-          // of process count (vs. keys-stream + N per-key subscribes, a drip
-          // over a high-latency ssh link). Each frame is a full keyed-snapshot
-          // (first, or on reconnect) or a per-tick delta; `applySnapshotMessage`
-          // applies both, and the parent re-publishes the frame verbatim to its
-          // browser bus.
-          processesSnapshot: {
-            input: {},
-            onFrame: (msg) => {
-              frames += 1;
-              applySnapshotMessage(log, msg, processCache, runtime, frames);
-              browserSnapshotBus.publish(msg);
-            },
           },
         },
       };
@@ -352,10 +321,46 @@ export function buildRouter(opts: BuildRouterOptions) {
     log,
   });
 
-  // `implementSurface` returns a supervised runtime whose `.router` is the
-  // FINAL top-level router — hand it straight to RPCHandler, no re-wrap.
-  const router = runtime.router;
-  return { router, session };
+  // `metricHistory` is PARENT-LOCAL policy — retention lives here, not on the agent
+  // (whose inert stub is gone, SR5). Serve it from its OWN runtime over the parent's
+  // ring/bus, then compose it FLAT onto the mirrored agent surface via `extendSurface`:
+  // the browser sees ONE surface with `metricHistory` beside the mirrored members, at
+  // byte-identical paths, with post-commit observation (the sampler feeds the ring off
+  // each mirrored `system` tick) instead of a second mirror.
+  // `historySurface` is the shared declaration (drishti-common/browser) so the
+  // browser types off the same combined surface the parent serves here.
+  const historyRuntime = implementSurface(historySurface, {
+    streams: {
+      metricHistory: {
+        // Yield the parent's current ring on subscribe (a reload / tab-switch
+        // replays the whole history), then forward each per-tick delta.
+        source: async function* (_input, signal) {
+          yield {
+            kind: "snapshot",
+            samples: [...historyRing],
+          } satisfies MetricHistoryMsg;
+          for await (const msg of historyBus.subscribe(signal)) {
+            yield msg;
+          }
+        },
+      },
+    },
+  });
+  const composed = extendSurface(
+    {
+      surface: mirroredAgentSurface,
+      router: runtime.router,
+      done: runtime.done,
+      close: runtime.close,
+    },
+    {
+      surface: historySurface,
+      router: historyRuntime.router,
+      done: historyRuntime.done,
+      close: historyRuntime.close,
+    },
+  );
+  return { router: composed.router, session };
 }
 
 /** The write-side methods the pump sink is allowed to touch — a
@@ -390,43 +395,8 @@ type FragmentCtx = {
   };
 };
 
-/** Apply one `processesSnapshot` frame to the parent's local
- *  collection — full reset on `snapshot`, incremental delta on
- *  `delta`. Reads `processCache` directly for the live-PID set; the
- *  framework's `upsert`/`remove` keep the cache and the per-key
- *  channels in lockstep, so there's no separate shadow set to
- *  maintain here. */
-function applySnapshotMessage(
-  log: Logger,
-  msg: ProcessesSnapshotMsg,
-  processCache: Map<Pid, Process>,
-  runtime: FragmentCtx,
-  frameNumber: number,
-): void {
-  if (msg.kind === "snapshot") {
-    const next = new Set(msg.entries.map(([pid]) => pid));
-    for (const pid of [...processCache.keys()]) {
-      if (!next.has(pid)) runtime.ctx.collections.processes.remove(pid);
-    }
-    for (const [pid, value] of msg.entries) {
-      runtime.ctx.collections.processes.upsert(pid, value);
-    }
-    log(
-      `processes: snapshot frame #${frameNumber} — ${msg.entries.length} PIDs (cold-start or reconnect)`,
-    );
-    return;
-  }
-  for (const [pid, value] of msg.upserts) {
-    runtime.ctx.collections.processes.upsert(pid, value);
-  }
-  for (const pid of msg.removes) {
-    runtime.ctx.collections.processes.remove(pid);
-  }
-  // Per-tick delta frames are intentionally NOT logged — the agent
-  // polls every 2s, so steady-state deltas would dominate stderr. The
-  // snapshot frame above and the stream-close/error logs in
-  // pumpProcessesSnapshot are the load-bearing signals; if you need
-  // per-tick visibility, attach a debugger or temporarily re-enable
-  // the line below.
-  // log(`processes: delta frame #${frameNumber} — upsert=… remove=… total=…`);
-}
+// The parent-side `applySnapshotMessage` reducer is gone (SR5): the mirror folds the
+// `processes` collection's `deltas` stream straight into
+// `runtime.ctx.collections.processes` via the pump's collection sink, with the same
+// snapshot-reconcile + carry-over pruning the framework already owns — one process
+// protocol, no hand-rolled parent reducer.

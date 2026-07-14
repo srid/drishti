@@ -173,35 +173,17 @@ export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
   pollIntervalMs: 0,
 };
 
-/** Snapshot-then-delta `Stream<>` shape — the bulk-friendly counterpart
- *  to the per-key `processes` collection. With 600+ PIDs, the
- *  collection's N+1 subscribes drip a row per round-trip over a
- *  high-latency `ssh` link; this stream yields the entire keyed map
- *  in one frame (snapshot) then per-tick delta sets. The UI consumes
- *  this for the htop table; the per-key `processes` collection stays
- *  on the surface for "watch one specific PID" use cases.
- *
- *  Exported so the browser-side consumer's hermetic test can stand up a
- *  minimal surface carrying this exact wire schema (see
- *  `app/src/client/processesStream.test.ts`). */
-export const ProcessesSnapshotMessage = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("snapshot"),
-    entries: z.array(z.tuple([PidSchema, ProcessSchema])),
-  }),
-  z.object({
-    kind: z.literal("delta"),
-    upserts: z.array(z.tuple([PidSchema, ProcessSchema])),
-    removes: z.array(PidSchema),
-  }),
-]);
+// The bulk snapshot-then-delta wire schema for the whole process set is now the
+// framework's own — the `processes` collection declares the `deltas` verb (above),
+// so `@kolu/surface` serves ONE coalesced snapshot-then-delta stream for it (SR5).
+// The hand-rolled `ProcessesSnapshotMessage` parallel stream is gone.
 
 /** One point in a host's metric history — CPU% and memory% at a wall-clock
  *  instant. Captured by the **parent** on each agent poll tick (the parent
  *  is the only tier that observes every tick regardless of which browser
  *  tabs are open) and retained in an in-memory ring for the life of the
  *  parent process. */
-const MetricSampleSchema = z.object({
+export const MetricSampleSchema = z.object({
   /** Wall-clock capture time, epoch ms. */
   t: z.number(),
   /** Mean busy-percentage across all cores at capture (0-100). */
@@ -220,7 +202,7 @@ const MetricSampleSchema = z.object({
  *  parent's entire ring in one `snapshot` frame, then one `delta` per poll
  *  tick. This is why history survives reloads and tab switches: the state
  *  lives in the parent, and every subscriber is re-seeded from it. */
-const MetricHistoryMessage = z.discriminatedUnion("kind", [
+export const MetricHistoryMessage = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("snapshot"),
     samples: z.array(MetricSampleSchema),
@@ -257,9 +239,16 @@ export const surface = defineSurface({
     // it and adds the cell, writing it off `session.onState` (kolu #1568).
   },
   collections: {
+    /** Per-process facts — keyed by pid. The host view renders the whole htop
+     *  table (every process ticks every poll), so it opts into batched `deltas`:
+     *  the agent serves one coalesced snapshot-then-delta stream for the whole
+     *  collection instead of a `keys`+per-key-`get` fan-out, and the parent mirrors
+     *  it through the framework's one wire protocol (SR5 — one protocol across the
+     *  wire). The per-key `get` path stays for "watch one specific pid". */
     processes: {
       keySchema: PidSchema,
       schema: ProcessSchema,
+      verbs: ["keys", "get", "upsert", "delete", "deltas"],
     },
     /** Per-core CPU usage — small-N (typical 4-32) `Collection<K,T>`.
      *  The host drill-in renders one bar per core, so per-key reactive identity
@@ -282,19 +271,6 @@ export const surface = defineSurface({
       keySchema: z.string(),
       schema: NetInterfaceSchema,
       verbs: ["keys", "get", "upsert", "delete", "deltas"],
-    },
-  },
-  streams: {
-    processesSnapshot: {
-      inputSchema: z.object({}),
-      outputSchema: ProcessesSnapshotMessage,
-    },
-    /** Per-host CPU%/memory% history. Parent-owned, in-memory, bounded —
-     *  see `MetricHistoryMessage`. The agent serves an inert empty stub
-     *  (it keeps no history); the parent is the authoritative source. */
-    metricHistory: {
-      inputSchema: z.object({}),
-      outputSchema: MetricHistoryMessage,
     },
   },
   procedures: {
@@ -328,6 +304,8 @@ export type SystemInfo = SF["cells"]["system"]["Value"];
 // `ConnectionInfo` / `ConnectionState` / `FailureCause` are re-exported from the
 // app-only `drishti-common/browser` subpath (./browser.ts), NOT here — see the
 // agent-safety note near the top of this file.
-export type ProcessesSnapshotMsg = SF["streams"]["processesSnapshot"]["Output"];
 export type MetricSample = z.infer<typeof MetricSampleSchema>;
-export type MetricHistoryMsg = SF["streams"]["metricHistory"]["Output"];
+// `metricHistory` is a PARENT-LOCAL member now (composed onto the mirrored agent
+// surface via `extendSurface`), so its message type comes from the schema, not the
+// shared `SF` surface it left.
+export type MetricHistoryMsg = z.infer<typeof MetricHistoryMessage>;

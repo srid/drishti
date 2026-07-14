@@ -22,8 +22,22 @@ describe("surface mutation surface is exactly process.kill", () => {
   it("still exposes the read-only primitives", () => {
     expect(Object.keys(surface.spec.cells ?? {})).toContain("system");
     expect(Object.keys(surface.spec.collections ?? {})).toContain("processes");
-    expect(Object.keys(surface.spec.streams ?? {})).toContain(
-      "processesSnapshot",
-    );
+  });
+
+  it("serves the whole process set as the `processes` `deltas` collection, not a separate stream (SR5)", () => {
+    // One protocol across the wire: the `processes` collection declares the `deltas`
+    // verb (the framework serves one coalesced snapshot-then-delta stream), replacing
+    // the hand-rolled `processesSnapshot` stream. `metricHistory` moved to
+    // parent-local policy, so neither is a member of the shared agent surface.
+    const processes = surface.spec.collections?.processes as
+      | { verbs?: readonly string[] }
+      | undefined;
+    expect(processes?.verbs).toContain("deltas");
+    // The spec type carries no `streams` key at all now — that IS the proof; the
+    // runtime read confirms it (cast because the property is absent from the type).
+    const streams =
+      (surface.spec as { streams?: Record<string, unknown> }).streams ?? {};
+    expect(Object.keys(streams)).not.toContain("processesSnapshot");
+    expect(Object.keys(streams)).not.toContain("metricHistory");
   });
 });
