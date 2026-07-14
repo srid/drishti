@@ -34,11 +34,19 @@ const hostKeyCodec: KeyCodec<string> = {
   decode: (s) => s,
 };
 
+/** Drishti's DOMAIN failure — a plain human `reason` (a failed host chip shows
+ *  `failed: <reason>` and nothing more; drishti carries no cause taxonomy, unlike
+ *  kolu's padi). The `failed` arm can only carry a value this schema validates —
+ *  there is no fabricated fallback cause (the framework's PR4 invariant). */
+export const hostFailureSchema = z.object({ reason: z.string() });
+export type HostFailure = z.infer<typeof hostFailureSchema>;
+
 /** The map of every configured host's `browserSurface`. Server
  *  (`serveHostMap`, in `admin-router.ts`) and client (`connectSurfaceMap`,
  *  in `wire.ts`) share this ONE definition, so the two sides can't drift. */
-export const hostSurfaceMap = defineSurfaceMap(
-  HostKeySchema,
-  browserSurface,
-  hostKeyCodec,
-);
+export const hostSurfaceMap = defineSurfaceMap({
+  key: HostKeySchema,
+  entry: browserSurface,
+  codec: hostKeyCodec,
+  failure: hostFailureSchema,
+});

@@ -5,10 +5,11 @@
  * reads `entry.state()` and turns it into a connection-dot tone / status
  * label, mirroring kolu's own `hostChipTone.ts`. Every host indicator (the
  * tab chip, the fleet card) goes through `dotClass`/`statusLabel` here, so
- * absorbing a future wire change to `EntryStatus` — e.g. a typed
- * `failed.cause` discriminant (`EntryStatus<Cause extends string =
- * string>`, pending upstream review) — is a ONE-FILE edit, not a scatter
- * across every component that paints a dot.
+ * absorbing a wire change to `EntryStatus` is a ONE-FILE edit, not a scatter
+ * across every component that paints a dot. PR4 landed exactly such a change:
+ * the `failed` arm now carries a schema-valid domain `failure` value
+ * (`EntryStatus<Failure>`), read here as `status.failure.reason` — drishti's
+ * `HostFailure` is just `{ reason }`, since it paints a cause-blind dot.
  *
  * `EntryStatus` is the map's FACT, floored on real transport liveness by
  * `connectSurfaceMap` (see its README) — it replaces the old per-host
@@ -63,14 +64,14 @@ export function statusLabel(status: EntryState): string {
 
 /** A one-line human note for the dot's `title` — the failure reason when
  *  failed. */
-export function statusTitle(status: EntryState): string {
+export function statusTitle(status: EntryState<{ reason: string }>): string {
   switch (status.kind) {
     case "connected":
       return "connected";
     case "warming":
       return "connecting…";
     case "failed":
-      return `failed: ${status.reason}`;
+      return `failed: ${status.failure.reason}`;
     default:
       return "not a member";
   }

@@ -10,10 +10,11 @@ import {
 
 const CONNECTED: EntryState = { kind: "connected", clockOffset: 0 };
 const WARMING: EntryState = { kind: "warming" };
-const FAILED: EntryState = {
+// PR4: the failed arm carries a schema-valid domain `failure` value (drishti's is
+// `{ reason }`), not a bare `reason`/`cause` pair — read as `.failure.reason`.
+const FAILED: EntryState<{ reason: string }> = {
   kind: "failed",
-  reason: "connection refused",
-  cause: "other",
+  failure: { reason: "connection refused" },
 };
 const NOT_A_MEMBER: EntryState = { kind: "not-a-member" };
 

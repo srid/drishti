@@ -23,8 +23,11 @@ import type { EntryState } from "@kolu/surface-map";
 import type { Accessor } from "solid-js";
 import { dotClass, statusPending, statusTitle } from "./entryStatusTone";
 
+// PR4: the map's `failed` arm carries a schema-valid domain `failure` value;
+// `statusTitle` reads its human `reason`, so the state this dot paints from must
+// carry at least `{ reason }` on that arm (drishti's `HostFailure` satisfies it).
 export function HostDot(props: {
-  state: Accessor<EntryState>;
+  state: Accessor<EntryState<{ reason: string }>>;
   class?: string;
 }) {
   return (
