@@ -23,15 +23,13 @@
  * green host-map dot either.
  */
 
-import type { ContractRouterClient } from "@orpc/contract";
 import { createProcessIdEcho } from "@kolu/surface-app/connect";
 import { createNotify } from "@kolu/surface-app/notify";
 import { connectSurfaces } from "@kolu/surface-app/solid";
 import { connectSurfaceMap } from "@kolu/surface-map/client";
-import { adminContract, adminSurfaces } from "../common/admin-surface";
+import { adminSurfaces } from "../common/admin-surface";
 import { ADMIN_HOST_SENTINEL } from "../common/host";
 import { hostSurfaceMap } from "../common/hostMap";
-import type { browserSurface } from "drishti-common/browser";
 
 // ONE `pid` echo for the ONE socket. The parent mints a fresh `processId`
 // per boot; the echo threads the last-known one back as the `pid` query
@@ -121,25 +119,14 @@ export const onHostMembershipError = (err: Error): void => {
   console.error("host membership subscription failed", err);
 };
 
-// `connectSurfaceMap` types `entry(key).rpc` as `unknown` at the generic map
-// boundary (it sidesteps a TS2590 "union too complex" expansion under a
-// generic `ES`) — recover the CONCRETE contract here, the framework's
-// blessed "cast `.rpc` to your concrete contract once at the wire boundary".
-export type HostRpc = ContractRouterClient<typeof browserSurface.contract>;
-
-/** The per-host PROCEDURE client — `hostRpc(host).surface.process.kill(...)`
- *  resolves at the map's key-folded wire path. Replaces the old
- *  `surfaceForHost(host).rpc`. */
-export function hostRpc(host: string): HostRpc {
-  return hostMap.entry(host).rpc as HostRpc;
+/** The per-host PROCEDURE client — `hostRpc(host).process.kill(...)` resolves at
+ *  the map's key-folded wire path. The entry's bound `procedures` face, typed
+ *  straight from `browserSurface`'s declaration — NO cast (the narrow `procedures`
+ *  map dodges the TS2590 that the raw `entry.rpc` contract client trips on a generic
+ *  map). Replaces the old `surfaceForHost(host).rpc`. */
+export function hostRpc(host: string) {
+  return hostMap.entry(host).procedures;
 }
-
-// The admin scoped client's `.rpc` is the slice `{ surface: link.surface.admin }`,
-// typed `any` by `connectSurfaces`; recover the admin router type so the
-// imperative host-lifecycle procedures stay typed.
-type AdminScopedRpc = {
-  surface: ContractRouterClient<typeof adminContract>["surface"]["admin"];
-};
 
 /** Get the admin surface client — drishti's OWN `admin` surface, used for
  *  its host-lifecycle procedures. */
@@ -147,11 +134,11 @@ export function adminClient() {
   return conn.clients.admin;
 }
 
-/** The admin surface's PROCEDURE namespace. `adminRpc().hosts.add(...)` /
+/** The admin surface's bound PROCEDURES. `adminRpc().hosts.add(...)` /
  *  `.remove(...)` / `.reconnect(...)` / `.recheck(...)` resolve at
- *  `/surface/admin/hosts/<verb>`. */
+ *  `/surface/admin/hosts/<verb>` — typed from the declaration, no cast. */
 export function adminRpc() {
-  return (conn.clients.admin.rpc as AdminScopedRpc).surface;
+  return conn.clients.admin.procedures;
 }
 
 /** The surface-app client over the admin transport — the global
