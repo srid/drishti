@@ -120,6 +120,7 @@ import {
   adminSocket,
   hostMap,
   hostRpc,
+  hostStreams,
   notify,
   onHostMembershipError,
   rememberServerProcessId,
@@ -235,7 +236,7 @@ function subscribeMetricHistory(host: string): {
   const sub = createSubscription<MetricHistoryMsg, MetricSample[]>(
     () =>
       unenrolledStreamCall(
-        hostRpc(host).surface.metricHistory.get,
+        hostStreams(host).metricHistory.unenrolled,
         {},
         { signal: ctl.signal },
       ),
@@ -1140,7 +1141,7 @@ function HostView(props: {
       // process feed surfaces via this subscription's own reactive
       // `error()`, read below.
       unenrolledStreamCall(
-        hostRpc(props.host).surface.processesSnapshot.get,
+        hostStreams(props.host).processesSnapshot.unenrolled,
         {},
         { signal: processesCtl.signal },
       ),
@@ -1378,7 +1379,7 @@ function HostView(props: {
                   : null
               }
               onKill={(signal) =>
-                hostRpc(props.host).surface.process.kill({
+                hostRpc(props.host).process.kill({
                   pid: s().pid,
                   signal,
                 })
