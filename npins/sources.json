@@ -9,9 +9,9 @@
       },
       "branch": "surface-pr3-membership",
       "submodules": false,
-      "revision": "61640b0557757dd3bb7ee7b3a78459080f609bf1",
-      "url": "https://github.com/juspay/kolu/archive/61640b0557757dd3bb7ee7b3a78459080f609bf1.tar.gz",
-      "hash": "sha256-RYuTz/ox/LRr64aF2aKCNBSGIrE3joKptlelchQsC6U="
+      "revision": "906272508d2e66abf9b3eddb6a864a4f00bedca2",
+      "url": "https://github.com/juspay/kolu/archive/906272508d2e66abf9b3eddb6a864a4f00bedca2.tar.gz",
+      "hash": "sha256-aERn5z3V9xM//BAG/Ay8DoLvH559aMn42X6t58zMDZE="
     },
     "nixpkgs": {
       "type": "Git",

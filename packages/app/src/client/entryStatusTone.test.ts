@@ -1,4 +1,5 @@
 import type { EntryState } from "@kolu/surface-map";
+import { testMembershipId } from "@kolu/surface-map/testing";
 import { describe, expect, it } from "bun:test";
 import {
   dotClass,
@@ -8,19 +9,24 @@ import {
   statusTitle,
 } from "./entryStatusTone";
 
-// PR3: every published EntryStatus arm carries an opaque `membershipId` — a fixture
-// uses `""` since these tone/label helpers read `.kind`/`.failure`/`.clockOffset` only.
+// PR3: every published EntryStatus arm carries an opaque `membershipId` (a branded
+// `MembershipId` — a bare `""` is a type error). These tone/label helpers read
+// `.kind`/`.failure`/`.clockOffset` only, so a fixture mints one through the
+// sanctioned `testMembershipId()` helper, never a literal.
 const CONNECTED: EntryState = {
   kind: "connected",
-  membershipId: "",
+  membershipId: testMembershipId(),
   clockOffset: 0,
 };
-const WARMING: EntryState = { kind: "warming", membershipId: "" };
+const WARMING: EntryState = {
+  kind: "warming",
+  membershipId: testMembershipId(),
+};
 // PR4: the failed arm carries a schema-valid domain `failure` value (drishti's is
 // `{ reason }`), not a bare `reason`/`cause` pair — read as `.failure.reason`.
 const FAILED: EntryState<{ reason: string }> = {
   kind: "failed",
-  membershipId: "",
+  membershipId: testMembershipId(),
   failure: { reason: "connection refused" },
 };
 const NOT_A_MEMBER: EntryState = { kind: "not-a-member" };
