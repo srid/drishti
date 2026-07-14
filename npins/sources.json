@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "master",
+      "branch": "surface-procedures-dual",
       "submodules": false,
-      "revision": "63fa922866645d0c1fc0a0328fa5102b803a7f95",
-      "url": "https://github.com/juspay/kolu/archive/63fa922866645d0c1fc0a0328fa5102b803a7f95.tar.gz",
-      "hash": "sha256-W1RipkWHvPeQ6sxoagmQsrprzWkF1flnaZy268NcePs="
+      "revision": "122db2b91b5cd5884d9c46ec35d265ab56b96bec",
+      "url": "https://github.com/juspay/kolu/archive/122db2b91b5cd5884d9c46ec35d265ab56b96bec.tar.gz",
+      "hash": "sha256-Mi7Q36UErg6+NZIbAzj6m9bYqlHxNhrthGVTUvnQzRs="
     },
     "nixpkgs": {
       "type": "Git",
