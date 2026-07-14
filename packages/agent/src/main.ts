@@ -25,11 +25,7 @@
  * entirely for clarity.
  */
 
-import {
-  implementSurface,
-  inMemoryChannel,
-  inMemoryStore,
-} from "@kolu/surface/server";
+import { implementSurface, inMemoryStore } from "@kolu/surface/server";
 import { serveOverStdio } from "@kolu/surface/peer-server";
 // The reactive bridge (kolu W5, phase 0). This import is CORRECT here and only
 // here: the agent is the surface's serving endpoint, so folding host metrics
@@ -43,11 +39,9 @@ import {
   type CoreId,
   type CpuCore,
   type IfaceName,
-  type MetricHistoryMsg,
   type NetInterface,
   type Pid,
   type Process,
-  type ProcessesSnapshotMsg,
   surface,
 } from "drishti-common";
 import {
@@ -173,14 +167,13 @@ export async function serveAgent(
   const processSnapshot = new Map<Pid, Process>();
   const netSnapshot = new Map<IfaceName, NetInterface>();
 
-  // Build the surface implementation. The `processes` collection's
-  // `readAll` yields the current snapshot; `upsert`/`remove` are the
-  // single in-process write seam — the poll loop calls
-  // `runtime.ctx.collections.processes.upsert/remove`, which mutates
-  // the snapshot AND publishes through the framework's keyed channels.
-  // `processesSnapshot` stream subscribers read the current map on
-  // first subscribe, then forward every delta the poll loop publishes.
-  const snapshotDeltaBus = inMemoryChannel<ProcessesSnapshotMsg>();
+  // Build the surface implementation. The `processes` collection's `readAll`
+  // yields the current snapshot; `upsert`/`remove` are the single in-process write
+  // seam — the poll loop calls `runtime.ctx.collections.processes.upsert/remove`,
+  // which mutates the snapshot AND publishes through the framework's channels. The
+  // collection declares the `deltas` verb (surface.ts), so `@kolu/surface` coalesces
+  // those per-key writes into ONE snapshot-then-delta stream the browser subscribes
+  // to (SR5 — one protocol across the wire); no hand-rolled parallel bus here.
 
   // The metrics SOURCE feeding the `alerts` reactor graph. The poll `tick`
   // pushes one `MetricsFrame` per tick through `emitMetrics`; `scan` folds each
@@ -245,35 +238,9 @@ export async function serveAgent(
         },
       },
     },
-    streams: {
-      processesSnapshot: {
-        source: async function* (_input, signal) {
-          yield {
-            kind: "snapshot",
-            entries: [...processSnapshot.entries()],
-          } satisfies ProcessesSnapshotMsg;
-          for await (const delta of snapshotDeltaBus.subscribe(signal)) {
-            yield delta;
-          }
-        },
-      },
-      // ⚠ **INERT STUB — the agent keeps no history.** Declared on the
-      // shared surface so the browser can subscribe; the parent is the
-      // authoritative source (see router.ts). A direct-to-agent client sees
-      // an empty, never-updating history — by design, like `connection`.
-      // After the empty snapshot it parks until the subscriber leaves —
-      // never an active transport, so there's no channel to allocate.
-      metricHistory: {
-        source: async function* (_input, signal) {
-          yield { kind: "snapshot", samples: [] } satisfies MetricHistoryMsg;
-          await new Promise<void>((resolve) => {
-            if (!signal || signal.aborted) resolve();
-            else
-              signal.addEventListener("abort", () => resolve(), { once: true });
-          });
-        },
-      },
-    },
+    // No `streams`: the whole-process-set protocol is the `processes` collection's
+    // `deltas` verb now (framework-served), and `metricHistory` moved to the parent
+    // as local policy (composed via `extendSurface`) — its inert agent-side stub is gone.
     // The one PROCEDURE on this surface — `kill` runs HERE, on the host that owns
     // the pids (the parent has none; it forwards through the mirror's stub, kolu
     // #1505 R7). `process.kill` raising (ESRCH gone, EPERM not permitted) is a
@@ -336,23 +303,19 @@ export async function serveAgent(
       // live; it is null only after the scan/source subscription tears down at
       // dispose, where the `?.` makes a late tick a harmless no-op.
       emitMetrics?.(metricPercents(sys));
-      const upserts: Array<[Pid, Process]> = [];
-      const removes: Pid[] = [];
+      // Per-key upsert/remove through the framework ctx; the collection's `deltas`
+      // verb coalesces this tick's writes into ONE snapshot-then-delta frame the
+      // browser reads — no hand-maintained delta arrays or parallel publish.
       for (const [pid, value] of nextProcesses) {
         const prev = processSnapshot.get(pid);
         if (prev === undefined || processChanged(prev, value)) {
           runtime.ctx.collections.processes.upsert(pid, value);
-          upserts.push([pid, value]);
         }
       }
       for (const pid of processSnapshot.keys()) {
         if (!nextProcesses.has(pid)) {
           runtime.ctx.collections.processes.remove(pid);
-          removes.push(pid);
         }
-      }
-      if (upserts.length > 0 || removes.length > 0) {
-        snapshotDeltaBus.publish({ kind: "delta", upserts, removes });
       }
 
       // Per-core CPU usage — published through the framework's
