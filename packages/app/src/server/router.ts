@@ -33,13 +33,11 @@
  * this file used to feed directly.
  */
 
-import { implement } from "@orpc/server";
 import {
   type CellStore,
   type Channel,
   implementSurface,
   inMemoryChannel,
-  inMemoryChannelByName,
   inMemoryStore,
 } from "@kolu/surface/server";
 import { type ProcedureForwarders } from "@kolu/surface/mirror";
@@ -138,10 +136,7 @@ export function buildRouter(opts: BuildRouterOptions) {
   // base primitives are forwarded/folded from the agent; `connection` is the
   // seeded local store the session pump writes — the agent's surface stays
   // connection-free.
-  const fragment = implementSurface(browserSurface, {
-    // Name-keyed in-memory channel factory — publish/subscribe sites
-    // land on the same `Channel<T>` instance per name.
-    channel: inMemoryChannelByName(),
+  const runtime = implementSurface(browserSurface, {
     cells: {
       system: { store: systemStore },
       alerts: { store: alertsStore },
@@ -234,11 +229,11 @@ export function buildRouter(opts: BuildRouterOptions) {
   });
 
   // Compile-time guard for the least-privilege narrowing: the real
-  // fragment must satisfy the pump sink's write-only view. Stated here (not
+  // runtime must satisfy the pump sink's write-only view. Stated here (not
   // only implied by the `makeSink` closure below) so a refactor of that sink
   // can't quietly drop the check — a surface collection rename surfaces as
   // an error on this line.
-  const _pumpCtx: FragmentCtx = fragment;
+  const _pumpCtx: FragmentCtx = runtime;
   void _pumpCtx;
 
   // Sample the metric ring once per agent system tick. Every series reads off
@@ -293,7 +288,7 @@ export function buildRouter(opts: BuildRouterOptions) {
               );
             }
             session.markConnected();
-            fragment.ctx.cells.system.set(remoteSystem);
+            runtime.ctx.cells.system.set(remoteSystem);
             recordSample(remoteSystem);
           },
           // The agent's `alerts` cell → the parent's. Wire-read-only downstream;
@@ -301,7 +296,7 @@ export function buildRouter(opts: BuildRouterOptions) {
           // agent's own `equals` (`alertsEqual`) already gated the frame, so a
           // frame arriving here is a genuine raise/clear worth re-publishing.
           alerts: (remoteAlerts) => {
-            fragment.ctx.cells.alerts.set(remoteAlerts);
+            runtime.ctx.cells.alerts.set(remoteAlerts);
           },
         },
         collections: {
@@ -315,15 +310,15 @@ export function buildRouter(opts: BuildRouterOptions) {
           // (kolu #1661; mirrors surface-remote's reServeSurface).
           cpuCores: {
             upsert: (key, value) =>
-              fragment.ctx.collections.cpuCores.upsert(key, value),
-            remove: (key) => fragment.ctx.collections.cpuCores.remove(key),
+              runtime.ctx.collections.cpuCores.upsert(key, value),
+            remove: (key) => runtime.ctx.collections.cpuCores.remove(key),
             initialKeys: () => new Set(coreCache.keys()),
           },
           networkInterfaces: {
             upsert: (key, value) =>
-              fragment.ctx.collections.networkInterfaces.upsert(key, value),
+              runtime.ctx.collections.networkInterfaces.upsert(key, value),
             remove: (key) =>
-              fragment.ctx.collections.networkInterfaces.remove(key),
+              runtime.ctx.collections.networkInterfaces.remove(key),
             initialKeys: () => new Set(netCache.keys()),
           },
         },
@@ -338,7 +333,7 @@ export function buildRouter(opts: BuildRouterOptions) {
             input: {},
             onFrame: (msg) => {
               frames += 1;
-              applySnapshotMessage(log, msg, processCache, fragment, frames);
+              applySnapshotMessage(log, msg, processCache, runtime, frames);
               browserSnapshotBus.publish(msg);
             },
           },
@@ -353,18 +348,13 @@ export function buildRouter(opts: BuildRouterOptions) {
     // browser-facing `connection` cell — the pump OWNS this subscription for the
     // session's lifetime and tears it down on exit (kolu #1568), so it can't be
     // forgotten or leak. The cell tracks the SESSION's state, never a mirror frame.
-    connection: { set: (info) => fragment.ctx.cells.connection.set(info) },
+    connection: { set: (info) => runtime.ctx.cells.connection.set(info) },
     log,
   });
 
-  // `implementSurface` returns a router *fragment* — `{ surface: ... }`
-  // wrapping the per-key namespaces. Passing it directly to RPCHandler
-  // produces a `surface/surface/...` double-prefix in the matcher tree
-  // (no procedure matches what the client sends). Wrap once via
-  // `implement(contract).router({...fragment})` to flatten the prefix.
-  const router = implement(browserSurface.contract).router({
-    ...fragment.router,
-  });
+  // `implementSurface` returns a supervised runtime whose `.router` is the
+  // FINAL top-level router — hand it straight to RPCHandler, no re-wrap.
+  const router = runtime.router;
   return { router, session };
 }
 
@@ -373,7 +363,7 @@ export function buildRouter(opts: BuildRouterOptions) {
  *  not the full ctx. The sink only ever mirrors remote data inward, so it
  *  gets `set` / `upsert` / `remove`; `readAll` and the underlying stores
  *  stay out of reach. This is a boundary, not a maintenance chore: the
- *  `_pumpCtx` guard above assigns the real fragment to this type, so a
+ *  `_pumpCtx` guard above assigns the real runtime to this type, so a
  *  collection renamed or retyped on the surface becomes a compile error
  *  here rather than silent drift. */
 type FragmentCtx = {
@@ -410,16 +400,16 @@ function applySnapshotMessage(
   log: Logger,
   msg: ProcessesSnapshotMsg,
   processCache: Map<Pid, Process>,
-  fragment: FragmentCtx,
+  runtime: FragmentCtx,
   frameNumber: number,
 ): void {
   if (msg.kind === "snapshot") {
     const next = new Set(msg.entries.map(([pid]) => pid));
     for (const pid of [...processCache.keys()]) {
-      if (!next.has(pid)) fragment.ctx.collections.processes.remove(pid);
+      if (!next.has(pid)) runtime.ctx.collections.processes.remove(pid);
     }
     for (const [pid, value] of msg.entries) {
-      fragment.ctx.collections.processes.upsert(pid, value);
+      runtime.ctx.collections.processes.upsert(pid, value);
     }
     log(
       `processes: snapshot frame #${frameNumber} — ${msg.entries.length} PIDs (cold-start or reconnect)`,
@@ -427,10 +417,10 @@ function applySnapshotMessage(
     return;
   }
   for (const [pid, value] of msg.upserts) {
-    fragment.ctx.collections.processes.upsert(pid, value);
+    runtime.ctx.collections.processes.upsert(pid, value);
   }
   for (const pid of msg.removes) {
-    fragment.ctx.collections.processes.remove(pid);
+    runtime.ctx.collections.processes.remove(pid);
   }
   // Per-tick delta frames are intentionally NOT logged — the agent
   // polls every 2s, so steady-state deltas would dominate stderr. The

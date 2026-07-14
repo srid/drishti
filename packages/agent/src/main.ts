@@ -25,11 +25,9 @@
  * entirely for clarity.
  */
 
-import { implement } from "@orpc/server";
 import {
   implementSurface,
   inMemoryChannel,
-  inMemoryChannelByName,
   inMemoryStore,
 } from "@kolu/surface/server";
 import { serveOverStdio } from "@kolu/surface/peer-server";
@@ -134,7 +132,7 @@ type Serve = (opts: {
 }) => Promise<unknown>;
 
 /**
- * Build the surface fragment + poll loop for `reader`, then serve it.
+ * Build the surface runtime + poll loop for `reader`, then serve it.
  *
  * **Serve before you enumerate.** The connect handshake — the parent's first
  * `system.get` — needs only the cheap `system` snapshot, so that is the one
@@ -178,7 +176,7 @@ export async function serveAgent(
   // Build the surface implementation. The `processes` collection's
   // `readAll` yields the current snapshot; `upsert`/`remove` are the
   // single in-process write seam — the poll loop calls
-  // `fragment.ctx.collections.processes.upsert/remove`, which mutates
+  // `runtime.ctx.collections.processes.upsert/remove`, which mutates
   // the snapshot AND publishes through the framework's keyed channels.
   // `processesSnapshot` stream subscribers read the current map on
   // first subscribe, then forward every delta the poll loop publishes.
@@ -204,8 +202,7 @@ export async function serveAgent(
     };
   });
 
-  const fragment = implementSurface(surface, {
-    channel: inMemoryChannelByName(),
+  const runtime = implementSurface(surface, {
     cells: {
       // The agent serves the connection-FREE base surface. Link health is the
       // PARENT's observation of the parent↔agent link (the agent can't see its
@@ -332,7 +329,7 @@ export async function serveAgent(
         ...cpuAggregate(nextCores),
         pollIntervalMs: POLL_INTERVAL_MS,
       };
-      fragment.ctx.cells.system.set(sys);
+      runtime.ctx.cells.system.set(sys);
       // Feed the alert reactor the frame just composed. `emitMetrics` was
       // installed synchronously when `scan` subscribed to the source at
       // construction (see above), so by the time this poll runs it is already
@@ -344,13 +341,13 @@ export async function serveAgent(
       for (const [pid, value] of nextProcesses) {
         const prev = processSnapshot.get(pid);
         if (prev === undefined || processChanged(prev, value)) {
-          fragment.ctx.collections.processes.upsert(pid, value);
+          runtime.ctx.collections.processes.upsert(pid, value);
           upserts.push([pid, value]);
         }
       }
       for (const pid of processSnapshot.keys()) {
         if (!nextProcesses.has(pid)) {
-          fragment.ctx.collections.processes.remove(pid);
+          runtime.ctx.collections.processes.remove(pid);
           removes.push(pid);
         }
       }
@@ -366,11 +363,11 @@ export async function serveAgent(
       // Evict cores that disappeared (hot-unplug / VM CPU resize) so stale bars
       // don't linger in the browser strip.
       for (const [core, value] of nextCores) {
-        fragment.ctx.collections.cpuCores.upsert(core, value);
+        runtime.ctx.collections.cpuCores.upsert(core, value);
       }
       for (const core of cpuCoreSnapshot.keys()) {
         if (!nextCores.has(core))
-          fragment.ctx.collections.cpuCores.remove(core);
+          runtime.ctx.collections.cpuCores.remove(core);
       }
 
       // Per-NIC network I/O — same Collection<K,T> publish shape as
@@ -381,11 +378,11 @@ export async function serveAgent(
       // (darwin `netstat`), so it rides alongside system/processes rather
       // than adding a serial leg to every tick's latency.
       for (const [iface, value] of nextNet) {
-        fragment.ctx.collections.networkInterfaces.upsert(iface, value);
+        runtime.ctx.collections.networkInterfaces.upsert(iface, value);
       }
       for (const iface of netSnapshot.keys()) {
         if (!nextNet.has(iface))
-          fragment.ctx.collections.networkInterfaces.remove(iface);
+          runtime.ctx.collections.networkInterfaces.remove(iface);
       }
     } catch (err) {
       log(`tick error: ${(err as Error).message}`);
@@ -401,12 +398,9 @@ export async function serveAgent(
   // before we ever serve.)
   void tick();
 
-  // `implementSurface` returns a fragment with shape `{ surface: ... }`;
-  // passing it straight to `serveOverStdio`'s `StandardRPCHandler`
-  // double-wraps the path (`/surface/surface/...`) and every client
-  // request 404s. Wrap once via `implement(contract).router(...)` to
-  // flatten the prefix.
-  const router = implement(surface.contract).router({ ...fragment.router });
+  // `implementSurface` returns a supervised runtime whose `.router` is the
+  // FINAL top-level router — hand it straight to `serveOverStdio`, no re-wrap.
+  const router = runtime.router;
 
   log("serving surface over stdio (read=stdin, write=stdout)");
   // Heartbeat while blocked on the first request. A healthy connect
