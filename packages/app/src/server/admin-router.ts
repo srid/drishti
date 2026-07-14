@@ -162,13 +162,23 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // clone — drishti's ssh sessions measure none), it's an INJECTED capability.
   // drishti stamps every metric with the PARENT's own clock, never a
   // host-stamped one, so there is no true offset being hidden behind the `0`.
-  // `causeFor` is omitted — drishti carries no domain failure-cause taxonomy,
-  // so a down entry rides through cause-less and the map's `projectStatus`
-  // falls back to `"other"` (reads amber/in-motion, never a red "needs you").
+  //
+  // `failureOf` is REQUIRED and TOTAL now (PR4 — no framework fallback cause).
+  // drishti carries no domain taxonomy, so it classifies structurally on the
+  // transport phase: a TERMINAL `failed` session is a genuine failure carrying its
+  // real transport `error` as the human `reason` (→ a red "failed: <reason>" chip);
+  // a `disconnected` (the reconnect-backoff window) returns `null` — "not a standing
+  // failure, keep warming" — so a live host's normal reconnect reads amber, never a
+  // red chip. This preserves the exact behavior the old omitted-`causeFor` had
+  // (disconnected → warming, terminal → failed) without any fabricated cause.
   const hostsMap = serveHostMap(hostSurfaceMap, opts.pool, {
     linkFor: (host, session) =>
       directLink(buildRouter({ host, session }).router as never),
     offsetOf: () => 0,
+    failureOf: (_host, _session, state) =>
+      state.phase === "failed"
+        ? { reason: (state as { error: string }).error }
+        : null,
   });
 
   // `implement(adminContract).router(...)` WALKS `adminContract` to build the

@@ -856,7 +856,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
   // WORD stays driven by the richer `ConnectionState` cell (copying vs
   // connecting vs the failure detail) — see `HostDot.tsx`'s docstring for
   // why the dot and the word now read two different facts.
-  const entryState = createMemo<EntryState>(() => entry.state());
+  const entryState = createMemo<EntryState<{ reason: string }>>(() => entry.state());
   // CPU% and the core count are read straight off the `system` cell — the agent
   // folds them in (`system.cpuPct` / `system.coreCount`). The card used to open
   // the per-key `cpuCores` collection (one value stream PER core PER host) just
@@ -1089,7 +1089,7 @@ function HostView(props: {
   const connection = entry.cells.connection.use({
     onError: (err) => console.error("connection subscription failed", err),
   });
-  const entryState = createMemo<EntryState>(() => entry.state());
+  const entryState = createMemo<EntryState<{ reason: string }>>(() => entry.state());
 
   // The host's raised-alert set (kolu W5 `alerts` cell). The fleet card shows a
   // count pip and the app fires an OS notification; the DETAIL view must EXPLAIN
@@ -1424,7 +1424,7 @@ function pidComparator(
 function Header(props: {
   system: ReturnType<() => typeof DEFAULT_SYSTEM>;
   connection: ReturnType<() => typeof DEFAULT_CONNECTION>;
-  entryState: Accessor<EntryState>;
+  entryState: Accessor<EntryState<{ reason: string }>>;
   count: number;
 }) {
   // The component body runs ONCE at mount — when props.system is still
