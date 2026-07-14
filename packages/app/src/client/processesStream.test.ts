@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { defineSurface } from "@kolu/surface/define";
 import { directLink } from "@kolu/surface/links/direct";
-import { implementSurface, inMemoryChannelByName } from "@kolu/surface/server";
+import { implementSurface } from "@kolu/surface/server";
 import { unenrolledStreamCall } from "@kolu/surface/client";
 import { createSubscription } from "@kolu/surface/solid";
 import {
@@ -108,7 +108,6 @@ function makeFeed() {
 
 function serve(feed: ReturnType<typeof makeFeed>) {
   const { router } = implementSurface(probeSurface, {
-    channel: inMemoryChannelByName(),
     streams: {
       processesSnapshot: {
         source: async function* (_input, signal) {
@@ -120,7 +119,7 @@ function serve(feed: ReturnType<typeof makeFeed>) {
       },
     },
   });
-  return directLink<typeof probeSurface.contract>(router);
+  return directLink<typeof probeSurface.contract>(router as never);
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 20));

@@ -39,7 +39,7 @@
 import { oc } from "@orpc/contract";
 import { implement } from "@orpc/server";
 import { directLink } from "@kolu/surface/links/direct";
-import { implementSurfaces, inMemoryChannelByName } from "@kolu/surface/server";
+import { implementSurfaces } from "@kolu/surface/server";
 import { serveHostMap } from "@kolu/surface-remote";
 import { surfaceAppServer } from "@kolu/surface-app/server";
 import { adminContract, adminSurfaces } from "../common/admin-surface";
@@ -83,7 +83,8 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   const surfaceApp = surfaceAppServer();
   const { router: surfacesRouter } = implementSurfaces(
     adminSurfaces,
-    { channel: inMemoryChannelByName() },
+    // The ordinary constructor owns its in-memory channel internally now.
+    {},
     {
       // ── surface-app served as a sibling ──────────────────────────────
       // `surfaceAppServer()` is the surface-app deps bundle; pass it directly.
@@ -172,7 +173,7 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // (disconnected → warming, terminal → failed) without any fabricated cause.
   const hostsMap = serveHostMap(hostSurfaceMap, opts.pool, {
     linkFor: (host, session) =>
-      directLink(buildRouter({ host, session }).router),
+      directLink(buildRouter({ host, session }).router as never),
     offsetOf: () => 0,
     failureOf: (_host, _session, state) =>
       state.phase === "failed"
@@ -205,13 +206,16 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
 
   // Splice the map's flat `{ surface: { <folded members>, entries } }`
   // router in under the `hosts` key, beside `admin`/`surfaceApp` —
-  // `surfacesRouter` (straight off `implementSurfaces`) is a plain object,
-  // so merging here reads its `.surface` directly. Mirrors kolu's own
-  // `surfaceRouter.surface = { ...koluSurfaceRouter.surface, padi: … }`.
+  // `surfacesRouter` (the runtime's FINAL router, opaque `unknown`) is a plain
+  // object at runtime, so merging here reads its `.surface` directly. Cast
+  // through `any` for the dynamic splice, mirroring kolu-server's own
+  // `{ ...(surfaceRouter as any), … }` — the runtime shape is a valid router.
+  // biome-ignore lint/suspicious/noExplicitAny: opaque runtime router spliced dynamically; runtime shape is valid (same cast kolu-server uses).
+  const surfacesRouterObj = surfacesRouter as any;
   const router = implement(servedAdminContract).router({
-    ...surfacesRouter,
+    ...surfacesRouterObj,
     surface: {
-      ...surfacesRouter.surface,
+      ...surfacesRouterObj.surface,
       hosts: (hostsMap.router as { surface: Record<string, unknown> })
         .surface,
     },
