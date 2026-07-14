@@ -128,6 +128,15 @@ export function hostRpc(host: string) {
   return hostMap.entry(host).procedures;
 }
 
+/** The per-host STREAM face — for the deliberately UN-ENROLLED stream reaches
+ *  (`hostStreams(host).<key>.unenrolled`, fed to `unenrolledStreamCall`): the
+ *  `processesSnapshot` / `metricHistory` mirror streams App consumes imperatively.
+ *  Typed from the declaration, no cast — the streams' dual of `hostRpc`'s
+ *  procedures face. */
+export function hostStreams(host: string) {
+  return hostMap.entry(host).streams;
+}
+
 /** Get the admin surface client — drishti's OWN `admin` surface, used for
  *  its host-lifecycle procedures. */
 export function adminClient() {
