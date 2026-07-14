@@ -9,9 +9,9 @@
       },
       "branch": "sr5-wire",
       "submodules": false,
-      "revision": "6eb25db3916589e53b54b99f2fd6cd048bcf2230",
-      "url": "https://github.com/juspay/kolu/archive/6eb25db3916589e53b54b99f2fd6cd048bcf2230.tar.gz",
-      "hash": "sha256-wXITDNAmBT8ljucZ11sXLFFJsBDucj3gGTGEFTTmvNA="
+      "revision": "a4b1acb0cca0ed335331595398515104c80b906c",
+      "url": "https://github.com/juspay/kolu/archive/a4b1acb0cca0ed335331595398515104c80b906c.tar.gz",
+      "hash": "sha256-k5FjWDGwlMsJkUELAcxo8If1whCmqa6AWVdxUHuRzWU="
     },
     "nixpkgs": {
       "type": "Git",
