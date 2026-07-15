@@ -19,6 +19,7 @@
  */
 
 import type { EntryState } from "@kolu/surface-map";
+import type { ConnectionInfo } from "drishti-common/browser";
 
 // A pure kind→tone lookup as a `Record` keyed on the full `EntryState["kind"]`
 // union — so adding a fourth displayed kind is a compile error here
@@ -81,4 +82,23 @@ export function statusTitle(status: EntryState<{ reason: string }>): string {
  *  or fully-connected entry sits steady; only `warming` is "in flight". */
 export function statusPending(status: EntryState): boolean {
   return status.kind === "warming";
+}
+
+/**
+ * The FINE connection (the status *word*), read from the SAME `entry.state()`
+ * frame the dot reads — SR9's "one connection authority" on the drishti client.
+ *
+ * The word used to ride a SECOND, independent `cells.connection` subscription
+ * that could lag or wedge at "connecting…" while the entry's `EntryStatus` (the
+ * dot) had already gone green — srid/drishti#102. SR9 folds the fine connection
+ * ONTO the entry (`EntryState<Failure, ConnectionInfo>.connection`), co-produced
+ * with the coarse arm from one `SessionState` frame in kolu's single
+ * `serveHostMap` resolve. Deriving the word HERE — the sole `entry.state()` seam,
+ * beside `dotClass` — means the dot and the word cannot disagree: there is one
+ * source. A `not-a-member` entry (never reached) carries no connection.
+ */
+export function connectionOf<F>(
+  status: EntryState<F, ConnectionInfo>,
+): ConnectionInfo | undefined {
+  return status.kind === "not-a-member" ? undefined : status.connection;
 }

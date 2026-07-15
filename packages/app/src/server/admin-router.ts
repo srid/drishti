@@ -41,6 +41,7 @@ import { implement } from "@orpc/server";
 import { directLink } from "@kolu/surface/links/direct";
 import { implementSurfaces } from "@kolu/surface/server";
 import { serveHostMap } from "@kolu/surface-remote";
+import { sessionConnection } from "@kolu/surface-remote/connection";
 import { surfaceAppServer } from "@kolu/surface-app/server";
 import { adminContract, adminSurfaces } from "../common/admin-surface";
 import { hostSurfaceMap } from "../common/hostMap";
@@ -178,6 +179,14 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
       state.phase === "failed"
         ? { reason: (state as { error: string }).error }
         : null,
+    // SR9 — the entry's fine connection payload (the word), co-produced with the coarse
+    // dot from the SAME session frame; `sessionConnection` is the shared projection and
+    // `isConnected` the discriminant `serveHostMap` asserts the dot against (fail-loud on a
+    // dot/word disagreement — the drishti#102 divergence made structurally unspellable).
+    connection: {
+      project: sessionConnection,
+      isConnected: (c) => c.phase === "connected",
+    },
   });
 
   // `implement(adminContract).router(...)` WALKS `adminContract` to build the

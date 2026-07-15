@@ -8,16 +8,16 @@
  */
 
 import { defineSurface } from "@kolu/surface/define";
-import { mirroredSurface } from "@kolu/surface-remote/connection";
 import { z } from "zod";
 import { MetricHistoryMessage, surface } from "./surface";
 
-/** The MIRRORED agent surface: the agent's base `surface` augmented at the mirror
- *  seam with the gate-closed get-only `connection` cell. The PARENT mirrors this and
- *  serves the agent members from it (writing `connection` off `session.onState`).
- *  `metricHistory` is NOT here — it moved to parent-local policy (SR5), composed onto
- *  this via `extendSurface` (see app/server/router.ts). */
-export const mirroredAgentSurface = mirroredSurface(surface);
+/** The agent surface the parent serves, verbatim. SR9: no `connection` cell composed
+ *  here — link health rides the host-map entry's fine `connection` payload (the ONE
+ *  authority; see `hostMap.ts`'s `connection: ConnectionInfoSchema` + `admin-router.ts`'s
+ *  `serveHostMap` `connection.project`), which the client derives the word from off the
+ *  SAME entry it reads the dot. `metricHistory` is NOT here — it moved to parent-local
+ *  policy (SR5), composed on via `extendSurface` (see app/server/router.ts). */
+export const mirroredAgentSurface = surface;
 
 /** The parent-LOCAL metric-history member — retention lives on the parent, not the
  *  agent (whose inert stub is gone, SR5). The parent serves it from its own runtime
