@@ -19,6 +19,7 @@
  */
 
 import { defineSurfaceMap, type KeyCodec } from "@kolu/surface-map";
+import { ConnectionInfoSchema } from "@kolu/surface-remote/connection";
 import { browserSurface } from "drishti-common/browser";
 import { z } from "zod";
 
@@ -50,4 +51,8 @@ export const hostSurfaceMap = defineSurfaceMap({
   entry: browserSurface,
   codec: hostKeyCodec,
   failure: hostFailureSchema,
+  // SR9 — the fine connection payload rides every entry (the ONE authority): the client
+  // derives the connect overlay / status word from `entry.state().connection`, the SAME
+  // entry it reads the dot from — no second per-host subscription (fixes drishti#102).
+  connection: ConnectionInfoSchema,
 });

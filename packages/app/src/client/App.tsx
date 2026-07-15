@@ -63,6 +63,7 @@ import {
 } from "drishti-common/browser";
 import { reconcileRaiseTimes } from "./alertTiming";
 import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
+import { connectionOf } from "./entryStatusTone";
 import { HostDot } from "./HostDot";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
@@ -856,7 +857,10 @@ function FleetView(props: {
 function HostCard(props: { host: string; onSelect: () => void }) {
   const entry = hostMap.entry(props.host);
   const system = entry.cells.system.use({});
-  const connection = entry.cells.connection.use({});
+  // SR9 — the fine connection (the word) rides the SAME entry as the dot; read it
+  // through `connectionOf` (the sole entry.state() seam) instead of a second
+  // `cells.connection` subscription (the drishti#102 split). Presentation unchanged.
+  const connection = () => connectionOf(entry.state());
   // The host's raised-alert set (kolu W5 `alerts` cell). A minimal pip on the
   // card surfaces "this host is in trouble" at a glance, alongside the OS
   // notification the app-scope `watchByEntry` fires — same source of truth. The
@@ -868,7 +872,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
 
   const sys = createMemo<SystemInfo>(() => system.value() ?? DEFAULT_SYSTEM);
   const state = createMemo<ConnectionState>(
-    () => (connection.value() ?? DEFAULT_CONNECTION).phase,
+    () => (connection() ?? DEFAULT_CONNECTION).phase,
   );
   // The dot + readiness gate read the host MAP's `EntryStatus` fact
   // (floored on real transport liveness by `connectSurfaceMap`) — the
@@ -1107,9 +1111,8 @@ function HostView(props: {
   const system = entry.cells.system.use({
     onError: (err) => console.error("system subscription failed", err),
   });
-  const connection = entry.cells.connection.use({
-    onError: (err) => console.error("connection subscription failed", err),
-  });
+  // SR9 — the word derives from the same entry the dot reads (no second subscription).
+  const connection = () => connectionOf(entry.state());
   const entryState = createMemo<EntryState<{ reason: string }>>(() => entry.state());
 
   // The host's raised-alert set (kolu W5 `alerts` cell). The fleet card shows a
@@ -1235,7 +1238,7 @@ function HostView(props: {
 
   const currentSystem = createMemo(() => system.value() ?? DEFAULT_SYSTEM);
   const currentConnection = createMemo(
-    () => connection.value() ?? DEFAULT_CONNECTION,
+    () => connection() ?? DEFAULT_CONNECTION,
   );
 
   // The connecting/failed overlay for the MIRROR axis (backend↔remote) —

@@ -45,15 +45,10 @@ import { type ProcedureForwarders } from "@kolu/surface/mirror";
 import {
   type AgentClient,
   pumpRemoteSurface,
-  seedConnectionCell,
   type Session,
   type SshProv,
 } from "@kolu/surface-remote";
-import {
-  type ConnectionInfo,
-  historySurface,
-  mirroredAgentSurface,
-} from "drishti-common/browser";
+import { historySurface, mirroredAgentSurface } from "drishti-common/browser";
 import {
   type CoreId,
   type CpuCore,
@@ -102,10 +97,6 @@ export function buildRouter(opts: BuildRouterOptions) {
   // re-served to the browser exactly like `system`. Seeds gate-closed
   // (`NO_ALERTS`) until the first agent frame lands.
   const alertsStore: CellStore<Alerts> = inMemoryStore({ ...NO_ALERTS });
-  // The seeded, gate-closed connection cell — the shared `seedConnectionCell()`,
-  // not a hand-rolled store. Written by `pumpRemoteSurface` off `session.onState`
-  // (the `connection` option below), which owns the subscription + teardown.
-  const connection = seedConnectionCell();
   const processCache = new Map<Pid, Process>();
   const coreCache = new Map<CoreId, CpuCore>();
   const netCache = new Map<IfaceName, NetInterface>();
@@ -134,15 +125,14 @@ export function buildRouter(opts: BuildRouterOptions) {
     current: ProcedureForwarders<typeof surface.spec> | null;
   } = { current: null };
 
-  // Implements the MIRRORED surface (base + the get-only `connection` cell). The
-  // base primitives are forwarded/folded from the agent; `connection` is the
+  // Implements the agent surface (SR9: no `connection` cell — link health rides the
+  // host-map entry). The base primitives are forwarded/folded from the agent; the
   // seeded local store the session pump writes — the agent's surface stays
   // connection-free.
   const runtime = implementSurface(mirroredAgentSurface, {
     cells: {
       system: { store: systemStore },
       alerts: { store: alertsStore },
-      connection,
     },
     collections: {
       processes: {
@@ -313,11 +303,6 @@ export function buildRouter(opts: BuildRouterOptions) {
     // the pump clears them the instant the link dies, so a kill in the gap
     // fails honestly rather than calling into a dead client.
     liveProcedures,
-    // The session's link health (copying / connecting / failed) onto the
-    // browser-facing `connection` cell — the pump OWNS this subscription for the
-    // session's lifetime and tears it down on exit (kolu #1568), so it can't be
-    // forgotten or leak. The cell tracks the SESSION's state, never a mirror frame.
-    connection: { set: (info) => runtime.ctx.cells.connection.set(info) },
     log,
   });
 
@@ -376,7 +361,6 @@ type FragmentCtx = {
     cells: {
       system: { set: (v: SystemInfo) => void };
       alerts: { set: (v: Alerts) => void };
-      connection: { set: (v: ConnectionInfo) => void };
     };
     collections: {
       processes: {
