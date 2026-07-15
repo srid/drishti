@@ -35,15 +35,7 @@ import { serveOverStdio } from "@kolu/surface/peer-server";
 // `drishti-common/alerts` (reactor-free) and the graph that DRIVES it lives
 // here.
 import { derived, scan, source } from "@kolu/surface/reactor";
-import {
-  type CoreId,
-  type CpuCore,
-  type IfaceName,
-  type NetInterface,
-  type Pid,
-  type Process,
-  surface,
-} from "drishti-common";
+import { type CoreId, type CpuCore, surface } from "drishti-common";
 import {
   applyHysteresis,
   type MetricsFrame,
@@ -84,31 +76,10 @@ function usage(): never {
   process.exit(1);
 }
 
-// The mutable per-tick fields of `Process` — the ones whose change must
-// re-publish a row. All of these can shift over a process's life; `startedAtMs`
-// cannot (a process can't change when it started — immutable per pid), so it is
-// deliberately absent, which also keeps it out of the publish gate regardless
-// of how the agent derives it. Listing membership explicitly (rather than a
-// hand-maintained OR-chain, which had already silently dropped `user`) keeps it
-// exhaustively reviewable, and `satisfies` ties each entry to a real schema
-// field so a typo or renamed field fails to compile.
-const MUTABLE_PROCESS_FIELDS = [
-  "user",
-  "cpuPct",
-  "rssBytes",
-  "command",
-  "cwd",
-  "ppid",
-  "state",
-  "nice",
-  "threads",
-] as const satisfies readonly (keyof Process)[];
-
-// Whether a process's wire-visible state changed since the last poll — the
-// gate for re-publishing a row.
-function processChanged(a: Process, b: Process): boolean {
-  return MUTABLE_PROCESS_FIELDS.some((f) => a[f] !== b[f]);
-}
+// (The per-tick change gate for a process row — the old `MUTABLE_PROCESS_FIELDS` /
+// `processChanged` — moved to the `processes` collection spec's `equals` in
+// `drishti-common/surface`, since the framework's `derived.collection` reconciler
+// now owns the per-key diff instead of the hand loop doing it at the write site.)
 
 /** The serve operation `serveAgent` calls — narrowed to the one shape it
  *  uses, so a test can inject a fake (the default is the real stdio
@@ -144,28 +115,27 @@ export async function serveAgent(
   reader: ProcReader,
   serve: Serve = serveOverStdio,
 ): Promise<void> {
-  // Per-core CPU usage is a *rate* against the previous tick; the reader
-  // captured its baseline at construction, so this synchronous seed (just
-  // os.cpus(), no fork) costs nothing and lets a subscriber see cores at once.
-  // Seeded before `system` so its cpuPct/coreCount aggregate is live too.
-  const cpuCoreSnapshot = new Map<CoreId, CpuCore>();
-  for (const [core, value] of reader.readCpuCores())
-    cpuCoreSnapshot.set(core, value);
   // Seed the `system` cell synchronously — the cheap read (vm_stat + statfs
-  // on darwin, a couple of /proc reads on linux) the handshake actually
-  // needs, so the cell is live the instant we serve.
+  // on darwin, a couple of /proc reads on linux) the handshake actually needs, so
+  // the cell is live the instant we serve. The per-core aggregate rides a fresh
+  // synchronous `readCpuCores()` (just os.cpus(), no fork). The `cpuCores`
+  // collection is its OWN `derived.collection` poll now (below), so there is no
+  // shared snapshot Map to seed — the reconciler owns the per-core map.
   const systemStore = inMemoryStore({
     ...(await reader.readSystem()),
-    ...cpuAggregate(cpuCoreSnapshot),
+    ...cpuAggregate(reader.readCpuCores()),
     pollIntervalMs: POLL_INTERVAL_MS,
   });
-  // Processes and network start EMPTY and are filled by the poll loop's first
-  // tick (kicked immediately below), NOT awaited here. On darwin
-  // `readProcesses` forks `ps` + `lsof` over every pid and `readNetwork`
-  // forks `netstat`; awaiting them before serving would gate the first RPC
-  // behind a full process scan — the bug this reorder fixes.
-  const processSnapshot = new Map<Pid, Process>();
-  const netSnapshot = new Map<IfaceName, NetInterface>();
+  // The three keyed collections (processes, cpuCores, networkInterfaces) are
+  // `derived.collection(source({ read, install }))` below — the reactor owns the
+  // poll loop, the keyed reconcile (diff-by-`equals`, evict-absent), and the T+0
+  // seed. `processes`/`networkInterfaces` still start EMPTY and fill on the async
+  // seed read (off the serving critical path — `read` runs async, so awaiting a
+  // full `ps`+`lsof` scan never gates the first RPC), exactly as the hand loop did.
+  const pollInstall = (tick: () => void): (() => void) => {
+    const iv = setInterval(tick, POLL_INTERVAL_MS);
+    return () => clearInterval(iv);
+  };
 
   // Build the surface implementation. The `processes` collection's `readAll`
   // yields the current snapshot; `upsert`/`remove` are the single in-process write
@@ -210,33 +180,25 @@ export async function serveAgent(
       alerts: derived.cell(scan(metrics, NO_ALERTS, applyHysteresis)),
     },
     collections: {
-      processes: {
-        readAll: () => processSnapshot,
-        upsert: (key, value) => {
-          processSnapshot.set(key, value);
-        },
-        remove: (key) => {
-          processSnapshot.delete(key);
-        },
-      },
-      cpuCores: {
-        readAll: () => cpuCoreSnapshot,
-        upsert: (key, value) => {
-          cpuCoreSnapshot.set(key, value);
-        },
-        remove: (key) => {
-          cpuCoreSnapshot.delete(key);
-        },
-      },
-      networkInterfaces: {
-        readAll: () => netSnapshot,
-        upsert: (key, value) => {
-          netSnapshot.set(key, value);
-        },
-        remove: (key) => {
-          netSnapshot.delete(key);
-        },
-      },
+      // The three keyed poll-reconciles, now the framework's `derived.collection`
+      // over a poll `source`: each frame's whole-map read is diffed against the last
+      // by the collection's `equals` (per-key upsert for a moved value, evict for an
+      // absent key) — the "most-repeated hand-roll in both trees" (kolu SR8), gone.
+      // The reactor owns the T+0 seed, the poll cadence, and the reconcile; the graph
+      // is the one writer, so there is no ctx `upsert`/`remove` seam here.
+      processes: derived.collection(
+        source({ read: () => reader.readProcesses(), install: pollInstall }),
+      ),
+      cpuCores: derived.collection(
+        source({
+          // `readCpuCores` is synchronous (os.cpus()); the poll shape wants a promise.
+          read: () => Promise.resolve(reader.readCpuCores()),
+          install: pollInstall,
+        }),
+      ),
+      networkInterfaces: derived.collection(
+        source({ read: () => reader.readNetwork(), install: pollInstall }),
+      ),
     },
     // No `streams`: the whole-process-set protocol is the `processes` collection's
     // `deltas` verb now (framework-served), and `metricHistory` moved to the parent
@@ -276,77 +238,30 @@ export async function serveAgent(
         "construction — the scan→source eager-subscribe invariant broke",
     );
 
-  // Poll loop: refresh system + processes, diff against current
-  // `processSnapshot`, push deltas through the framework's ctx (which
-  // mutates the snapshot AND publishes to subscribers in one step).
+  // Poll loop for the `system` cell + the `alerts` reactor ONLY: read the cheap
+  // host scalars + the per-core aggregate, publish `system`, and feed the metrics
+  // source. The three keyed COLLECTIONS are `derived.collection` polls of their own
+  // now (above) — the framework owns their reconcile — so the hand-held
+  // upsert/remove loops (and the snapshot Maps + `processChanged`) are gone.
   const tick = async (): Promise<void> => {
     try {
-      const [nextSystem, nextProcesses, nextNet] = await Promise.all([
-        reader.readSystem(),
-        reader.readProcesses(),
-        reader.readNetwork(),
-      ]);
-      // Read per-core usage up front so the host-CPU aggregate (cpuPct /
-      // coreCount) rides this tick's `system` cell — the fleet card reads that
-      // one scalar instead of subscribing to all N per-core cells to average
-      // them (the O(hosts×cores) fan-out the fleet used to pay).
-      const nextCores = reader.readCpuCores();
+      const nextSystem = await reader.readSystem();
+      // Per-core usage for the host-CPU aggregate (cpuPct / coreCount) on the
+      // `system` cell — the fleet card reads that one scalar instead of subscribing
+      // to all N per-core cells (the O(hosts×cores) fan-out). Read here as well as
+      // in the `cpuCores` collection poll: `readCpuCores` is a cheap synchronous
+      // os.cpus() delta, so the fleet scalar and the per-core bars each take a read.
       const sys = {
         ...nextSystem,
-        ...cpuAggregate(nextCores),
+        ...cpuAggregate(reader.readCpuCores()),
         pollIntervalMs: POLL_INTERVAL_MS,
       };
       runtime.ctx.cells.system.set(sys);
-      // Feed the alert reactor the frame just composed. `emitMetrics` was
-      // installed synchronously when `scan` subscribed to the source at
-      // construction (see above), so by the time this poll runs it is already
-      // live; it is null only after the scan/source subscription tears down at
+      // Feed the alert reactor the frame just composed. `emitMetrics` was installed
+      // synchronously when `scan` subscribed to the source at construction (see
+      // above), so by the time this poll runs it is already live; null only after
       // dispose, where the `?.` makes a late tick a harmless no-op.
       emitMetrics?.(metricPercents(sys));
-      // Per-key upsert/remove through the framework ctx; the collection's `deltas`
-      // verb coalesces this tick's writes into ONE snapshot-then-delta frame the
-      // browser reads — no hand-maintained delta arrays or parallel publish.
-      for (const [pid, value] of nextProcesses) {
-        const prev = processSnapshot.get(pid);
-        if (prev === undefined || processChanged(prev, value)) {
-          runtime.ctx.collections.processes.upsert(pid, value);
-        }
-      }
-      for (const pid of processSnapshot.keys()) {
-        if (!nextProcesses.has(pid)) {
-          runtime.ctx.collections.processes.remove(pid);
-        }
-      }
-
-      // Per-core CPU usage — published through the framework's
-      // Collection<K,T>. Small-N (4-32 cores) so per-key fan-out is the right
-      // shape for the host drill-in, where each core gets its own reactive bar;
-      // the fleet glance card reads the `system.cpuPct` aggregate above instead
-      // of subscribing here. `nextCores` was read above for that aggregate.
-      // Evict cores that disappeared (hot-unplug / VM CPU resize) so stale bars
-      // don't linger in the browser strip.
-      for (const [core, value] of nextCores) {
-        runtime.ctx.collections.cpuCores.upsert(core, value);
-      }
-      for (const core of cpuCoreSnapshot.keys()) {
-        if (!nextCores.has(core))
-          runtime.ctx.collections.cpuCores.remove(core);
-      }
-
-      // Per-NIC network I/O — same Collection<K,T> publish shape as
-      // cpuCores. Throughput shifts almost every tick, so unconditional
-      // upserts are simplest; evict interfaces that vanished (NIC down /
-      // hot-unplug) so stale rows don't linger in the browser. `nextNet`
-      // is read in the tick-top Promise.all — an independent forked probe
-      // (darwin `netstat`), so it rides alongside system/processes rather
-      // than adding a serial leg to every tick's latency.
-      for (const [iface, value] of nextNet) {
-        runtime.ctx.collections.networkInterfaces.upsert(iface, value);
-      }
-      for (const iface of netSnapshot.keys()) {
-        if (!nextNet.has(iface))
-          runtime.ctx.collections.networkInterfaces.remove(iface);
-      }
     } catch (err) {
       log(`tick error: ${(err as Error).message}`);
     }
@@ -354,11 +269,9 @@ export async function serveAgent(
   const interval = setInterval(() => {
     void tick();
   }, POLL_INTERVAL_MS);
-  // Kick the first enumeration immediately and fire-and-forget, so processes
-  // and network populate within one scan rather than after a full poll
-  // interval — but off the serving critical path, so the handshake still
-  // roundtrips now. (The broken-stdout smoke test writes to fd 1 in `main`,
-  // before we ever serve.)
+  // Kick the system/alerts read immediately (off the serving critical path so the
+  // handshake still roundtrips now). The three collection polls kick their own T+0
+  // seed read through the reactor.
   void tick();
 
   // `implementSurface` returns a supervised runtime whose `.router` is the
