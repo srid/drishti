@@ -68,6 +68,24 @@ const ProcessSchema = z.object({
   startedAtMs: z.number().nullable(),
 });
 
+/** The process fields whose change re-publishes a row — the `processes`
+ *  collection's per-key value `equals` gate (was the agent's `processChanged`,
+ *  now declared once on the spec so the `derived.collection` reconciler dedups by
+ *  it instead of the write site hand-holding it). `startedAtMs` is immutable per
+ *  pid, so it is deliberately absent; `satisfies` ties each entry to a real schema
+ *  field so a typo or renamed field fails to compile. */
+const MUTABLE_PROCESS_FIELDS = [
+  "user",
+  "cpuPct",
+  "rssBytes",
+  "command",
+  "cwd",
+  "ppid",
+  "state",
+  "nice",
+  "threads",
+] as const satisfies readonly (keyof z.infer<typeof ProcessSchema>)[];
+
 const CpuCoreSchema = z.object({
   /** Busy-percentage since the previous poll tick (0-100). */
   usagePct: z.number(),
@@ -248,7 +266,12 @@ export const surface = defineSurface({
     processes: {
       keySchema: PidSchema,
       schema: ProcessSchema,
-      verbs: ["keys", "get", "upsert", "delete", "deltas"],
+      // WIRE-READ-ONLY: the agent serves this as a `derived.collection` (the poll
+      // reconciler is the one writer), so no `upsert`/`delete` wire verbs. `equals`
+      // is the reconciler's per-key diff — republish a row only when a mutable field
+      // moved (the old agent-side `processChanged`, declared once here).
+      verbs: ["keys", "get", "deltas"],
+      equals: (a, b) => MUTABLE_PROCESS_FIELDS.every((f) => a[f] === b[f]),
     },
     /** Per-core CPU usage — small-N (typical 4-32) `Collection<K,T>`.
      *  The host drill-in renders one bar per core, so per-key reactive identity
@@ -261,7 +284,10 @@ export const surface = defineSurface({
     cpuCores: {
       keySchema: z.number().int().nonnegative(),
       schema: CpuCoreSchema,
-      verbs: ["keys", "get", "upsert", "delete", "deltas"],
+      // WIRE-READ-ONLY `derived.collection`. No `equals`: usage is a per-tick rate
+      // that always moves, so the reconciler republishes every present key each
+      // frame (the unconditional upsert the poll loop did).
+      verbs: ["keys", "get", "deltas"],
     },
     /** Per-NIC network I/O — keyed by interface name, the same `Collection<K,T>`
      *  shape as `cpuCores`. The host view reads the whole set (dozens of NICs,
@@ -270,7 +296,9 @@ export const surface = defineSurface({
     networkInterfaces: {
       keySchema: z.string(),
       schema: NetInterfaceSchema,
-      verbs: ["keys", "get", "upsert", "delete", "deltas"],
+      // WIRE-READ-ONLY `derived.collection`; no `equals` — throughput shifts almost
+      // every tick, so unconditional per-key republish (as the poll loop did).
+      verbs: ["keys", "get", "deltas"],
     },
   },
   procedures: {
