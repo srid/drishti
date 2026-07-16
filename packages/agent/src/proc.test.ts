@@ -166,16 +166,12 @@ describe("darwinReader cwd enrichment discipline (drishti#111)", () => {
   function fakeExecEnv() {
     const env = {
       lsofSpawns: 0,
-      lsofOpts: undefined as
-        | { timeout?: number; killSignal?: NodeJS.Signals; maxBuffer?: number }
-        | undefined,
       resolveLsof: undefined as ((v: { stdout: string }) => void) | undefined,
     };
-    const execImpl: ExecFn = (file, _args, opts) => {
+    const execImpl: ExecFn = (file, _args, _opts) => {
       if (file === "ps") return Promise.resolve({ stdout: PS_OUT });
       if (file === "lsof") {
         env.lsofSpawns++;
-        env.lsofOpts = opts;
         return new Promise((r) => {
           env.resolveLsof = r;
         });
@@ -211,26 +207,11 @@ describe("darwinReader cwd enrichment discipline (drishti#111)", () => {
     expect(procs.get(501)?.cwd).toBe("");
   });
 
-  it("bounds the child with the kill budget (timeout + SIGKILL ride the exec)", async () => {
-    const { env, execImpl } = fakeExecEnv();
-    const reader = darwinReader(execImpl);
-    await reader.readProcesses();
-    // 20s, not 5s: rasam's pathological-but-COMPLETING lsof took ~14s — a 5s
-    // budget would kill it every attempt and deliver no cwd forever on
-    // exactly the host that needs the data. The budget exists to reap
-    // genuinely-hung children, and decoupling makes it invisible to the
-    // table's cadence.
-    expect(env.lsofOpts?.timeout).toBe(20_000);
-    expect(env.lsofOpts?.killSignal).toBe("SIGKILL");
-    // Explicit maxBuffer: node's 1 MiB default would reject a huge host's
-    // lsof output into the silent failure backoff.
-    expect(env.lsofOpts?.maxBuffer).toBeGreaterThanOrEqual(16 * 1024 * 1024);
-  });
-
-  it("budgets EVERY darwin child, not just lsof — a hung ps/vm_stat/netstat would freeze its collection under the settlement-dependent guards", async () => {
+  it("budgets EVERY darwin child — a hung ps/lsof/vm_stat/netstat would freeze its collection under the settlement-dependent guards", async () => {
     const seen = new Map<
       string,
-      { timeout?: number; killSignal?: NodeJS.Signals } | undefined
+      | { timeout?: number; killSignal?: NodeJS.Signals; maxBuffer?: number }
+      | undefined
     >();
     const execImpl: ExecFn = (file, _args, opts) => {
       seen.set(file, opts);
@@ -242,8 +223,17 @@ describe("darwinReader cwd enrichment discipline (drishti#111)", () => {
     await reader.readSystem();
     await reader.readNetwork();
     for (const child of ["ps", "lsof", "vm_stat", "sysctl", "netstat"]) {
+      // 20s, not 5s: rasam's pathological-but-COMPLETING lsof took ~14s — a
+      // 5s budget would kill it every attempt and deliver no cwd forever on
+      // exactly the host that needs the data; the budget exists to reap
+      // genuinely-hung children, and decoupling makes it invisible to the
+      // table's cadence. maxBuffer explicit: node's 1 MiB default would
+      // reject a huge host's lsof/ps output into the silent failure backoff.
       expect(seen.get(child)?.timeout).toBe(20_000);
       expect(seen.get(child)?.killSignal).toBe("SIGKILL");
+      expect(seen.get(child)?.maxBuffer).toBeGreaterThanOrEqual(
+        16 * 1024 * 1024,
+      );
     }
   });
 

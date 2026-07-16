@@ -43,19 +43,16 @@ const ProcessSchema = z.object({
    *  threads have no cwd, and other-user pids without root can't be resolved
    *  (EACCES on `/proc/<pid>/cwd` on linux; no `lsof` cwd line on darwin).
    *  On darwin the value is the LAST-LANDED enrichment run's observation
-   *  (the lsof child is never awaited by the poll — see createCwdEnricher in
-   *  the agent package, packages/agent/src/proc.ts), so it fills one poll
-   *  tick late and may be stale on a host whose lsof is slow (it fills on
-   *  the first LANDED lsof run — one tick on a healthy host). Dead pids are
-   *  pruned once a poll tick observes them ABSENT (and a landing is
-   *  filtered through the run's monotone eligible set, so a slow in-flight
-   *  run cannot reintroduce one — even if the pid was recycled and reads
-   *  live again before the landing), so the common die-then-observed-dead-then-recycled
-   *  case blanks within one tick — but a pid recycled within a single poll
-   *  window (never observed dead) can inherit the previous process's cwd
-   *  until the next LANDED enrichment run; on a host whose enrichment fails
-   *  persistently, that landing may never come, so such a stale value can
-   *  persist indefinitely. */
+   *  (the lsof child is never awaited by the poll), so it fills on the
+   *  first landed lsof run — one poll tick on a healthy host — and may be
+   *  stale on a host whose lsof is slow. Observable staleness contract: a
+   *  pid observed dead by any poll tick blanks within one tick; a pid
+   *  recycled within a single poll window (never observed dead) can inherit
+   *  the previous process's cwd until the next landed enrichment run — and
+   *  on a host whose enrichment fails persistently that landing may never
+   *  come, so such a stale value can persist indefinitely. The mechanism
+   *  lives with createCwdEnricher in the agent package
+   *  (packages/agent/src/proc.ts). */
   cwd: z.string(),
   /** Parent process id — `/proc/<pid>/stat` field 4 on linux, `ps -o
    *  ppid=` on darwin. 0 for pid 1 / the rare orphan whose parent has

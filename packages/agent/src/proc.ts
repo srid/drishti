@@ -15,6 +15,7 @@
  */
 
 import { execFile as execFileCb } from "node:child_process";
+import { monotonicNow } from "@kolu/surface/time";
 import { readFile, readdir, readlink, statfs } from "node:fs/promises";
 import {
   cpus,
@@ -732,13 +733,14 @@ const ENRICH_BACKOFF_CAP_MS = 300_000;
  *      single poll window (never observed dead) can inherit the dead
  *      process's cwd until the next LANDED run — and persistent enrichment
  *      failures mean that landing may never come, preserving such a stale
- *      value indefinitely. The returned ReadonlyMap is the enricher's LIVE
- *      internal reference — later prunes and landings mutate/replace it
- *      underneath any holder — so callers must not cache it across ticks.
+ *      value indefinitely. The returned map is a per-tick SNAPSHOT (O(live
+ *      pids), trivial beside the ps parse the caller just did), so no
+ *      internal reference escapes — a holder is structurally immune to
+ *      later prunes and landings.
  *
  *  `now` is injectable so the gap/backoff arithmetic is unit-testable against
- *  a fake clock; the default is the MONOTONIC `performance.now` (a wall clock
- *  jumps across sleep/NTP and would mis-measure durations). Teardown: at
+ *  a fake clock; the default is the framework's MONOTONIC `monotonicNow` (a
+ *  wall clock jumps across sleep/NTP and would mis-measure durations). Teardown: at
  *  agent exit at most ONE child can be in flight (single-flight); a
  *  completing child self-reaps, but the kill-budget timer dies with the agent
  *  process, so a genuinely-hung child can orphan until it unwedges or the OS
@@ -746,18 +748,21 @@ const ENRICH_BACKOFF_CAP_MS = 300_000;
  *  framework-owned exit path is untouched). */
 export function createCwdEnricher(
   run: BudgetedRun,
-  now: () => number = () => performance.now(),
+  now: () => number = monotonicNow,
 ): (livePids: ReadonlySet<Pid>) => ReadonlyMap<Pid, string> {
   let lastMap = new Map<Pid, string>();
-  let inFlight = false;
   let nextSpawnAtMs = 0;
   let consecutiveFailures = 0;
-  // Per-run MONOTONE eligibility: seeded from the live set at spawn, and
-  // intersected with every tick's live set while the run is in flight. A pid
-  // observed absent by ANY tick during the run leaves the set permanently —
-  // so a slow child cannot hand its dead-process cwd to a pid that died and
-  // was RECYCLED before the landing (a freshest-set-only intersect forgets
-  // the absence the moment the recycled pid reads live again).
+  // Per-run MONOTONE eligibility — and the single-flight latch in one value:
+  // the set EXISTS iff a run is in flight (they are one concept — the run's
+  // eligibility lives exactly as long as the run, so a separate boolean
+  // would be lockstep state a future edit could desync). Seeded from the
+  // live set at spawn, intersected with every tick's live set while the run
+  // is in flight: a pid observed absent by ANY tick during the run leaves
+  // the set permanently, so a slow child cannot hand its dead-process cwd
+  // to a pid that died and was RECYCLED before the landing (a
+  // freshest-set-only intersect forgets the absence the moment the recycled
+  // pid reads live again).
   let eligible: Set<Pid> | undefined;
   // Every settlement path schedules its next spawn through this one closure,
   // so the ENRICH_BACKOFF_CAP_MS ceiling ("EVERY enrichment gap is capped")
@@ -773,9 +778,13 @@ export function createCwdEnricher(
         if (!livePids.has(pid)) eligible.delete(pid);
       }
     }
-    if (!inFlight && now() >= nextSpawnAtMs) {
-      inFlight = true;
-      eligible = new Set(livePids);
+    if (eligible === undefined && now() >= nextSpawnAtMs) {
+      // `runEligible` aliases the run's set: ticks narrow it through
+      // `eligible` (same object); the landing reads it directly, so no
+      // null-check is needed in the .then even after .finally clears the
+      // in-flight marker.
+      const runEligible = new Set(livePids);
+      eligible = runEligible;
       const startedMs = now();
       // Fence: a SYNCHRONOUSLY-throwing exec (a broken injected impl, an
       // spawn-time OS error surfacing sync) must land on the same
@@ -798,11 +807,8 @@ export function createCwdEnricher(
           // to a recycled pid. (A pid born mid-run is filtered too — it
           // reads blank until the next landing, the documented
           // one-cycle-late deal.)
-          const keep = eligible;
-          if (keep !== undefined) {
-            for (const pid of landed.keys()) {
-              if (!keep.has(pid)) landed.delete(pid);
-            }
+          for (const pid of landed.keys()) {
+            if (!runEligible.has(pid)) landed.delete(pid);
           }
           lastMap = landed;
           consecutiveFailures = 0;
@@ -815,8 +821,7 @@ export function createCwdEnricher(
           );
         })
         .finally(() => {
-          inFlight = false;
-          eligible = undefined; // the set belongs to the settled run
+          eligible = undefined; // run settled — no run in flight
         });
     }
     // Prune pids the current tick no longer sees, so a recycled pid can't
@@ -825,7 +830,10 @@ export function createCwdEnricher(
     for (const pid of lastMap.keys()) {
       if (!livePids.has(pid)) lastMap.delete(pid);
     }
-    return lastMap;
+    // Per-tick snapshot: no internal reference escapes, so a holder is
+    // structurally immune to later prunes/landings (cheap next to the ps
+    // parse the caller just did).
+    return new Map(lastMap);
   };
 }
 
