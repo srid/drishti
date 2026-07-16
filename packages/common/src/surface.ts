@@ -41,7 +41,11 @@ const ProcessSchema = z.object({
   /** Current working directory. From `/proc/<pid>/cwd` on linux and a single
    *  batched `lsof -d cwd` on darwin. Empty string when unknown — kernel
    *  threads have no cwd, and other-user pids without root can't be resolved
-   *  (EACCES on `/proc/<pid>/cwd` on linux; no `lsof` cwd line on darwin). */
+   *  (EACCES on `/proc/<pid>/cwd` on linux; no `lsof` cwd line on darwin).
+   *  On darwin the value is the LAST-LANDED enrichment run's observation
+   *  (the lsof child is never awaited by the poll — see the agent's
+   *  createCwdEnricher), so it fills one poll tick late and may be stale on
+   *  a host whose lsof is slow. */
   cwd: z.string(),
   /** Parent process id — `/proc/<pid>/stat` field 4 on linux, `ps -o
    *  ppid=` on darwin. 0 for pid 1 / the rare orphan whose parent has
