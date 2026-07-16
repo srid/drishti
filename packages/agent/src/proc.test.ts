@@ -298,10 +298,14 @@ describe("createCwdEnricher gap + backoff (fake clock)", () => {
   }
   // Let the settled child's .then/.catch install its bookkeeping.
   const drain = () => Bun.sleep(0);
+  // Ticks where pruning is irrelevant to the assertion (the served map is
+  // empty) pass an empty live set — livePids is required, mirroring the
+  // production call site.
+  const noPids: ReadonlySet<number> = new Set();
 
   it("a slow run stretches the gap (GAP_FACTOR × duration); a fast run restores per-tick cadence", async () => {
     const { h, enrich } = harness();
-    enrich(); // t=0: spawns
+    enrich(new Set([1])); // t=0: spawns
     expect(h.spawns).toBe(1);
     h.t = 14_000; // rasam-shaped run: 14s
     h.settle?.resolve({ stdout: "p1\nn/tmp\n" });
@@ -309,17 +313,17 @@ describe("createCwdEnricher gap + backoff (fake clock)", () => {
     // Next spawn allowed at 14s + 3×14s = 56s — ticks inside the gap serve
     // the stale map without a child.
     h.t = 55_999;
-    expect(enrich().get(1)).toBe("/tmp");
+    expect(enrich(new Set([1])).get(1)).toBe("/tmp");
     expect(h.spawns).toBe(1);
     h.t = 56_000;
-    enrich();
+    enrich(new Set([1]));
     expect(h.spawns).toBe(2);
     // Recovery: this run is fast (300ms) → gap 0.9s → the next 2s tick spawns.
     h.t = 56_300;
     h.settle?.resolve({ stdout: "p1\nn/tmp\n" });
     await drain();
     h.t = 58_000;
-    enrich();
+    enrich(new Set([1]));
     expect(h.spawns).toBe(3);
   });
 
@@ -329,53 +333,53 @@ describe("createCwdEnricher gap + backoff (fake clock)", () => {
       h.settle?.reject(new Error("killed at budget"));
       await drain();
     };
-    enrich(); // t=0: spawn 1
+    enrich(noPids); // t=0: spawn 1
     await fail(); // k=1 → gap 3×20s = 60s
     h.t = 59_999;
-    enrich();
+    enrich(noPids);
     expect(h.spawns).toBe(1);
     h.t = 60_000;
-    enrich(); // spawn 2
+    enrich(noPids); // spawn 2
     expect(h.spawns).toBe(2);
     await fail(); // k=2 → gap 120s
     h.t = 179_999;
-    enrich();
+    enrich(noPids);
     expect(h.spawns).toBe(2);
     h.t = 180_000;
-    enrich(); // spawn 3
+    enrich(noPids); // spawn 3
     await fail(); // k=3 → gap 240s
     h.t = 420_000;
-    enrich(); // spawn 4
+    enrich(noPids); // spawn 4
     await fail(); // k=4 → 480s exceeds the 300s cap → gap 300s
     h.t = 719_999;
-    enrich();
+    enrich(noPids);
     expect(h.spawns).toBe(4);
     h.t = 720_000;
-    enrich(); // spawn 5
+    enrich(noPids); // spawn 5
     expect(h.spawns).toBe(5);
     // First success resets the failure ladder: instant run → zero gap.
     h.settle?.resolve({ stdout: "" });
     await drain();
     h.t = 720_001;
-    enrich();
+    enrich(noPids);
     expect(h.spawns).toBe(6);
   });
 
   it("keeps serving the last-landed map through failures (stale beats blank)", async () => {
     const { h, enrich } = harness();
-    enrich();
+    enrich(new Set([42]));
     h.settle?.resolve({ stdout: "p42\nn/srv\n" });
     await drain();
-    expect(enrich().get(42)).toBe("/srv"); // also spawns run 2 (zero gap)
+    expect(enrich(new Set([42])).get(42)).toBe("/srv"); // also spawns run 2 (zero gap)
     h.settle?.reject(new Error("lsof gone"));
     await drain();
     // The failed run must not blank the map.
-    expect(enrich().get(42)).toBe("/srv");
+    expect(enrich(new Set([42])).get(42)).toBe("/srv");
   });
 
   it("caps the success gap so a pathological duration reading cannot starve enrichment past the backoff ceiling", async () => {
     const { h, enrich } = harness();
-    enrich(); // t=0: spawns
+    enrich(noPids); // t=0: spawns
     // A laptop sleeping mid-run (or any clock pathology) reads as a huge
     // duration: 3×200s = 600s would exceed the 300s ceiling every other
     // path is bounded to — the cap must clamp it.
@@ -383,10 +387,10 @@ describe("createCwdEnricher gap + backoff (fake clock)", () => {
     h.settle?.resolve({ stdout: "" });
     await drain();
     h.t = 200_000 + 299_999;
-    enrich();
+    enrich(noPids);
     expect(h.spawns).toBe(1);
     h.t = 200_000 + 300_000;
-    enrich();
+    enrich(noPids);
     expect(h.spawns).toBe(2);
   });
 
@@ -398,21 +402,21 @@ describe("createCwdEnricher gap + backoff (fake clock)", () => {
       throw new Error("spawn failed sync");
     };
     const enrich = createCwdEnricher(throwingRun, () => t);
-    expect(enrich().size).toBe(0); // must not throw out of the thunk
+    expect(enrich(noPids).size).toBe(0); // must not throw out of the thunk
     await Bun.sleep(0);
     // Backoff scheduled (k=1 → 60s), then the enricher recovers to retry —
     // a wedged inFlight would spawn nothing ever again.
     t = 59_999;
-    enrich();
+    enrich(noPids);
     expect(spawns).toBe(1);
     t = 60_000;
-    enrich();
+    enrich(noPids);
     expect(spawns).toBe(2);
   });
 
   it("prunes dead pids from the served map so a recycled pid cannot inherit a stale cwd", async () => {
     const { h, enrich } = harness();
-    enrich();
+    enrich(noPids);
     h.settle?.resolve({ stdout: ["p42", "n/srv", "p43", "n/tmp", ""].join("\n") });
     await drain();
     // pid 42 died; this tick's live set no longer carries it.

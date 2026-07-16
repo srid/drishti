@@ -711,7 +711,10 @@ const ENRICH_BACKOFF_CAP_MS = 300_000;
  *      tick). The caller passes the tick's LIVE pid set and the thunk prunes
  *      dead pids from the served map, so a pid recycled between enrichment
  *      runs cannot inherit the dead process's cwd for longer than one poll
- *      tick (the landed map itself only ever lists live pids).
+ *      tick (the landed map itself only ever lists live pids). The returned
+ *      ReadonlyMap is the enricher's LIVE internal reference — later prunes
+ *      and landings mutate/replace it underneath any holder — so callers
+ *      must not cache it across ticks.
  *
  *  `now` is injectable so the gap/backoff arithmetic is unit-testable against
  *  a fake clock; the default is the MONOTONIC `performance.now` (a wall clock
@@ -724,7 +727,7 @@ const ENRICH_BACKOFF_CAP_MS = 300_000;
 export function createCwdEnricher(
   run: BudgetedRun,
   now: () => number = () => performance.now(),
-): (livePids?: ReadonlySet<Pid>) => Map<Pid, string> {
+): (livePids: ReadonlySet<Pid>) => ReadonlyMap<Pid, string> {
   let lastMap = new Map<Pid, string>();
   let inFlight = false;
   let nextSpawnAtMs = 0;
@@ -773,10 +776,8 @@ export function createCwdEnricher(
     // Prune pids the current tick no longer sees, so a recycled pid can't
     // read a dead process's cwd across an enrichment gap. Mutating lastMap in
     // place is safe: a landed run REPLACES the map wholesale.
-    if (livePids) {
-      for (const pid of lastMap.keys()) {
-        if (!livePids.has(pid)) lastMap.delete(pid);
-      }
+    for (const pid of lastMap.keys()) {
+      if (!livePids.has(pid)) lastMap.delete(pid);
     }
     return lastMap;
   };
