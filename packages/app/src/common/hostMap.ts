@@ -55,4 +55,11 @@ export const hostSurfaceMap = defineSurfaceMap({
   // derives the connect overlay / status word from `entry.state().connection`, the SAME
   // entry it reads the dot from — no second per-host subscription (fixes drishti#102).
   connection: ConnectionInfoSchema,
+  // SR11 — the membership `entries` collection declares its own `{ kind: "log", label }`
+  // policy, so a membership-stream failure routes (origin-free, no per-key key) through
+  // the ONE `interpretClientError` (client `wire.ts`) — replacing the hand-rolled
+  // `onHostMembershipError`. `label` is the exact console message preserved.
+  entriesClient: {
+    onError: { kind: "log", label: "host membership subscription failed" },
+  },
 });
