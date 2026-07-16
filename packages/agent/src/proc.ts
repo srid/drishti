@@ -709,9 +709,12 @@ const ENRICH_BACKOFF_CAP_MS = 300_000;
  *      host was already serving stale values. Consequence: cwd fills one
  *      enrichment cycle late (~2s on a healthy host; blank on the very first
  *      tick). The caller passes the tick's LIVE pid set and the thunk prunes
- *      dead pids from the served map, so a pid recycled between enrichment
- *      runs cannot inherit the dead process's cwd for longer than one poll
- *      tick (the landed map itself only ever lists live pids). The returned
+ *      dead pids from the served map — but the prune fires only once a tick
+ *      observes a pid ABSENT, so while the common
+ *      die-then-observed-dead-then-recycled case blanks within one tick, a
+ *      pid recycled within a single poll window (never observed dead) can
+ *      inherit the dead process's cwd until the next landed enrichment run
+ *      (bounded by ENRICH_BACKOFF_CAP_MS). The returned
  *      ReadonlyMap is the enricher's LIVE internal reference — later prunes
  *      and landings mutate/replace it underneath any holder — so callers
  *      must not cache it across ticks.
