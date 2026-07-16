@@ -298,6 +298,15 @@ export async function serveAgent(
       log(`first RPC received — link is live (pid=${process.pid})`);
     },
   });
+  // Synchronous post-settle cleanup — the supported window before the
+  // FRAMEWORK-OWNED exit: since kolu#1858, `serveOverStdio` on the default
+  // transport exits this process itself once the serve promise settles
+  // (0 on a clean end, 1 on a transport error), so a live handle (the
+  // reactor's collection polls, this poll interval) can no longer keep a
+  // dead agent alive — the drishti#109 orphan is unspellable, inherited
+  // from the framework rather than hand-rolled here. These synchronous
+  // lines run before that exit; the injected test fake keeps caller-owned
+  // lifetime, so tests are unaffected.
   clearInterval(waitingHeartbeat);
   clearInterval(interval);
   log("stdin closed — agent exiting");
