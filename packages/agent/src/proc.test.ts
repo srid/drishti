@@ -1,7 +1,12 @@
+import { exec as execCb } from "node:child_process";
+import { promisify } from "node:util";
 import { describe, expect, it } from "bun:test";
 import {
   computeNetThroughput,
+  createCwdEnricher,
+  darwinReader,
   diskBytesFromStatfs,
+  type ExecFn,
   type NetCounters,
   parseLsofCwd,
   parseMeminfo,
@@ -145,6 +150,202 @@ describe("parseLsofCwd", () => {
 
   it("returns an empty map for blank output (lsof absent or failed)", () => {
     expect(parseLsofCwd("").size).toBe(0);
+  });
+});
+
+describe("darwinReader cwd enrichment discipline (drishti#111)", () => {
+  // One ps row is enough — the pins are about the lsof CHILD's lifecycle,
+  // not row parsing (parsePsLine has its own suite above).
+  const PS_OUT = "  501 alice 12.5 348160 1 0 S /usr/bin/foo\n";
+
+  /** A fake exec whose lsof child the test controls: hangs until the test
+   *  resolves it, counting spawns and capturing the exec options so the pins
+   *  can assert the single-flight / budget contract. ps resolves instantly. */
+  function fakeExecEnv() {
+    const env = {
+      lsofSpawns: 0,
+      lsofOpts: undefined as
+        | { timeout?: number; killSignal?: NodeJS.Signals }
+        | undefined,
+      resolveLsof: undefined as ((v: { stdout: string }) => void) | undefined,
+    };
+    const execImpl: ExecFn = (cmd, opts) => {
+      if (cmd.startsWith("ps ")) return Promise.resolve({ stdout: PS_OUT });
+      if (cmd.startsWith("lsof ")) {
+        env.lsofSpawns++;
+        env.lsofOpts = opts;
+        return new Promise((r) => {
+          env.resolveLsof = r;
+        });
+      }
+      return Promise.reject(new Error(`unexpected exec: ${cmd}`));
+    };
+    return { env, execImpl };
+  }
+
+  it("spawns exactly one lsof across N polls while the child is in flight (single-flight)", async () => {
+    const { env, execImpl } = fakeExecEnv();
+    const reader = darwinReader(execImpl);
+    // Three poll ticks land while the enrichment child hangs. The rasam
+    // pileup (drishti#111) was this exact overlap on pre-migration binaries;
+    // the reader must own the invariant now: one child, never N.
+    await reader.readProcesses();
+    await reader.readProcesses();
+    await reader.readProcesses();
+    expect(env.lsofSpawns).toBe(1);
+  });
+
+  it("completes the poll without cwd while the child is in flight (never wedges the table)", async () => {
+    const { execImpl } = fakeExecEnv();
+    const reader = darwinReader(execImpl);
+    // A hung lsof must not hold the processes table hostage: the poll
+    // resolves at ps speed with the last-known (here: empty) cwd.
+    const raced = await Promise.race([
+      reader.readProcesses(),
+      Bun.sleep(250).then(() => "wedged" as const),
+    ]);
+    expect(raced).not.toBe("wedged");
+    const procs = raced as Map<number, { cwd: string }>;
+    expect(procs.get(501)?.cwd).toBe("");
+  });
+
+  it("bounds the child with the kill budget (timeout + SIGKILL ride the exec)", async () => {
+    const { env, execImpl } = fakeExecEnv();
+    const reader = darwinReader(execImpl);
+    await reader.readProcesses();
+    // 20s, not 5s: rasam's pathological-but-COMPLETING lsof took ~14s — a 5s
+    // budget would kill it every attempt and deliver no cwd forever on
+    // exactly the host that needs the data. The budget exists to reap
+    // genuinely-hung children, and decoupling makes it invisible to the
+    // table's cadence.
+    expect(env.lsofOpts?.timeout).toBe(20_000);
+    expect(env.lsofOpts?.killSignal).toBe("SIGKILL");
+  });
+
+  it("merges the landed cwd map into subsequent polls (stale-beats-blank)", async () => {
+    const { env, execImpl } = fakeExecEnv();
+    const reader = darwinReader(execImpl);
+    await reader.readProcesses(); // fires the child; rows blank this tick
+    env.resolveLsof?.({ stdout: ["p501", "fcwd", "n/Users/alice/code", ""].join("\n") });
+    await Bun.sleep(0); // let the landed child's map install
+    const procs = await reader.readProcesses();
+    expect(procs.get(501)?.cwd).toBe("/Users/alice/code");
+  });
+});
+
+describe("createCwdEnricher gap + backoff (fake clock)", () => {
+  /** Harness: a controllable child (resolve/reject per spawn) under a fake
+   *  clock, so the gap/backoff arithmetic is pinned deterministically. */
+  function harness() {
+    const h = {
+      t: 0,
+      spawns: 0,
+      settle: undefined as
+        | { resolve: (v: { stdout: string }) => void; reject: (e: Error) => void }
+        | undefined,
+    };
+    const execImpl: ExecFn = () => {
+      h.spawns++;
+      return new Promise((resolve, reject) => {
+        h.settle = { resolve, reject };
+      });
+    };
+    const enrich = createCwdEnricher(execImpl, () => h.t);
+    return { h, enrich };
+  }
+  // Let the settled child's .then/.catch install its bookkeeping.
+  const drain = () => Bun.sleep(0);
+
+  it("a slow run stretches the gap (GAP_FACTOR × duration); a fast run restores per-tick cadence", async () => {
+    const { h, enrich } = harness();
+    enrich(); // t=0: spawns
+    expect(h.spawns).toBe(1);
+    h.t = 14_000; // rasam-shaped run: 14s
+    h.settle?.resolve({ stdout: "p1\nn/tmp\n" });
+    await drain();
+    // Next spawn allowed at 14s + 3×14s = 56s — ticks inside the gap serve
+    // the stale map without a child.
+    h.t = 55_999;
+    expect(enrich().get(1)).toBe("/tmp");
+    expect(h.spawns).toBe(1);
+    h.t = 56_000;
+    enrich();
+    expect(h.spawns).toBe(2);
+    // Recovery: this run is fast (300ms) → gap 0.9s → the next 2s tick spawns.
+    h.t = 56_300;
+    h.settle?.resolve({ stdout: "p1\nn/tmp\n" });
+    await drain();
+    h.t = 58_000;
+    enrich();
+    expect(h.spawns).toBe(3);
+  });
+
+  it("consecutive failures back off exponentially, capped, and reset on success", async () => {
+    const { h, enrich } = harness();
+    const fail = async () => {
+      h.settle?.reject(new Error("killed at budget"));
+      await drain();
+    };
+    enrich(); // t=0: spawn 1
+    await fail(); // k=1 → gap 3×20s = 60s
+    h.t = 59_999;
+    enrich();
+    expect(h.spawns).toBe(1);
+    h.t = 60_000;
+    enrich(); // spawn 2
+    expect(h.spawns).toBe(2);
+    await fail(); // k=2 → gap 120s
+    h.t = 179_999;
+    enrich();
+    expect(h.spawns).toBe(2);
+    h.t = 180_000;
+    enrich(); // spawn 3
+    await fail(); // k=3 → gap 240s
+    h.t = 420_000;
+    enrich(); // spawn 4
+    await fail(); // k=4 → 480s exceeds the 300s cap → gap 300s
+    h.t = 719_999;
+    enrich();
+    expect(h.spawns).toBe(4);
+    h.t = 720_000;
+    enrich(); // spawn 5
+    expect(h.spawns).toBe(5);
+    // First success resets the failure ladder: instant run → zero gap.
+    h.settle?.resolve({ stdout: "" });
+    await drain();
+    h.t = 720_001;
+    enrich();
+    expect(h.spawns).toBe(6);
+  });
+
+  it("keeps serving the last-landed map through failures (stale beats blank)", async () => {
+    const { h, enrich } = harness();
+    enrich();
+    h.settle?.resolve({ stdout: "p42\nn/srv\n" });
+    await drain();
+    expect(enrich().get(42)).toBe("/srv"); // also spawns run 2 (zero gap)
+    h.settle?.reject(new Error("lsof gone"));
+    await drain();
+    // The failed run must not blank the map.
+    expect(enrich().get(42)).toBe("/srv");
+  });
+});
+
+describe("child kill budget (real exec contract)", () => {
+  it("a hung child is killed at the timeout instead of running to completion", async () => {
+    // The enricher trusts node's exec timeout to reap a hung child — prove
+    // that contract holds in this runtime rather than assume it: a 60s child
+    // under a 250ms budget must die promptly, flagged as killed.
+    const exec = promisify(execCb);
+    const started = Date.now();
+    let killed = false;
+    try {
+      await exec("sleep 60", { timeout: 250, killSignal: "SIGKILL" });
+    } catch (err) {
+      killed = (err as { killed?: boolean }).killed === true;
+    }
+    expect(killed).toBe(true);
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 });
 

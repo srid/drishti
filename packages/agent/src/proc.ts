@@ -573,6 +573,14 @@ export function parsePsLine(line: string): DarwinProcRaw | null {
   };
 }
 
+/** The exec shape darwin's readers spawn children through — node's promisified
+ *  `exec` narrowed to what they consume, so a test can inject a deterministic
+ *  fake (a hung, slow, or failing child) without real subprocesses. */
+export type ExecFn = (
+  command: string,
+  options?: { timeout?: number; killSignal?: NodeJS.Signals },
+) => Promise<{ stdout: string }>;
+
 /** Parse `lsof -nP -d cwd -Fpn` field output into a pid→cwd map — darwin's
  *  batch equivalent of linux's per-pid `readlink(/proc/<pid>/cwd)`, in one
  *  fork rather than one per row. lsof's `-F` mode emits one set per process: a
@@ -595,6 +603,103 @@ export function parseLsofCwd(stdout: string): Map<Pid, string> {
     }
   }
   return out;
+}
+
+// ── darwin cwd enrichment discipline (drishti#111) ──────────────────────
+
+/** Kill budget for the enrichment child. 20s, deliberately NOT the ~5s a
+ *  ">10× healthy" framing suggests: rasam's pathological-but-COMPLETING lsof
+ *  took ~14s (a sick 44GB-RSS fseventsd made fd enumeration slow), so a 5s
+ *  budget would kill every attempt and deliver no cwd forever on exactly the
+ *  host that needs the data. Since `readProcesses` never awaits the child
+ *  (see createCwdEnricher), the budget is invisible to the table's cadence —
+ *  it exists only to reap a genuinely-hung child, so generous is free. */
+export const ENRICH_BUDGET_MS = 20_000;
+
+/** Rest-to-run ratio after a successful enrichment: the next child may spawn
+ *  no earlier than completion + GAP_FACTOR × duration. A healthy-mac lsof
+ *  (~100-400ms) yields a sub-second gap — every 2s poll tick enriches, exactly
+ *  the pre-fix cadence — while rasam's 14s lsof self-limits to one run per
+ *  ~56s, bounding a slow host to ≤ 1/(1+GAP_FACTOR) = 25% of one core. */
+const ENRICH_GAP_FACTOR = 3;
+
+/** Ceiling for the consecutive-failure backoff (below). 5 minutes: a host
+ *  whose lsof is absent or persistently hung costs one bounded attempt per
+ *  5min, yet recovers to per-tick cadence within one gap of the first
+ *  success. */
+const ENRICH_BACKOFF_CAP_MS = 300_000;
+
+/** Discipline around darwin's cwd-enrichment child (`lsof -nP -d cwd -Fpn`
+ *  — the ONLY reason the agent forks lsof, and on a big host the whole cost
+ *  of the process poll). The returned thunk is what `readProcesses` calls
+ *  each tick; it is deliberately SYNCHRONOUS — it returns the last-landed
+ *  pid→cwd map immediately and fires a new child in the background when
+ *  allowed, so the table's cadence never depends on enrichment health
+ *  (drishti#111: an unbudgeted awaited lsof either wedged the collection
+ *  forever or, pre-migration, piled up 40 concurrent children):
+ *
+ *    - SINGLE-FLIGHT: never a second child while one is in flight — the
+ *      reader owns this invariant itself rather than inheriting it from the
+ *      framework poll's non-overlap, so any future second caller (another
+ *      subscriber, an on-demand path) gets it for free.
+ *    - KILL BUDGET: `{ timeout: ENRICH_BUDGET_MS, killSignal: SIGKILL }` on
+ *      the exec reaps a genuinely-hung child (the fseventsd-wedge class).
+ *    - ADAPTIVE GAP: after a run of duration d, the next spawn waits
+ *      GAP_FACTOR × d — fast hosts enrich every tick, slow hosts self-limit.
+ *    - FAILURE BACKOFF: consecutive failures (killed at budget, lsof absent)
+ *      back off exponentially from GAP_FACTOR × budget, capped at
+ *      ENRICH_BACKOFF_CAP_MS, reset by the first success. Failures stay
+ *      silent by design — lsof-absent is a documented environment, and the
+ *      backoff bounds the retry cost.
+ *    - STALE-BEATS-BLANK: skipped/failed ticks keep the last observed cwds
+ *      rather than blanking — no double full-table delta churn, and a slow
+ *      host was already serving stale values. Consequence: cwd fills one
+ *      enrichment cycle late (~2s on a healthy host; blank on the very first
+ *      tick).
+ *
+ *  `now` is injectable so the gap/backoff arithmetic is unit-testable against
+ *  a fake clock. Teardown: at agent exit an in-flight child orphans for at
+ *  most its remaining budget and self-terminates — single-flight means at
+ *  most ONE such child, vs. the unbounded pre-fix pileup (and the #110
+ *  framework-owned exit path is untouched). */
+export function createCwdEnricher(
+  execImpl: ExecFn,
+  now: () => number = Date.now,
+): () => Map<Pid, string> {
+  let lastMap = new Map<Pid, string>();
+  let inFlight = false;
+  let nextSpawnAtMs = 0;
+  let consecutiveFailures = 0;
+  return () => {
+    if (!inFlight && now() >= nextSpawnAtMs) {
+      inFlight = true;
+      const startedMs = now();
+      execImpl("lsof -nP -d cwd -Fpn", {
+        timeout: ENRICH_BUDGET_MS,
+        killSignal: "SIGKILL",
+      })
+        .then(({ stdout }) => {
+          lastMap = parseLsofCwd(stdout);
+          consecutiveFailures = 0;
+          nextSpawnAtMs = now() + ENRICH_GAP_FACTOR * (now() - startedMs);
+        })
+        .catch(() => {
+          consecutiveFailures++;
+          nextSpawnAtMs =
+            now() +
+            Math.min(
+              ENRICH_GAP_FACTOR *
+                ENRICH_BUDGET_MS *
+                2 ** (consecutiveFailures - 1),
+              ENRICH_BACKOFF_CAP_MS,
+            );
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    }
+    return lastMap;
+  };
 }
 
 /** Parse `vm_stat` (darwin) into a cache-aware *available* byte count, so
@@ -672,10 +777,11 @@ export function parseSwapusage(stdout: string): {
   return { swapUsed: bytesFor("used"), swapTotal: bytesFor("total") };
 }
 
-function darwinReader(): ProcReader {
+export function darwinReader(execImpl: ExecFn = exec): ProcReader {
   const readCpuCores = createCpuCoresReader();
+  const enrichCwd = createCwdEnricher(execImpl);
   const readNetwork = createNetReader(async () => {
-    const { stdout } = await exec("netstat -ib");
+    const { stdout } = await execImpl("netstat -ib");
     return filterLoopback(parseNetstatIb(stdout));
   });
   return {
@@ -697,8 +803,8 @@ function darwinReader(): ProcReader {
       // *counts*, not usage), so it rides alongside as its own subprocess.
       // Degrade to empty on failure so the snapshot still resolves as 0/0 swap.
       const [{ stdout }, swapOut, disk] = await Promise.all([
-        exec("vm_stat"),
-        exec("sysctl -n vm.swapusage").catch(() => ({ stdout: "" })),
+        execImpl("vm_stat"),
+        execImpl("sysctl -n vm.swapusage").catch(() => ({ stdout: "" })),
         readRootDiskUsage(),
       ]);
       const total = totalmem();
@@ -718,15 +824,16 @@ function darwinReader(): ProcReader {
       };
     },
     readProcesses: async () => {
-      // ps gives the rows; lsof gives cwd for every pid in a single fork (not
-      // a fork per row), so the two run concurrently. lsof failing or being
-      // absent degrades to blank cwds rather than dropping the snapshot —
-      // mirroring linux's per-pid EACCES-to-blank fallback.
-      const [{ stdout: psOut }, lsof] = await Promise.all([
-        exec("ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm="),
-        exec("lsof -nP -d cwd -Fpn").catch(() => ({ stdout: "" })),
-      ]);
-      const cwdByPid = parseLsofCwd(lsof.stdout);
+      // ps gives the rows; cwd merges from the enricher's LAST-LANDED lsof
+      // map, never awaited — the table refreshes at ps speed regardless of
+      // enrichment health (see createCwdEnricher for the full discipline:
+      // single-flight, kill budget, adaptive gap, failure backoff). A pid the
+      // last map doesn't know (new process, lsof failing/absent) reads "" via
+      // `?? ""` — mirroring linux's per-pid EACCES-to-blank fallback.
+      const cwdByPid = enrichCwd();
+      const { stdout: psOut } = await execImpl(
+        "ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=",
+      );
       const out = new Map<Pid, Process>();
       for (const line of psOut.split("\n")) {
         const raw = parsePsLine(line);
