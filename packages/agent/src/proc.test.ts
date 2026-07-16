@@ -1,4 +1,4 @@
-import { exec as execCb } from "node:child_process";
+import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, expect, it } from "bun:test";
 import {
@@ -171,16 +171,16 @@ describe("darwinReader cwd enrichment discipline (drishti#111)", () => {
         | undefined,
       resolveLsof: undefined as ((v: { stdout: string }) => void) | undefined,
     };
-    const execImpl: ExecFn = (cmd, opts) => {
-      if (cmd.startsWith("ps ")) return Promise.resolve({ stdout: PS_OUT });
-      if (cmd.startsWith("lsof ")) {
+    const execImpl: ExecFn = (file, _args, opts) => {
+      if (file === "ps") return Promise.resolve({ stdout: PS_OUT });
+      if (file === "lsof") {
         env.lsofSpawns++;
         env.lsofOpts = opts;
         return new Promise((r) => {
           env.resolveLsof = r;
         });
       }
-      return Promise.reject(new Error(`unexpected exec: ${cmd}`));
+      return Promise.reject(new Error(`unexpected exec: ${file}`));
     };
     return { env, execImpl };
   }
@@ -232,9 +232,9 @@ describe("darwinReader cwd enrichment discipline (drishti#111)", () => {
       string,
       { timeout?: number; killSignal?: NodeJS.Signals } | undefined
     >();
-    const execImpl: ExecFn = (cmd, opts) => {
-      seen.set(cmd.split(" ")[0] ?? cmd, opts);
-      if (cmd.startsWith("ps ")) return Promise.resolve({ stdout: PS_OUT });
+    const execImpl: ExecFn = (file, _args, opts) => {
+      seen.set(file, opts);
+      if (file === "ps") return Promise.resolve({ stdout: PS_OUT });
       return Promise.resolve({ stdout: "" });
     };
     const reader = darwinReader(execImpl);
@@ -255,11 +255,11 @@ describe("darwinReader cwd enrichment discipline (drishti#111)", () => {
     let opts:
       | { timeout?: number; killSignal?: NodeJS.Signals; maxBuffer?: number }
       | undefined;
-    const execImpl: ExecFn = (_cmd, o) => {
+    const execImpl: ExecFn = (_file, _args, o) => {
       opts = o;
       return Promise.resolve({ stdout: "" });
     };
-    await budgetedExec(execImpl)("anything");
+    await budgetedExec(execImpl)("anything", []);
     expect(opts?.timeout).toBe(20_000);
     expect(opts?.killSignal).toBe("SIGKILL");
     expect(opts?.maxBuffer).toBeGreaterThanOrEqual(16 * 1024 * 1024);
@@ -416,7 +416,7 @@ describe("createCwdEnricher gap + backoff (fake clock)", () => {
 
   it("prunes dead pids from the served map so a recycled pid cannot inherit a stale cwd", async () => {
     const { h, enrich } = harness();
-    enrich(noPids);
+    enrich(new Set([42, 43]));
     h.settle?.resolve({ stdout: ["p42", "n/srv", "p43", "n/tmp", ""].join("\n") });
     await drain();
     // pid 42 died; this tick's live set no longer carries it.
@@ -424,23 +424,62 @@ describe("createCwdEnricher gap + backoff (fake clock)", () => {
     expect(served.has(42)).toBe(false);
     expect(served.get(43)).toBe("/tmp");
   });
+
+  it("a slow landing cannot reintroduce a pid a later tick already observed dead", async () => {
+    const { h, enrich } = harness();
+    enrich(new Set([42, 43])); // spawn run 1 — 42 alive when it started
+    // While the child is in flight, a later tick observes 42 ABSENT.
+    enrich(new Set([43]));
+    // The old child lands carrying the dead pid — the landing must be
+    // intersected with the freshest observation, or a pid recycled before
+    // the next tick would inherit the dead process's cwd despite having
+    // been observed dead (the documented one-tick blank bound).
+    h.settle?.resolve({ stdout: ["p42", "n/srv", "p43", "n/tmp", ""].join("\n") });
+    await drain();
+    const served = enrich(new Set([42, 43])); // 42 recycled this tick
+    expect(served.has(42)).toBe(false);
+    expect(served.get(43)).toBe("/tmp");
+  });
 });
 
-describe("child kill budget (real exec contract)", () => {
-  it("a hung child is killed at the timeout instead of running to completion", async () => {
-    // The enricher trusts node's exec timeout to reap a hung child — prove
-    // that contract holds in this runtime rather than assume it: a 60s child
-    // under a 250ms budget must die promptly, flagged as killed.
-    const exec = promisify(execCb);
+describe("child kill budget (real execFile contract)", () => {
+  it("a hung child is killed at the timeout — the utility PROCESS is dead, not merely signalled", async () => {
+    // The enricher trusts node's execFile timeout to reap a hung child —
+    // prove that contract holds in this runtime rather than assume it. NOTE
+    // execFile, not exec: exec's timeout signals the intermediary shell, and
+    // whether the utility dies with it depends on the shell's
+    // exec-last-command optimization. execFile targets the utility directly,
+    // and the pin verifies the actual PID is gone (err.killed alone only
+    // proves a signal was SENT).
+    const execFile = promisify(execFileCb);
     const started = Date.now();
     let killed = false;
+    const pending = execFile("sleep", ["60"], {
+      timeout: 250,
+      killSignal: "SIGKILL",
+    });
+    const childPid = pending.child.pid;
     try {
-      await exec("sleep 60", { timeout: 250, killSignal: "SIGKILL" });
+      await pending;
     } catch (err) {
       killed = (err as { killed?: boolean }).killed === true;
     }
     expect(killed).toBe(true);
     expect(Date.now() - started).toBeLessThan(5_000);
+    // The process must actually be gone (kill(pid, 0) raises ESRCH once the
+    // child is reaped). Poll briefly: node reaps on the exit event, which can
+    // land a beat after the promise settles.
+    expect(childPid).toBeDefined();
+    let gone = false;
+    for (let i = 0; i < 20 && !gone; i++) {
+      try {
+        process.kill(childPid as number, 0);
+        await Bun.sleep(50);
+      } catch {
+        gone = true; // ESRCH — no such process
+      }
+    }
+    expect(gone).toBe(true);
   });
 });
 

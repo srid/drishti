@@ -45,12 +45,16 @@ const ProcessSchema = z.object({
    *  On darwin the value is the LAST-LANDED enrichment run's observation
    *  (the lsof child is never awaited by the poll — see createCwdEnricher in
    *  the agent package, packages/agent/src/proc.ts), so it fills one poll
-   *  tick late and may be stale on a host whose lsof is slow. Dead pids are
-   *  pruned only once a poll tick observes them ABSENT, so the common
-   *  die-then-observed-dead-then-recycled case blanks within one tick — but a
-   *  pid recycled within a single poll window (never observed dead) can
-   *  inherit the previous process's cwd until the next landed enrichment run,
-   *  bounded by the enrichment backoff ceiling (minutes, not one tick). */
+   *  tick late and may be stale on a host whose lsof is slow (it fills on
+   *  the first LANDED lsof run — one tick on a healthy host). Dead pids are
+   *  pruned once a poll tick observes them ABSENT (and a landing is
+   *  intersected with the freshest live set, so a slow in-flight run cannot
+   *  reintroduce one), so the common die-then-observed-dead-then-recycled
+   *  case blanks within one tick — but a pid recycled within a single poll
+   *  window (never observed dead) can inherit the previous process's cwd
+   *  until the next LANDED enrichment run; on a host whose enrichment fails
+   *  persistently, that landing may never come, so such a stale value can
+   *  persist indefinitely. */
   cwd: z.string(),
   /** Parent process id — `/proc/<pid>/stat` field 4 on linux, `ps -o
    *  ppid=` on darwin. 0 for pid 1 / the rare orphan whose parent has

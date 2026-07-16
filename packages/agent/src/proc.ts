@@ -14,7 +14,7 @@
  * are.
  */
 
-import { exec as execCb } from "node:child_process";
+import { execFile as execFileCb } from "node:child_process";
 import { readFile, readdir, readlink, statfs } from "node:fs/promises";
 import {
   cpus,
@@ -36,7 +36,13 @@ import type {
   SystemInfo,
 } from "drishti-common";
 
-const exec = promisify(execCb);
+// execFile, NOT exec: exec launches `/bin/sh -c '<cmd>'`, and the kill budget
+// then times/signals the intermediary SHELL — whether the actual utility dies
+// with it depends on the shell's exec-last-command optimization, which is an
+// implementation detail, not a guarantee. execFile spawns the utility
+// directly, so the budget's SIGKILL provably targets it. None of the darwin
+// children need shell features (no pipes, globs, or quoting).
+const execFile = promisify(execFileCb);
 
 /** Hardware/OS observations only. `pollIntervalMs` is owned by the agent's run
  *  loop, and the CPU aggregate (`cpuPct`/`coreCount`) is folded in from
@@ -574,10 +580,13 @@ export function parsePsLine(line: string): DarwinProcRaw | null {
 }
 
 /** The exec shape darwin's readers spawn children through — node's promisified
- *  `exec` narrowed to what they consume, so a test can inject a deterministic
- *  fake (a hung, slow, or failing child) without real subprocesses. */
+ *  `execFile` (executable + argv, NO shell — see the note on `execFile`
+ *  above) narrowed to what they consume, so a test can inject a
+ *  deterministic fake (a hung, slow, or failing child) without real
+ *  subprocesses. */
 export type ExecFn = (
-  command: string,
+  file: string,
+  args: readonly string[],
   options?: {
     timeout?: number;
     killSignal?: NodeJS.Signals;
@@ -634,8 +643,9 @@ const EXEC_BUDGET_MS = 20_000;
 /** Shared exec options for every darwin child. `maxBuffer` is explicit and
  *  generous (node's default 1 MiB would turn a huge host's lsof/ps output —
  *  both scale with process count — into a rejected run and, for the enricher,
- *  a silent backoff); 16 MiB covers ~100k rows and is bounded to one child at
- *  a time by the guards above. */
+ *  a silent backoff); 16 MiB covers ~100k rows, PER CHILD — the guards are
+ *  per read kind, so a small bounded set of children (ps, lsof, vm_stat,
+ *  sysctl, netstat — at most one each) can be alive concurrently. */
 const CHILD_EXEC_OPTS = {
   timeout: EXEC_BUDGET_MS,
   killSignal: "SIGKILL",
@@ -643,9 +653,12 @@ const CHILD_EXEC_OPTS = {
 } as const;
 
 /** The narrowed run shape darwin's read closures spawn children through:
- *  command in, stdout out — no options socket, so an unbudgeted child cannot
- *  be spelled at a call site. */
-export type BudgetedRun = (cmd: string) => Promise<{ stdout: string }>;
+ *  executable + argv in, stdout out — no options socket, so an unbudgeted
+ *  child cannot be spelled at a call site. */
+export type BudgetedRun = (
+  file: string,
+  args: readonly string[],
+) => Promise<{ stdout: string }>;
 
 /** The ONE place `CHILD_EXEC_OPTS` attaches to an exec. `darwinReader` wraps
  *  its injected `ExecFn` here once and hands the narrowed `run` to every read
@@ -654,8 +667,8 @@ export type BudgetedRun = (cmd: string) => Promise<{ stdout: string }>;
  *  re-asserted at each spawn. */
 export const budgetedExec =
   (execImpl: ExecFn): BudgetedRun =>
-  (cmd) =>
-    execImpl(cmd, CHILD_EXEC_OPTS);
+  (file, args) =>
+    execImpl(file, args, CHILD_EXEC_OPTS);
 
 /** Rest-to-run ratio after a successful enrichment: the next child may spawn
  *  no earlier than completion + GAP_FACTOR × duration. A healthy-mac lsof
@@ -706,18 +719,20 @@ const ENRICH_BACKOFF_CAP_MS = 300_000;
  *      environment, and the backoff bounds the retry cost.
  *    - STALE-BEATS-BLANK: skipped/failed ticks keep the last observed cwds
  *      rather than blanking — no double full-table delta churn, and a slow
- *      host was already serving stale values. Consequence: cwd fills one
- *      enrichment cycle late (~2s on a healthy host; blank on the very first
- *      tick). The caller passes the tick's LIVE pid set and the thunk prunes
- *      dead pids from the served map — but the prune fires only once a tick
- *      observes a pid ABSENT, so while the common
- *      die-then-observed-dead-then-recycled case blanks within one tick, a
- *      pid recycled within a single poll window (never observed dead) can
- *      inherit the dead process's cwd until the next landed enrichment run
- *      (bounded by ENRICH_BACKOFF_CAP_MS). The returned
- *      ReadonlyMap is the enricher's LIVE internal reference — later prunes
- *      and landings mutate/replace it underneath any holder — so callers
- *      must not cache it across ticks.
+ *      host was already serving stale values. Consequence: cwd fills on the
+ *      FIRST LANDED run — one tick (~2s) on a healthy host, later on a slow
+ *      one; blank until then. The caller passes each tick's LIVE pid set:
+ *      the thunk prunes dead pids from the served map at read time AND
+ *      intersects every landing with the freshest observed live set (a slow
+ *      in-flight child cannot reintroduce a pid a later tick already
+ *      observed dead), so the die-then-observed-dead-then-recycled case
+ *      blanks within one tick. The one honest hole: a pid recycled within a
+ *      single poll window (never observed dead) can inherit the dead
+ *      process's cwd until the next LANDED run — and persistent enrichment
+ *      failures mean that landing may never come, preserving such a stale
+ *      value indefinitely. The returned ReadonlyMap is the enricher's LIVE
+ *      internal reference — later prunes and landings mutate/replace it
+ *      underneath any holder — so callers must not cache it across ticks.
  *
  *  `now` is injectable so the gap/backoff arithmetic is unit-testable against
  *  a fake clock; the default is the MONOTONIC `performance.now` (a wall clock
@@ -735,6 +750,10 @@ export function createCwdEnricher(
   let inFlight = false;
   let nextSpawnAtMs = 0;
   let consecutiveFailures = 0;
+  // The freshest live pid set any tick has reported — what a LANDING is
+  // intersected with, so a slow child (spawned before pids died) cannot
+  // reintroduce a pid a later tick already observed dead.
+  let latestLive: ReadonlySet<Pid> | undefined;
   // Every settlement path schedules its next spawn through this one closure,
   // so the ENRICH_BACKOFF_CAP_MS ceiling ("EVERY enrichment gap is capped")
   // is structural — a future path cannot schedule an uncapped gap.
@@ -742,6 +761,7 @@ export function createCwdEnricher(
     nextSpawnAtMs = now() + Math.min(gapMs, ENRICH_BACKOFF_CAP_MS);
   };
   return (livePids) => {
+    latestLive = livePids;
     if (!inFlight && now() >= nextSpawnAtMs) {
       inFlight = true;
       const startedMs = now();
@@ -752,13 +772,24 @@ export function createCwdEnricher(
       // prevent.
       let child: Promise<{ stdout: string }>;
       try {
-        child = run("lsof -nP -d cwd -Fpn");
+        child = run("lsof", ["-nP", "-d", "cwd", "-Fpn"]);
       } catch (err) {
         child = Promise.reject(err);
       }
       child
         .then(({ stdout }) => {
-          lastMap = parseLsofCwd(stdout);
+          const landed = parseLsofCwd(stdout);
+          // Intersect with the freshest tick's observation: the child's
+          // snapshot is OLDER than any tick that completed during its run,
+          // so a pid the latest tick didn't see is dead — reinstalling it
+          // would undo the read-time prune and hand its cwd to a recycled
+          // pid.
+          if (latestLive !== undefined) {
+            for (const pid of landed.keys()) {
+              if (!latestLive.has(pid)) landed.delete(pid);
+            }
+          }
+          lastMap = landed;
           consecutiveFailures = 0;
           restFor(ENRICH_GAP_FACTOR * (now() - startedMs));
         })
@@ -861,7 +892,8 @@ export function parseSwapusage(stdout: string): {
  *  so tests can construct the reader with a fake `ExecFn` and exercise the
  *  child discipline — enrichment single-flight, kill budgets — end-to-end
  *  without real subprocesses. `execImpl` defaults to the real promisified
- *  exec in production (`createProcReader` passes nothing).
+ *  execFile in production (`createProcReader` passes nothing) — executable +
+ *  argv, no shell, so the kill budget provably targets the utility itself.
  *
  *  EVERY child rides `CHILD_EXEC_OPTS` — structurally, not by discipline:
  *  the injected exec is wrapped ONCE in `budgetedExec` and every read
@@ -874,12 +906,12 @@ export function parseSwapusage(stdout: string): {
  *  child settles as a rejection, which the framework log-skip-continues
  *  (later ticks) and the system tick's catch logs — one lost sample, next
  *  fire re-samples. */
-export function darwinReader(execImpl: ExecFn = exec): ProcReader {
+export function darwinReader(execImpl: ExecFn = execFile): ProcReader {
   const readCpuCores = createCpuCoresReader();
   const run = budgetedExec(execImpl);
   const enrichCwd = createCwdEnricher(run);
   const readNetwork = createNetReader(async () => {
-    const { stdout } = await run("netstat -ib");
+    const { stdout } = await run("netstat", ["-ib"]);
     return filterLoopback(parseNetstatIb(stdout));
   });
   return {
@@ -901,8 +933,8 @@ export function darwinReader(execImpl: ExecFn = exec): ProcReader {
       // *counts*, not usage), so it rides alongside as its own subprocess.
       // Degrade to empty on failure so the snapshot still resolves as 0/0 swap.
       const [{ stdout }, swapOut, disk] = await Promise.all([
-        run("vm_stat"),
-        run("sysctl -n vm.swapusage").catch(() => ({
+        run("vm_stat", []),
+        run("sysctl", ["-n", "vm.swapusage"]).catch(() => ({
           stdout: "",
         })),
         readRootDiskUsage(),
@@ -932,9 +964,10 @@ export function darwinReader(execImpl: ExecFn = exec): ProcReader {
       // `?? ""` — mirroring linux's per-pid EACCES-to-blank fallback. ps runs
       // FIRST so the tick's live pid set rides into the enricher, which
       // prunes recycled pids from the served map.
-      const { stdout: psOut } = await run(
-        "ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=",
-      );
+      const { stdout: psOut } = await run("ps", [
+        "-axo",
+        "pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=",
+      ]);
       const raws: DarwinProcRaw[] = [];
       for (const line of psOut.split("\n")) {
         const raw = parsePsLine(line);
