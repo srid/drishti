@@ -735,6 +735,12 @@ export function createCwdEnricher(
   let inFlight = false;
   let nextSpawnAtMs = 0;
   let consecutiveFailures = 0;
+  // Every settlement path schedules its next spawn through this one closure,
+  // so the ENRICH_BACKOFF_CAP_MS ceiling ("EVERY enrichment gap is capped")
+  // is structural — a future path cannot schedule an uncapped gap.
+  const restFor = (gapMs: number) => {
+    nextSpawnAtMs = now() + Math.min(gapMs, ENRICH_BACKOFF_CAP_MS);
+  };
   return (livePids) => {
     if (!inFlight && now() >= nextSpawnAtMs) {
       inFlight = true;
@@ -754,23 +760,13 @@ export function createCwdEnricher(
         .then(({ stdout }) => {
           lastMap = parseLsofCwd(stdout);
           consecutiveFailures = 0;
-          nextSpawnAtMs =
-            now() +
-            Math.min(
-              ENRICH_GAP_FACTOR * (now() - startedMs),
-              ENRICH_BACKOFF_CAP_MS,
-            );
+          restFor(ENRICH_GAP_FACTOR * (now() - startedMs));
         })
         .catch(() => {
           consecutiveFailures++;
-          nextSpawnAtMs =
-            now() +
-            Math.min(
-              ENRICH_GAP_FACTOR *
-                EXEC_BUDGET_MS *
-                2 ** (consecutiveFailures - 1),
-              ENRICH_BACKOFF_CAP_MS,
-            );
+          restFor(
+            ENRICH_GAP_FACTOR * EXEC_BUDGET_MS * 2 ** (consecutiveFailures - 1),
+          );
         })
         .finally(() => {
           inFlight = false;
