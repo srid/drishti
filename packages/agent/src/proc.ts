@@ -14,7 +14,8 @@
  * are.
  */
 
-import { exec as execCb } from "node:child_process";
+import { execFile as execFileCb } from "node:child_process";
+import { monotonicNow } from "@kolu/surface/time";
 import { readFile, readdir, readlink, statfs } from "node:fs/promises";
 import {
   cpus,
@@ -36,7 +37,13 @@ import type {
   SystemInfo,
 } from "drishti-common";
 
-const exec = promisify(execCb);
+// execFile, NOT exec: exec launches `/bin/sh -c '<cmd>'`, and the kill budget
+// then times/signals the intermediary SHELL — whether the actual utility dies
+// with it depends on the shell's exec-last-command optimization, which is an
+// implementation detail, not a guarantee. execFile spawns the utility
+// directly, so the budget's SIGKILL provably targets it. None of the darwin
+// children need shell features (no pipes, globs, or quoting).
+const execFile = promisify(execFileCb);
 
 /** Hardware/OS observations only. `pollIntervalMs` is owned by the agent's run
  *  loop, and the CPU aggregate (`cpuPct`/`coreCount`) is folded in from
@@ -255,23 +262,43 @@ export function diskBytesFromStatfs(stat: {
 /** Root-filesystem (`/`) usage via the `statfs` syscall — the one capacity
  *  source universal across linux and darwin (no `/proc` file reports free
  *  space). Reports `/` only by deliberate policy; see the mount-selection note
- *  on `SystemSchema.diskUsed`. Degrades to zeros if `statfs` is unavailable
- *  (unknown platform) so the system snapshot still resolves — `pctOf` then
- *  reads it as "unavailable". */
-async function readRootDiskUsage(): Promise<{
-  diskUsed: number;
-  diskTotal: number;
-}> {
-  try {
-    return diskBytesFromStatfs(await statfs("/"));
-  } catch {
-    // `statfs` is unavailable on some platforms (e.g. Windows). Degrade to
-    // zeros so the system snapshot still resolves — `pctOf` renders it as
-    // "unavailable" (0/0 → 0%). Safe to swallow: the caller merges these
-    // zeros into the snapshot and the UI shows nothing rather than crashing.
-    return { diskUsed: 0, diskTotal: 0 };
-  }
-}
+ *  on `SystemSchema.diskUsed`.
+ *
+ *  SINGLE-FLIGHT PROBE + LAST-KNOWN VALUE, not an awaited read: statfs is a
+ *  syscall with no timeout knob, and it sits under the same
+ *  settlement-dependent guards as the exec children (main.ts's `singleFlight`
+ *  tick) — a root filesystem in D-state (dying disk, wedged network root)
+ *  would otherwise freeze the `system` cell and the alerts reactor forever,
+ *  the exact wedge the child kill-budgets close. The probe-cache bounds the
+ *  damage to ONE wedged libuv threadpool thread (an awaited deadline-race
+ *  would stack a fresh wedged statfs every tick until the pool starves), and
+ *  callers always get the last observation immediately — 0/0 ("unavailable"
+ *  via `pctOf`) until the first probe lands, one tick on a healthy host,
+ *  mirroring the cwd enricher's decoupling. A FAILED probe keeps the last
+ *  observation: statfs-unavailable platforms (e.g. Windows) fail instantly
+ *  each tick, which is cheap and stays 0/0; a once-working disk that starts
+ *  erroring serves its last reading rather than flapping to zeros. */
+const readRootDiskUsage = (() => {
+  let last = { diskUsed: 0, diskTotal: 0 };
+  let probe: Promise<void> | undefined;
+  return (): { diskUsed: number; diskTotal: number } => {
+    if (probe === undefined) {
+      probe = statfs("/").then(
+        (s) => {
+          last = diskBytesFromStatfs(s);
+          probe = undefined;
+        },
+        () => {
+          // Keep the last observation (see doc above) — safe to swallow: 0/0
+          // renders as "unavailable", and a transiently-erroring disk holding
+          // its previous reading beats a flapping gauge.
+          probe = undefined;
+        },
+      );
+    }
+    return last;
+  };
+})();
 
 export function createProcReader(): ProcReader {
   const plat = platform();
@@ -312,14 +339,15 @@ function linuxReader(): ProcReader {
     readCpuCores,
     readNetwork,
     readSystem: async () => {
-      const [loadAvgs, mem, up, disk] = await Promise.all([
+      const [loadAvgs, mem, up] = await Promise.all([
         readFile("/proc/loadavg", "utf-8").then((s) =>
           s.split(/\s+/).slice(0, 3).map(Number),
         ),
         readFile("/proc/meminfo", "utf-8").then(parseMeminfo),
         readFile("/proc/uptime", "utf-8").then((s) => Number(s.split(" ")[0])),
-        readRootDiskUsage(),
       ]);
+      // Synchronous cached observation — never awaited (see readRootDiskUsage).
+      const disk = readRootDiskUsage();
       return {
         loadAvg: [loadAvgs[0] ?? 0, loadAvgs[1] ?? 0, loadAvgs[2] ?? 0],
         memUsed: mem.total - mem.available,
@@ -573,6 +601,21 @@ export function parsePsLine(line: string): DarwinProcRaw | null {
   };
 }
 
+/** The exec shape darwin's readers spawn children through — node's promisified
+ *  `execFile` (executable + argv, NO shell — see the note on `execFile`
+ *  above) narrowed to what they consume, so a test can inject a
+ *  deterministic fake (a hung, slow, or failing child) without real
+ *  subprocesses. */
+export type ExecFn = (
+  file: string,
+  args: readonly string[],
+  options?: {
+    timeout?: number;
+    killSignal?: NodeJS.Signals;
+    maxBuffer?: number;
+  },
+) => Promise<{ stdout: string }>;
+
 /** Parse `lsof -nP -d cwd -Fpn` field output into a pid→cwd map — darwin's
  *  batch equivalent of linux's per-pid `readlink(/proc/<pid>/cwd)`, in one
  *  fork rather than one per row. lsof's `-F` mode emits one set per process: a
@@ -595,6 +638,244 @@ export function parseLsofCwd(stdout: string): Map<Pid, string> {
     }
   }
   return out;
+}
+
+// ── darwin cwd enrichment discipline (drishti#111) ──────────────────────
+
+/** Kill budget for EVERY darwin child (lsof, ps, vm_stat, sysctl, netstat).
+ *  A hung child under a settlement-dependent non-overlap guard — the
+ *  framework poll's `inFlight` latch, this module's enricher, main.ts's
+ *  `singleFlight` tick — never releases the guard, so without a budget one
+ *  hang silently freezes its collection/cell for the life of the agent
+ *  (worse than the pileup it replaced). The budget guarantees settlement,
+ *  which the guards' `.finally` releases turn into "one logged failure, next
+ *  tick re-samples".
+ *
+ *  20s, deliberately NOT the ~5s a ">10× healthy" framing suggests: rasam's
+ *  pathological-but-COMPLETING lsof took ~14s (a sick 44GB-RSS fseventsd made
+ *  fd enumeration slow), so a 5s budget would kill every attempt and deliver
+ *  no cwd forever on exactly the host that needs the data. Since none of
+ *  these children gate the poll's latency-critical path beyond one tick, the
+ *  budget is invisible to healthy cadence — generous is free for the success
+ *  path. One caveat: it also seeds the enricher's failure backoff (first
+ *  retry at GAP_FACTOR × budget), so enlarging it slows recovery probing on
+ *  failing hosts. */
+const EXEC_BUDGET_MS = 20_000;
+
+/** Shared exec options for every darwin child. `maxBuffer` is explicit and
+ *  generous (node's default 1 MiB would turn a huge host's lsof/ps output —
+ *  both scale with process count — into a rejected run and, for the enricher,
+ *  a silent backoff); 16 MiB covers ~100k rows, PER CHILD — the guards are
+ *  per read kind, so a small bounded set of children (ps, lsof, vm_stat,
+ *  sysctl, netstat — at most one each) can be alive concurrently. */
+const CHILD_EXEC_OPTS = {
+  timeout: EXEC_BUDGET_MS,
+  killSignal: "SIGKILL",
+  maxBuffer: 16 * 1024 * 1024,
+} as const;
+
+/** The narrowed run shape darwin's read closures spawn children through:
+ *  executable + argv in, stdout out — no options socket, so an unbudgeted
+ *  child cannot be spelled at a call site. */
+export type BudgetedRun = (
+  file: string,
+  args: readonly string[],
+) => Promise<{ stdout: string }>;
+
+/** The ONE place `CHILD_EXEC_OPTS` attaches to an exec. `darwinReader` wraps
+ *  its injected `ExecFn` here once and hands the narrowed `run` to every read
+ *  closure and to `createCwdEnricher`, so the kill-budget invariant ("EVERY
+ *  darwin child is budgeted") is owned by this boundary instead of
+ *  re-asserted at each spawn. */
+export const budgetedExec =
+  (execImpl: ExecFn): BudgetedRun =>
+  (file, args) =>
+    execImpl(file, args, CHILD_EXEC_OPTS);
+
+/** Rest-to-run ratio after a successful enrichment: the next child may spawn
+ *  no earlier than completion + GAP_FACTOR × duration. A healthy-mac lsof
+ *  (~100-400ms) yields a sub-second gap — every 2s poll tick enriches, exactly
+ *  the pre-fix cadence — while rasam's 14s lsof self-limits to one run per
+ *  ~56s, bounding a slow host to ≤ 1/(1+GAP_FACTOR) = 25% of one core. */
+const ENRICH_GAP_FACTOR = 3;
+
+/** Ceiling on EVERY enrichment gap — the consecutive-failure backoff AND the
+ *  success-path adaptive gap. 5 minutes: a host whose lsof is absent or
+ *  persistently hung costs one bounded attempt per 5min, yet recovers to
+ *  per-tick cadence within one gap of the first success; capping the success
+ *  gap too means no duration reading (however pathological) can starve
+ *  enrichment longer than that same bound. */
+const ENRICH_BACKOFF_CAP_MS = 300_000;
+
+/** Discipline around darwin's cwd-enrichment child (`lsof -nP -d cwd -Fpn`
+ *  — the ONLY reason the agent forks lsof, and on a big host the whole cost
+ *  of the process poll). The returned thunk is what `readProcesses` calls
+ *  each tick; it is deliberately SYNCHRONOUS — it returns the last-landed
+ *  pid→cwd map immediately and fires a new child in the background when
+ *  allowed, so the table's cadence never depends on enrichment health
+ *  (drishti#111: an unbudgeted awaited lsof either wedged the collection
+ *  forever or, pre-migration, piled up 40 concurrent children):
+ *
+ *    - SINGLE-FLIGHT: never a second child while one is in flight — the
+ *      reader owns this invariant itself rather than inheriting it from the
+ *      framework poll's non-overlap, so any future second caller (another
+ *      subscriber, an on-demand path) gets it for free. The spawn is fenced
+ *      (a synchronous exec throw is normalized to a rejection — the same
+ *      hazard the framework pollSource routes through Promise.resolve) so it
+ *      lands on the failure-backoff path instead of wedging `inFlight` true
+ *      forever.
+ *    - KILL BUDGET: the budget (`CHILD_EXEC_OPTS`: timeout + SIGKILL) rides
+ *      the reader's single `budgetedExec` boundary — darwinReader constructs
+ *      the narrowed `run` and hands it to this enricher — so the exec reaps a
+ *      genuinely-hung child (the fseventsd-wedge class), guaranteeing the
+ *      promise settles and the single-flight guard releases.
+ *    - ADAPTIVE GAP: after a run of duration d, the next spawn waits
+ *      GAP_FACTOR × d — fast hosts enrich every tick, slow hosts self-limit.
+ *      Capped at ENRICH_BACKOFF_CAP_MS so a pathological duration reading (a
+ *      laptop sleeping mid-run under a wall clock) cannot starve enrichment
+ *      beyond the same 5min every other path is bounded to.
+ *    - FAILURE BACKOFF: consecutive failures (killed at budget, lsof absent,
+ *      output over maxBuffer) back off exponentially from GAP_FACTOR ×
+ *      budget, capped at ENRICH_BACKOFF_CAP_MS, reset by the first success.
+ *      The first failure of an episode logs one stderr line (and recovery
+ *      logs another) so an operator debugging a blank/stale cwd column has
+ *      the cause in the agent's log; the retry cadence itself stays quiet —
+ *      lsof-absent is a documented environment, and the backoff bounds the
+ *      retry cost.
+ *    - STALE-BEATS-BLANK: skipped/failed ticks keep the last observed cwds
+ *      rather than blanking — no double full-table delta churn, and a slow
+ *      host was already serving stale values. Consequence: cwd fills on the
+ *      FIRST LANDED run — one tick (~2s) on a healthy host, later on a slow
+ *      one; blank until then. The caller passes each tick's LIVE pid set:
+ *      the thunk prunes dead pids from the served map at read time AND
+ *      filters every landing through the run's MONOTONE eligible set (live
+ *      at spawn ∩ every tick during the run — an absence is permanent for
+ *      the run even if a recycled pid reads live again before the landing),
+ *      so a slow in-flight child cannot reintroduce a pid any tick observed
+ *      dead and the die-then-observed-dead-then-recycled case blanks within
+ *      one tick. The one honest hole: a pid recycled within a
+ *      single poll window (never observed dead) can inherit the dead
+ *      process's cwd until the next LANDED run — and persistent enrichment
+ *      failures mean that landing may never come, preserving such a stale
+ *      value indefinitely. The returned map is a per-tick SNAPSHOT (O(live
+ *      pids), trivial beside the ps parse the caller just did), so no
+ *      internal reference escapes — a holder is structurally immune to
+ *      later prunes and landings.
+ *
+ *  `now` is injectable so the gap/backoff arithmetic is unit-testable against
+ *  a fake clock; the default is the framework's MONOTONIC `monotonicNow` (a
+ *  wall clock jumps across sleep/NTP and would mis-measure durations). Teardown: at
+ *  agent exit at most ONE child can be in flight (single-flight); a
+ *  completing child self-reaps, but the kill-budget timer dies with the agent
+ *  process, so a genuinely-hung child can orphan until it unwedges or the OS
+ *  reaps it — bounded to one, vs. the unbounded pre-fix pileup (and the #110
+ *  framework-owned exit path is untouched). */
+export function createCwdEnricher(
+  run: BudgetedRun,
+  now: () => number = monotonicNow,
+): (livePids: ReadonlySet<Pid>) => ReadonlyMap<Pid, string> {
+  let lastMap = new Map<Pid, string>();
+  let nextSpawnAtMs = 0;
+  let consecutiveFailures = 0;
+  // Per-run MONOTONE eligibility — and the single-flight latch in one value:
+  // the set EXISTS iff a run is in flight (they are one concept — the run's
+  // eligibility lives exactly as long as the run, so a separate boolean
+  // would be lockstep state a future edit could desync). Seeded from the
+  // live set at spawn, intersected with every tick's live set while the run
+  // is in flight: a pid observed absent by ANY tick during the run leaves
+  // the set permanently, so a slow child cannot hand its dead-process cwd
+  // to a pid that died and was RECYCLED before the landing (a
+  // freshest-set-only intersect forgets the absence the moment the recycled
+  // pid reads live again).
+  let eligible: Set<Pid> | undefined;
+  // Every settlement path schedules its next spawn through this one closure,
+  // so the ENRICH_BACKOFF_CAP_MS ceiling ("EVERY enrichment gap is capped")
+  // is structural — a future path cannot schedule an uncapped gap.
+  const restFor = (gapMs: number) => {
+    nextSpawnAtMs = now() + Math.min(gapMs, ENRICH_BACKOFF_CAP_MS);
+  };
+  return (livePids) => {
+    // Narrow the in-flight run's eligibility monotonically — absences are
+    // permanent for the run, reappearances (pid recycling) do not restore.
+    if (eligible !== undefined) {
+      for (const pid of eligible) {
+        if (!livePids.has(pid)) eligible.delete(pid);
+      }
+    }
+    if (eligible === undefined && now() >= nextSpawnAtMs) {
+      // `runEligible` aliases the run's set: ticks narrow it through
+      // `eligible` (same object); the landing reads it directly, so no
+      // null-check is needed in the .then even after .finally clears the
+      // in-flight marker.
+      const runEligible = new Set(livePids);
+      eligible = runEligible;
+      const startedMs = now();
+      // Fence: a SYNCHRONOUSLY-throwing exec (a broken injected impl, an
+      // spawn-time OS error surfacing sync) must land on the same
+      // failure-backoff path as a rejection — an escaped throw here would
+      // leave `inFlight` true forever, the exact wedge this module exists to
+      // prevent.
+      let child: Promise<{ stdout: string }>;
+      try {
+        child = run("lsof", ["-nP", "-d", "cwd", "-Fpn"]);
+      } catch (err) {
+        child = Promise.reject(err);
+      }
+      child
+        .then(({ stdout }) => {
+          const landed = parseLsofCwd(stdout);
+          // Filter the landing through the run's monotone eligible set: the
+          // child's snapshot is OLDER than any tick that completed during
+          // its run, so a pid any of those ticks observed absent is dead —
+          // reinstalling it would undo the read-time prune and hand its cwd
+          // to a recycled pid. (A pid born mid-run is filtered too — it
+          // reads blank until the next landing, the documented
+          // one-cycle-late deal.)
+          for (const pid of landed.keys()) {
+            if (!runEligible.has(pid)) landed.delete(pid);
+          }
+          lastMap = landed;
+          if (consecutiveFailures > 0) {
+            process.stderr.write(
+              `cwd enrichment recovered after ${consecutiveFailures} failed attempt(s)\n`,
+            );
+          }
+          consecutiveFailures = 0;
+          restFor(ENRICH_GAP_FACTOR * (now() - startedMs));
+        })
+        .catch((err) => {
+          consecutiveFailures++;
+          // The RETRY CADENCE stays quiet (backoff bounds the cost, and
+          // lsof-absent is an expected environment), but the FAILURE must
+          // leave a diagnostic trace: an operator debugging a blank/stale
+          // cwd column needs the cause in the agent's log (stderr — the
+          // parent forwards it), not silence. One line per failure episode
+          // (first failure only; recovery logs on the success path), so a
+          // persistently-failing host costs one line, not one per attempt.
+          if (consecutiveFailures === 1) {
+            process.stderr.write(
+              `cwd enrichment failed, backing off: ${(err as Error).message}\n`,
+            );
+          }
+          restFor(
+            ENRICH_GAP_FACTOR * EXEC_BUDGET_MS * 2 ** (consecutiveFailures - 1),
+          );
+        })
+        .finally(() => {
+          eligible = undefined; // run settled — no run in flight
+        });
+    }
+    // Prune pids the current tick no longer sees, so a recycled pid can't
+    // read a dead process's cwd across an enrichment gap. Mutating lastMap in
+    // place is safe: a landed run REPLACES the map wholesale.
+    for (const pid of lastMap.keys()) {
+      if (!livePids.has(pid)) lastMap.delete(pid);
+    }
+    // Per-tick snapshot: no internal reference escapes, so a holder is
+    // structurally immune to later prunes/landings (cheap next to the ps
+    // parse the caller just did).
+    return new Map(lastMap);
+  };
 }
 
 /** Parse `vm_stat` (darwin) into a cache-aware *available* byte count, so
@@ -672,10 +953,33 @@ export function parseSwapusage(stdout: string): {
   return { swapUsed: bytesFor("used"), swapTotal: bytesFor("total") };
 }
 
-function darwinReader(): ProcReader {
+/** Exported (unlike `linuxReader`, whose reads are plain `/proc` file I/O)
+ *  so tests can construct the reader with a fake `ExecFn` and exercise the
+ *  child discipline — enrichment single-flight, kill budgets — end-to-end
+ *  without real subprocesses. `execImpl` defaults to the real promisified
+ *  execFile in production (`createProcReader` passes nothing) — executable +
+ *  argv, no shell, so the kill budget provably targets the utility itself.
+ *
+ *  EVERY child rides `CHILD_EXEC_OPTS` — structurally, not by discipline:
+ *  the injected exec is wrapped ONCE in `budgetedExec` and every read
+ *  closure (and the enricher) spawns through the narrowed `run`, so an
+ *  unbudgeted child cannot be spelled. These reads sit under
+ *  settlement-dependent non-overlap guards (the framework poll's latch for
+ *  the collections, main.ts's `singleFlight` for the system tick), so an
+ *  unbudgeted hung child wouldn't just stall a tick — it would silently
+ *  freeze its collection/cell for the life of the agent. A budget-killed
+ *  child settles as a rejection, which the framework log-skip-continues on
+ *  LATER ticks and the system tick's catch logs — one lost sample, next
+ *  fire re-samples. The SEED (T+0) read is the exception: the framework's
+ *  poll contract makes a seed rejection permanently fatal to that
+ *  collection, which is why serveAgent observes `runtime.done` and exits
+ *  loud instead of serving a silently-dead table for the process's life. */
+export function darwinReader(execImpl: ExecFn = execFile): ProcReader {
   const readCpuCores = createCpuCoresReader();
+  const run = budgetedExec(execImpl);
+  const enrichCwd = createCwdEnricher(run);
   const readNetwork = createNetReader(async () => {
-    const { stdout } = await exec("netstat -ib");
+    const { stdout } = await run("netstat", ["-ib"]);
     return filterLoopback(parseNetstatIb(stdout));
   });
   return {
@@ -696,11 +1000,14 @@ function darwinReader(): ProcReader {
       // swapusage is a separate sysctl from vm_stat (which reports swapin/out
       // *counts*, not usage), so it rides alongside as its own subprocess.
       // Degrade to empty on failure so the snapshot still resolves as 0/0 swap.
-      const [{ stdout }, swapOut, disk] = await Promise.all([
-        exec("vm_stat"),
-        exec("sysctl -n vm.swapusage").catch(() => ({ stdout: "" })),
-        readRootDiskUsage(),
+      const [{ stdout }, swapOut] = await Promise.all([
+        run("vm_stat", []),
+        run("sysctl", ["-n", "vm.swapusage"]).catch(() => ({
+          stdout: "",
+        })),
       ]);
+      // Synchronous cached observation — never awaited (see readRootDiskUsage).
+      const disk = readRootDiskUsage();
       const total = totalmem();
       const available = parseVmStat(stdout).available;
       return {
@@ -718,19 +1025,26 @@ function darwinReader(): ProcReader {
       };
     },
     readProcesses: async () => {
-      // ps gives the rows; lsof gives cwd for every pid in a single fork (not
-      // a fork per row), so the two run concurrently. lsof failing or being
-      // absent degrades to blank cwds rather than dropping the snapshot —
-      // mirroring linux's per-pid EACCES-to-blank fallback.
-      const [{ stdout: psOut }, lsof] = await Promise.all([
-        exec("ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm="),
-        exec("lsof -nP -d cwd -Fpn").catch(() => ({ stdout: "" })),
+      // ps gives the rows; cwd merges from the enricher's LAST-LANDED lsof
+      // map, never awaited — the table refreshes at ps speed regardless of
+      // enrichment health (see createCwdEnricher for the full discipline:
+      // single-flight, kill budget, adaptive gap, failure backoff). A pid the
+      // last map doesn't know (new process, lsof failing/absent) reads "" via
+      // `?? ""` — mirroring linux's per-pid EACCES-to-blank fallback. ps runs
+      // FIRST so the tick's live pid set rides into the enricher, which
+      // prunes recycled pids from the served map.
+      const { stdout: psOut } = await run("ps", [
+        "-axo",
+        "pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=",
       ]);
-      const cwdByPid = parseLsofCwd(lsof.stdout);
-      const out = new Map<Pid, Process>();
+      const raws: DarwinProcRaw[] = [];
       for (const line of psOut.split("\n")) {
         const raw = parsePsLine(line);
-        if (!raw) continue;
+        if (raw) raws.push(raw);
+      }
+      const cwdByPid = enrichCwd(new Set(raws.map((r) => r.pid)));
+      const out = new Map<Pid, Process>();
+      for (const raw of raws) {
         // Single Process-construction site, like linuxReader: cwd from the
         // lsof map; threads/startedAtMs null — darwin's ps has no cheap source.
         out.set(raw.pid, {
@@ -771,7 +1085,7 @@ function stubReader(): ProcReader {
       // for genuinely-unknown platforms with no vm_stat / /proc to query.
       // `statfs` still works on many such platforms; `readRootDiskUsage`
       // degrades to zeros where it doesn't.
-      const disk = await readRootDiskUsage();
+      const disk = readRootDiskUsage();
       return {
         loadAvg: [la[0] ?? 0, la[1] ?? 0, la[2] ?? 0],
         memUsed: totalmem() - freemem(),
