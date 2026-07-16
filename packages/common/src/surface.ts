@@ -43,9 +43,11 @@ const ProcessSchema = z.object({
    *  threads have no cwd, and other-user pids without root can't be resolved
    *  (EACCES on `/proc/<pid>/cwd` on linux; no `lsof` cwd line on darwin).
    *  On darwin the value is the LAST-LANDED enrichment run's observation
-   *  (the lsof child is never awaited by the poll — see the agent's
-   *  createCwdEnricher), so it fills one poll tick late and may be stale on
-   *  a host whose lsof is slow. */
+   *  (the lsof child is never awaited by the poll — see createCwdEnricher in
+   *  the agent package, packages/agent/src/proc.ts), so it fills one poll
+   *  tick late and may be stale on a host whose lsof is slow. A pid recycled
+   *  between enrichment runs is pruned per tick, so it can read a dead
+   *  process's cwd for at most one poll tick before blanking. */
   cwd: z.string(),
   /** Parent process id — `/proc/<pid>/stat` field 4 on linux, `ps -o
    *  ppid=` on darwin. 0 for pid 1 / the rare orphan whose parent has

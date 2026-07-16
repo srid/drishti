@@ -165,7 +165,7 @@ describe("darwinReader cwd enrichment discipline (drishti#111)", () => {
     const env = {
       lsofSpawns: 0,
       lsofOpts: undefined as
-        | { timeout?: number; killSignal?: NodeJS.Signals }
+        | { timeout?: number; killSignal?: NodeJS.Signals; maxBuffer?: number }
         | undefined,
       resolveLsof: undefined as ((v: { stdout: string }) => void) | undefined,
     };
@@ -220,6 +220,29 @@ describe("darwinReader cwd enrichment discipline (drishti#111)", () => {
     // table's cadence.
     expect(env.lsofOpts?.timeout).toBe(20_000);
     expect(env.lsofOpts?.killSignal).toBe("SIGKILL");
+    // Explicit maxBuffer: node's 1 MiB default would reject a huge host's
+    // lsof output into the silent failure backoff.
+    expect(env.lsofOpts?.maxBuffer).toBeGreaterThanOrEqual(16 * 1024 * 1024);
+  });
+
+  it("budgets EVERY darwin child, not just lsof — a hung ps/vm_stat/netstat would freeze its collection under the settlement-dependent guards", async () => {
+    const seen = new Map<
+      string,
+      { timeout?: number; killSignal?: NodeJS.Signals } | undefined
+    >();
+    const execImpl: ExecFn = (cmd, opts) => {
+      seen.set(cmd.split(" ")[0] ?? cmd, opts);
+      if (cmd.startsWith("ps ")) return Promise.resolve({ stdout: PS_OUT });
+      return Promise.resolve({ stdout: "" });
+    };
+    const reader = darwinReader(execImpl);
+    await reader.readProcesses();
+    await reader.readSystem();
+    await reader.readNetwork();
+    for (const child of ["ps", "lsof", "vm_stat", "sysctl", "netstat"]) {
+      expect(seen.get(child)?.timeout).toBe(20_000);
+      expect(seen.get(child)?.killSignal).toBe("SIGKILL");
+    }
   });
 
   it("merges the landed cwd map into subsequent polls (stale-beats-blank)", async () => {
@@ -328,6 +351,54 @@ describe("createCwdEnricher gap + backoff (fake clock)", () => {
     await drain();
     // The failed run must not blank the map.
     expect(enrich().get(42)).toBe("/srv");
+  });
+
+  it("caps the success gap so a pathological duration reading cannot starve enrichment past the backoff ceiling", async () => {
+    const { h, enrich } = harness();
+    enrich(); // t=0: spawns
+    // A laptop sleeping mid-run (or any clock pathology) reads as a huge
+    // duration: 3×200s = 600s would exceed the 300s ceiling every other
+    // path is bounded to — the cap must clamp it.
+    h.t = 200_000;
+    h.settle?.resolve({ stdout: "" });
+    await drain();
+    h.t = 200_000 + 299_999;
+    enrich();
+    expect(h.spawns).toBe(1);
+    h.t = 200_000 + 300_000;
+    enrich();
+    expect(h.spawns).toBe(2);
+  });
+
+  it("routes a SYNCHRONOUSLY-throwing exec onto the failure backoff instead of wedging in-flight forever", async () => {
+    let t = 0;
+    let spawns = 0;
+    const throwingExec: ExecFn = () => {
+      spawns++;
+      throw new Error("spawn failed sync");
+    };
+    const enrich = createCwdEnricher(throwingExec, () => t);
+    expect(enrich().size).toBe(0); // must not throw out of the thunk
+    await Bun.sleep(0);
+    // Backoff scheduled (k=1 → 60s), then the enricher recovers to retry —
+    // a wedged inFlight would spawn nothing ever again.
+    t = 59_999;
+    enrich();
+    expect(spawns).toBe(1);
+    t = 60_000;
+    enrich();
+    expect(spawns).toBe(2);
+  });
+
+  it("prunes dead pids from the served map so a recycled pid cannot inherit a stale cwd", async () => {
+    const { h, enrich } = harness();
+    enrich();
+    h.settle?.resolve({ stdout: ["p42", "n/srv", "p43", "n/tmp", ""].join("\n") });
+    await drain();
+    // pid 42 died; this tick's live set no longer carries it.
+    const served = enrich(new Set([43]));
+    expect(served.has(42)).toBe(false);
+    expect(served.get(43)).toBe("/tmp");
   });
 });
 

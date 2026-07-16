@@ -83,7 +83,13 @@ function usage(): never {
  *  the system/alerts tick. Without it a slow `readSystem` (darwin: `vm_stat` +
  *  `sysctl` children) overlaps itself every 2s on a wedged host — the
  *  drishti#111 pileup class, just with cheaper children. Skipping (not
- *  queueing) is correct for a poll: the next interval fire re-samples. */
+ *  queueing) is correct for a poll: the next interval fire re-samples.
+ *
+ *  SOUND ONLY BECAUSE THE READS SETTLE: the guard releases in `finally`, so a
+ *  never-settling tick would freeze the cell forever — which is why every
+ *  darwin child under this tick rides proc.ts's `CHILD_EXEC_OPTS` kill
+ *  budget (a hung vm_stat settles as a rejection, the catch below logs it,
+ *  and the next fire re-samples). Exported for main.test.ts. */
 export function singleFlight(tick: () => Promise<void>): () => Promise<void> {
   let inFlight = false;
   return async () => {
