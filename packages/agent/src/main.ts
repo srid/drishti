@@ -76,6 +76,27 @@ function usage(): never {
   process.exit(1);
 }
 
+/** Wrap an async tick so a fire that lands while a previous run is still in
+ *  flight is SKIPPED — the same non-overlap law the framework's poll source
+ *  applies to the three collections (and the cwd enricher applies to its lsof
+ *  child), owned here for the one hand-rolled `setInterval` left in the agent:
+ *  the system/alerts tick. Without it a slow `readSystem` (darwin: `vm_stat` +
+ *  `sysctl` children) overlaps itself every 2s on a wedged host — the
+ *  drishti#111 pileup class, just with cheaper children. Skipping (not
+ *  queueing) is correct for a poll: the next interval fire re-samples. */
+export function singleFlight(tick: () => Promise<void>): () => Promise<void> {
+  let inFlight = false;
+  return async () => {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      await tick();
+    } finally {
+      inFlight = false;
+    }
+  };
+}
+
 // (The per-tick change gate for a process row — the old `MUTABLE_PROCESS_FIELDS` /
 // `processChanged` — moved to the `processes` collection spec's `equals` in
 // `drishti-common/surface`, since the framework's `derived.collection` reconciler
@@ -243,7 +264,7 @@ export async function serveAgent(
   // source. The three keyed COLLECTIONS are `derived.collection` polls of their own
   // now (above) — the framework owns their reconcile — so the hand-held
   // upsert/remove loops (and the snapshot Maps + `processChanged`) are gone.
-  const tick = async (): Promise<void> => {
+  const tick = singleFlight(async (): Promise<void> => {
     try {
       const nextSystem = await reader.readSystem();
       // Per-core usage for the host-CPU aggregate (cpuPct / coreCount) on the
@@ -265,7 +286,7 @@ export async function serveAgent(
     } catch (err) {
       log(`tick error: ${(err as Error).message}`);
     }
-  };
+  });
   const interval = setInterval(() => {
     void tick();
   }, POLL_INTERVAL_MS);
