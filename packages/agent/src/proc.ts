@@ -968,9 +968,12 @@ export function parseSwapusage(stdout: string): {
  *  the collections, main.ts's `singleFlight` for the system tick), so an
  *  unbudgeted hung child wouldn't just stall a tick — it would silently
  *  freeze its collection/cell for the life of the agent. A budget-killed
- *  child settles as a rejection, which the framework log-skip-continues
- *  (later ticks) and the system tick's catch logs — one lost sample, next
- *  fire re-samples. */
+ *  child settles as a rejection, which the framework log-skip-continues on
+ *  LATER ticks and the system tick's catch logs — one lost sample, next
+ *  fire re-samples. The SEED (T+0) read is the exception: the framework's
+ *  poll contract makes a seed rejection permanently fatal to that
+ *  collection, which is why serveAgent observes `runtime.done` and exits
+ *  loud instead of serving a silently-dead table for the process's life. */
 export function darwinReader(execImpl: ExecFn = execFile): ProcReader {
   const readCpuCores = createCpuCoresReader();
   const run = budgetedExec(execImpl);

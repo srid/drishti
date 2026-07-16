@@ -268,6 +268,22 @@ export async function serveAgent(
         "construction — the scan→source eager-subscribe invariant broke",
     );
 
+  // Fail LOUD on an owned runtime fault. The one real producer of this today:
+  // a collection poll's SEED read rejecting — e.g. a kill-budget-expired `ps`
+  // on a host already wedged at boot — which the framework's poll-read
+  // contract makes PERMANENTLY fatal to that collection (cadence torn down,
+  // no retry; only LATER ticks are log-skip-continue). A live agent silently
+  // serving a dead processes table for its whole life is the worst outcome —
+  // exit non-zero instead, so the parent surfaces agent death in the
+  // connection cell where the user actually looks, and a reconnect gets a
+  // fresh seed attempt. (Deliberately NOT made total at the reader: catching
+  // a seed `ps` failure into an empty map would render a healthy-looking
+  // empty table over a broken platform — a silent lie.)
+  void runtime.done.catch((err: unknown) => {
+    log(`surface runtime fault: ${(err as Error).message} — exiting`);
+    process.exit(1);
+  });
+
   // Poll loop for the `system` cell + the `alerts` reactor ONLY: read the cheap
   // host scalars + the per-core aggregate, publish `system`, and feed the metrics
   // source. The three keyed COLLECTIONS are `derived.collection` polls of their own
