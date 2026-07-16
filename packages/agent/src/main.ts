@@ -89,7 +89,10 @@ function usage(): never {
  *  never-settling tick would freeze the cell forever — which is why every
  *  darwin child under this tick rides proc.ts's `CHILD_EXEC_OPTS` kill
  *  budget (a hung vm_stat settles as a rejection, the catch below logs it,
- *  and the next fire re-samples). Exported for main.test.ts. */
+ *  and the next fire re-samples), and why the one timeout-less syscall in
+ *  the tick — `statfs` — is decoupled behind proc.ts's probe-cache
+ *  (`readRootDiskUsage` serves a cached observation synchronously; a
+ *  D-state root fs cannot hold the tick). Exported for main.test.ts. */
 export function singleFlight(tick: () => Promise<void>): () => Promise<void> {
   let inFlight = false;
   return async () => {

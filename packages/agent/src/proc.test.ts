@@ -447,6 +447,69 @@ describe("createCwdEnricher gap + backoff (fake clock)", () => {
   });
 });
 
+describe("readSystem disk probe (decoupled statfs)", () => {
+  it("serves the cached observation and fills after the probe lands (never awaits the syscall)", async () => {
+    // statfs has no timeout knob, so readSystem must not await it under the
+    // settlement-dependent singleFlight guard — it serves the last-known
+    // value and a background probe refreshes it. On this test host statfs(/)
+    // succeeds, so after a microtask drain the real capacity appears.
+    const execImpl: ExecFn = (file) =>
+      file === "ps"
+        ? Promise.resolve({ stdout: "" })
+        : Promise.resolve({ stdout: "" });
+    const reader = darwinReader(execImpl);
+    await reader.readSystem(); // kicks the probe (or serves an already-landed cache)
+    await Bun.sleep(10); // let the real statfs land
+    const sys = await reader.readSystem();
+    expect(sys.diskTotal).toBeGreaterThan(0);
+  });
+});
+
+describe("enrichment failure diagnostics", () => {
+  it("logs one stderr line per failure episode and one on recovery — never one per attempt", async () => {
+    const lines: string[] = [];
+    const original = process.stderr.write.bind(process.stderr);
+    // biome-ignore lint/suspicious/noExplicitAny: narrow spy for the test
+    (process.stderr as any).write = (s: string) => {
+      lines.push(String(s));
+      return true;
+    };
+    try {
+      let t = 0;
+      let spawns = 0;
+      let fail = true;
+      const run: BudgetedRun = () => {
+        spawns++;
+        return fail
+          ? Promise.reject(new Error("lsof exploded"))
+          : Promise.resolve({ stdout: "" });
+      };
+      const enrich = createCwdEnricher(run, () => t);
+      const noPids: ReadonlySet<number> = new Set();
+      enrich(noPids); // failure 1 — logs
+      await Bun.sleep(0);
+      t = 60_000;
+      enrich(noPids); // failure 2 — quiet (same episode)
+      await Bun.sleep(0);
+      const failureLines = lines.filter((l) => l.includes("enrichment failed"));
+      expect(failureLines.length).toBe(1);
+      expect(failureLines[0]).toContain("lsof exploded");
+      // Recovery logs once.
+      fail = false;
+      t = 60_000 + 180_000;
+      enrich(noPids);
+      await Bun.sleep(0);
+      expect(
+        lines.filter((l) => l.includes("enrichment recovered")).length,
+      ).toBe(1);
+      expect(spawns).toBe(3);
+    } finally {
+      // biome-ignore lint/suspicious/noExplicitAny: restore the spy
+      (process.stderr as any).write = original;
+    }
+  });
+});
+
 describe("child kill budget (real execFile contract)", () => {
   it("a hung child is killed at the timeout — the utility PROCESS is dead, not merely signalled", async () => {
     // The enricher trusts node's execFile timeout to reap a hung child —

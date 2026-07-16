@@ -262,23 +262,43 @@ export function diskBytesFromStatfs(stat: {
 /** Root-filesystem (`/`) usage via the `statfs` syscall — the one capacity
  *  source universal across linux and darwin (no `/proc` file reports free
  *  space). Reports `/` only by deliberate policy; see the mount-selection note
- *  on `SystemSchema.diskUsed`. Degrades to zeros if `statfs` is unavailable
- *  (unknown platform) so the system snapshot still resolves — `pctOf` then
- *  reads it as "unavailable". */
-async function readRootDiskUsage(): Promise<{
-  diskUsed: number;
-  diskTotal: number;
-}> {
-  try {
-    return diskBytesFromStatfs(await statfs("/"));
-  } catch {
-    // `statfs` is unavailable on some platforms (e.g. Windows). Degrade to
-    // zeros so the system snapshot still resolves — `pctOf` renders it as
-    // "unavailable" (0/0 → 0%). Safe to swallow: the caller merges these
-    // zeros into the snapshot and the UI shows nothing rather than crashing.
-    return { diskUsed: 0, diskTotal: 0 };
-  }
-}
+ *  on `SystemSchema.diskUsed`.
+ *
+ *  SINGLE-FLIGHT PROBE + LAST-KNOWN VALUE, not an awaited read: statfs is a
+ *  syscall with no timeout knob, and it sits under the same
+ *  settlement-dependent guards as the exec children (main.ts's `singleFlight`
+ *  tick) — a root filesystem in D-state (dying disk, wedged network root)
+ *  would otherwise freeze the `system` cell and the alerts reactor forever,
+ *  the exact wedge the child kill-budgets close. The probe-cache bounds the
+ *  damage to ONE wedged libuv threadpool thread (an awaited deadline-race
+ *  would stack a fresh wedged statfs every tick until the pool starves), and
+ *  callers always get the last observation immediately — 0/0 ("unavailable"
+ *  via `pctOf`) until the first probe lands, one tick on a healthy host,
+ *  mirroring the cwd enricher's decoupling. A FAILED probe keeps the last
+ *  observation: statfs-unavailable platforms (e.g. Windows) fail instantly
+ *  each tick, which is cheap and stays 0/0; a once-working disk that starts
+ *  erroring serves its last reading rather than flapping to zeros. */
+const readRootDiskUsage = (() => {
+  let last = { diskUsed: 0, diskTotal: 0 };
+  let probe: Promise<void> | undefined;
+  return (): { diskUsed: number; diskTotal: number } => {
+    if (probe === undefined) {
+      probe = statfs("/").then(
+        (s) => {
+          last = diskBytesFromStatfs(s);
+          probe = undefined;
+        },
+        () => {
+          // Keep the last observation (see doc above) — safe to swallow: 0/0
+          // renders as "unavailable", and a transiently-erroring disk holding
+          // its previous reading beats a flapping gauge.
+          probe = undefined;
+        },
+      );
+    }
+    return last;
+  };
+})();
 
 export function createProcReader(): ProcReader {
   const plat = platform();
@@ -319,14 +339,15 @@ function linuxReader(): ProcReader {
     readCpuCores,
     readNetwork,
     readSystem: async () => {
-      const [loadAvgs, mem, up, disk] = await Promise.all([
+      const [loadAvgs, mem, up] = await Promise.all([
         readFile("/proc/loadavg", "utf-8").then((s) =>
           s.split(/\s+/).slice(0, 3).map(Number),
         ),
         readFile("/proc/meminfo", "utf-8").then(parseMeminfo),
         readFile("/proc/uptime", "utf-8").then((s) => Number(s.split(" ")[0])),
-        readRootDiskUsage(),
       ]);
+      // Synchronous cached observation — never awaited (see readRootDiskUsage).
+      const disk = readRootDiskUsage();
       return {
         loadAvg: [loadAvgs[0] ?? 0, loadAvgs[1] ?? 0, loadAvgs[2] ?? 0],
         memUsed: mem.total - mem.available,
@@ -716,8 +737,11 @@ const ENRICH_BACKOFF_CAP_MS = 300_000;
  *    - FAILURE BACKOFF: consecutive failures (killed at budget, lsof absent,
  *      output over maxBuffer) back off exponentially from GAP_FACTOR ×
  *      budget, capped at ENRICH_BACKOFF_CAP_MS, reset by the first success.
- *      Failures stay silent by design — lsof-absent is a documented
- *      environment, and the backoff bounds the retry cost.
+ *      The first failure of an episode logs one stderr line (and recovery
+ *      logs another) so an operator debugging a blank/stale cwd column has
+ *      the cause in the agent's log; the retry cadence itself stays quiet —
+ *      lsof-absent is a documented environment, and the backoff bounds the
+ *      retry cost.
  *    - STALE-BEATS-BLANK: skipped/failed ticks keep the last observed cwds
  *      rather than blanking — no double full-table delta churn, and a slow
  *      host was already serving stale values. Consequence: cwd fills on the
@@ -811,11 +835,28 @@ export function createCwdEnricher(
             if (!runEligible.has(pid)) landed.delete(pid);
           }
           lastMap = landed;
+          if (consecutiveFailures > 0) {
+            process.stderr.write(
+              `cwd enrichment recovered after ${consecutiveFailures} failed attempt(s)\n`,
+            );
+          }
           consecutiveFailures = 0;
           restFor(ENRICH_GAP_FACTOR * (now() - startedMs));
         })
-        .catch(() => {
+        .catch((err) => {
           consecutiveFailures++;
+          // The RETRY CADENCE stays quiet (backoff bounds the cost, and
+          // lsof-absent is an expected environment), but the FAILURE must
+          // leave a diagnostic trace: an operator debugging a blank/stale
+          // cwd column needs the cause in the agent's log (stderr — the
+          // parent forwards it), not silence. One line per failure episode
+          // (first failure only; recovery logs on the success path), so a
+          // persistently-failing host costs one line, not one per attempt.
+          if (consecutiveFailures === 1) {
+            process.stderr.write(
+              `cwd enrichment failed, backing off: ${(err as Error).message}\n`,
+            );
+          }
           restFor(
             ENRICH_GAP_FACTOR * EXEC_BUDGET_MS * 2 ** (consecutiveFailures - 1),
           );
@@ -956,13 +997,14 @@ export function darwinReader(execImpl: ExecFn = execFile): ProcReader {
       // swapusage is a separate sysctl from vm_stat (which reports swapin/out
       // *counts*, not usage), so it rides alongside as its own subprocess.
       // Degrade to empty on failure so the snapshot still resolves as 0/0 swap.
-      const [{ stdout }, swapOut, disk] = await Promise.all([
+      const [{ stdout }, swapOut] = await Promise.all([
         run("vm_stat", []),
         run("sysctl", ["-n", "vm.swapusage"]).catch(() => ({
           stdout: "",
         })),
-        readRootDiskUsage(),
       ]);
+      // Synchronous cached observation — never awaited (see readRootDiskUsage).
+      const disk = readRootDiskUsage();
       const total = totalmem();
       const available = parseVmStat(stdout).available;
       return {
@@ -1040,7 +1082,7 @@ function stubReader(): ProcReader {
       // for genuinely-unknown platforms with no vm_stat / /proc to query.
       // `statfs` still works on many such platforms; `readRootDiskUsage`
       // degrades to zeros where it doesn't.
-      const disk = await readRootDiskUsage();
+      const disk = readRootDiskUsage();
       return {
         loadAvg: [la[0] ?? 0, la[1] ?? 0, la[2] ?? 0],
         memUsed: totalmem() - freemem(),
