@@ -2,6 +2,8 @@ import { exec as execCb } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, expect, it } from "bun:test";
 import {
+  type BudgetedRun,
+  budgetedExec,
   computeNetThroughput,
   createCwdEnricher,
   darwinReader,
@@ -245,6 +247,24 @@ describe("darwinReader cwd enrichment discipline (drishti#111)", () => {
     }
   });
 
+  it("budgetedExec is the one boundary that attaches the budget — the narrowed run has no options socket to forget", async () => {
+    // The enumerating pin above is a regression net over the KNOWN children;
+    // this is the structural pin: every darwin spawn goes through
+    // budgetedExec, so asserting the wrapper once covers any child added
+    // later.
+    let opts:
+      | { timeout?: number; killSignal?: NodeJS.Signals; maxBuffer?: number }
+      | undefined;
+    const execImpl: ExecFn = (_cmd, o) => {
+      opts = o;
+      return Promise.resolve({ stdout: "" });
+    };
+    await budgetedExec(execImpl)("anything");
+    expect(opts?.timeout).toBe(20_000);
+    expect(opts?.killSignal).toBe("SIGKILL");
+    expect(opts?.maxBuffer).toBeGreaterThanOrEqual(16 * 1024 * 1024);
+  });
+
   it("merges the landed cwd map into subsequent polls (stale-beats-blank)", async () => {
     const { env, execImpl } = fakeExecEnv();
     const reader = darwinReader(execImpl);
@@ -267,13 +287,13 @@ describe("createCwdEnricher gap + backoff (fake clock)", () => {
         | { resolve: (v: { stdout: string }) => void; reject: (e: Error) => void }
         | undefined,
     };
-    const execImpl: ExecFn = () => {
+    const run: BudgetedRun = () => {
       h.spawns++;
       return new Promise((resolve, reject) => {
         h.settle = { resolve, reject };
       });
     };
-    const enrich = createCwdEnricher(execImpl, () => h.t);
+    const enrich = createCwdEnricher(run, () => h.t);
     return { h, enrich };
   }
   // Let the settled child's .then/.catch install its bookkeeping.
@@ -373,11 +393,11 @@ describe("createCwdEnricher gap + backoff (fake clock)", () => {
   it("routes a SYNCHRONOUSLY-throwing exec onto the failure backoff instead of wedging in-flight forever", async () => {
     let t = 0;
     let spawns = 0;
-    const throwingExec: ExecFn = () => {
+    const throwingRun: BudgetedRun = () => {
       spawns++;
       throw new Error("spawn failed sync");
     };
-    const enrich = createCwdEnricher(throwingExec, () => t);
+    const enrich = createCwdEnricher(throwingRun, () => t);
     expect(enrich().size).toBe(0); // must not throw out of the thunk
     await Bun.sleep(0);
     // Backoff scheduled (k=1 → 60s), then the enricher recovers to retry —

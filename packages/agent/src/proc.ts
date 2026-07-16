@@ -642,6 +642,21 @@ const CHILD_EXEC_OPTS = {
   maxBuffer: 16 * 1024 * 1024,
 } as const;
 
+/** The narrowed run shape darwin's read closures spawn children through:
+ *  command in, stdout out — no options socket, so an unbudgeted child cannot
+ *  be spelled at a call site. */
+export type BudgetedRun = (cmd: string) => Promise<{ stdout: string }>;
+
+/** The ONE place `CHILD_EXEC_OPTS` attaches to an exec. `darwinReader` wraps
+ *  its injected `ExecFn` here once and hands the narrowed `run` to every read
+ *  closure and to `createCwdEnricher`, so the kill-budget invariant ("EVERY
+ *  darwin child is budgeted") is owned by this boundary instead of
+ *  re-asserted at each spawn. */
+export const budgetedExec =
+  (execImpl: ExecFn): BudgetedRun =>
+  (cmd) =>
+    execImpl(cmd, CHILD_EXEC_OPTS);
+
 /** Rest-to-run ratio after a successful enrichment: the next child may spawn
  *  no earlier than completion + GAP_FACTOR × duration. A healthy-mac lsof
  *  (~100-400ms) yields a sub-second gap — every 2s poll tick enriches, exactly
@@ -674,7 +689,9 @@ const ENRICH_BACKOFF_CAP_MS = 300_000;
  *      hazard the framework pollSource routes through Promise.resolve) so it
  *      lands on the failure-backoff path instead of wedging `inFlight` true
  *      forever.
- *    - KILL BUDGET: `CHILD_EXEC_OPTS` (timeout + SIGKILL) on the exec reaps a
+ *    - KILL BUDGET: the budget (`CHILD_EXEC_OPTS`: timeout + SIGKILL) rides
+ *      the reader's single `budgetedExec` boundary — darwinReader constructs
+ *      the narrowed `run` and hands it to this enricher — so the exec reaps a
  *      genuinely-hung child (the fseventsd-wedge class), guaranteeing the
  *      promise settles and the single-flight guard releases.
  *    - ADAPTIVE GAP: after a run of duration d, the next spawn waits
@@ -705,7 +722,7 @@ const ENRICH_BACKOFF_CAP_MS = 300_000;
  *  reaps it — bounded to one, vs. the unbounded pre-fix pileup (and the #110
  *  framework-owned exit path is untouched). */
 export function createCwdEnricher(
-  execImpl: ExecFn,
+  run: BudgetedRun,
   now: () => number = () => performance.now(),
 ): (livePids?: ReadonlySet<Pid>) => Map<Pid, string> {
   let lastMap = new Map<Pid, string>();
@@ -723,7 +740,7 @@ export function createCwdEnricher(
       // prevent.
       let child: Promise<{ stdout: string }>;
       try {
-        child = execImpl("lsof -nP -d cwd -Fpn", CHILD_EXEC_OPTS);
+        child = run("lsof -nP -d cwd -Fpn");
       } catch (err) {
         child = Promise.reject(err);
       }
@@ -846,7 +863,10 @@ export function parseSwapusage(stdout: string): {
  *  without real subprocesses. `execImpl` defaults to the real promisified
  *  exec in production (`createProcReader` passes nothing).
  *
- *  EVERY child rides `CHILD_EXEC_OPTS`: these reads sit under
+ *  EVERY child rides `CHILD_EXEC_OPTS` — structurally, not by discipline:
+ *  the injected exec is wrapped ONCE in `budgetedExec` and every read
+ *  closure (and the enricher) spawns through the narrowed `run`, so an
+ *  unbudgeted child cannot be spelled. These reads sit under
  *  settlement-dependent non-overlap guards (the framework poll's latch for
  *  the collections, main.ts's `singleFlight` for the system tick), so an
  *  unbudgeted hung child wouldn't just stall a tick — it would silently
@@ -856,9 +876,10 @@ export function parseSwapusage(stdout: string): {
  *  fire re-samples. */
 export function darwinReader(execImpl: ExecFn = exec): ProcReader {
   const readCpuCores = createCpuCoresReader();
-  const enrichCwd = createCwdEnricher(execImpl);
+  const run = budgetedExec(execImpl);
+  const enrichCwd = createCwdEnricher(run);
   const readNetwork = createNetReader(async () => {
-    const { stdout } = await execImpl("netstat -ib", CHILD_EXEC_OPTS);
+    const { stdout } = await run("netstat -ib");
     return filterLoopback(parseNetstatIb(stdout));
   });
   return {
@@ -880,8 +901,8 @@ export function darwinReader(execImpl: ExecFn = exec): ProcReader {
       // *counts*, not usage), so it rides alongside as its own subprocess.
       // Degrade to empty on failure so the snapshot still resolves as 0/0 swap.
       const [{ stdout }, swapOut, disk] = await Promise.all([
-        execImpl("vm_stat", CHILD_EXEC_OPTS),
-        execImpl("sysctl -n vm.swapusage", CHILD_EXEC_OPTS).catch(() => ({
+        run("vm_stat"),
+        run("sysctl -n vm.swapusage").catch(() => ({
           stdout: "",
         })),
         readRootDiskUsage(),
@@ -911,9 +932,8 @@ export function darwinReader(execImpl: ExecFn = exec): ProcReader {
       // `?? ""` — mirroring linux's per-pid EACCES-to-blank fallback. ps runs
       // FIRST so the tick's live pid set rides into the enricher, which
       // prunes recycled pids from the served map.
-      const { stdout: psOut } = await execImpl(
+      const { stdout: psOut } = await run(
         "ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=",
-        CHILD_EXEC_OPTS,
       );
       const raws: DarwinProcRaw[] = [];
       for (const line of psOut.split("\n")) {
