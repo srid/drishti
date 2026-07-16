@@ -27,6 +27,7 @@ import { createProcessIdEcho } from "@kolu/surface-app/connect";
 import { createNotify } from "@kolu/surface-app/notify";
 import { connectSurfaces } from "@kolu/surface-app/solid";
 import { connectSurfaceMap } from "@kolu/surface-map/client";
+import type { ClientErrorPolicy } from "drishti-common/browser";
 import { adminSurfaces } from "../common/admin-surface";
 import { ADMIN_HOST_SENTINEL } from "../common/host";
 import { hostSurfaceMap } from "../common/hostMap";
@@ -71,12 +72,32 @@ const BASE_SOCKET_OPTIONS = {
 // isn't double-watched; the lifecycle still retires the socket on a
 // stale-restart, so this opts out of self-retire (`retireOnStaleClose:
 // false`).
+/** The ONE drishti client-error interpreter (SR11, fork-A) — the single place drishti's
+ *  app-owned {@link ClientErrorPolicy} arm is rendered. drishti has no Toaster, so it
+ *  LOGS: `console.error(label, err)` where `label` is the member's declared message. It
+ *  REPLACES the hand-rolled `onHostMembershipError` (folded into the `entries` membership
+ *  collection's declared policy) and every per-use-site `onError`. Registered at BOTH
+ *  seams (`connectSurfaces` for the root admin/surfaceApp siblings — origin-free; and
+ *  `connectSurfaceMap` for the host map — the membership + per-host entry members), so a
+ *  spec-declared `client.onError` reaches app code without any use-site `onError`.
+ *
+ *  The single `{ kind: "log" }` arm makes the body total — nothing else is spellable —
+ *  the log twin of kolu's toast/hostToast/scopedSub `match(...).exhaustive()`. */
+export function interpretClientError(p: ClientErrorPolicy, err: Error): void {
+  console.error(p.label, err);
+}
+
 const conn = connectSurfaces({
   surfaces: adminSurfaces,
   url: wsBase,
   echo,
   socketOptions: BASE_SOCKET_OPTIONS,
   retireOnStaleClose: false,
+  // The root admin/surfaceApp siblings carry NO policy today (`TPolicy = never`), so this
+  // never fires for them — but registering the ONE interpreter at BOTH seams keeps the
+  // seam symmetric with `connectSurfaceMap` below (and honest the day a root member ever
+  // declares a policy). See design §A: the app spells ONE interpreter.
+  onClientError: (p, e) => interpretClientError(p as ClientErrorPolicy, e),
 });
 
 export const ws = conn.ws;
@@ -93,7 +114,14 @@ export const ws = conn.ws;
 //    construction (the handle is unforgeable), so every chip floors on the
 //    real socket — there is no raw `{ live }` seam to pass a
 //    green-over-dead accessor through.
-export const hostMap = connectSurfaceMap(hostSurfaceMap, conn.transport);
+export const hostMap = connectSurfaceMap(hostSurfaceMap, conn.transport, {
+  // SR11 — the host map's membership `entries` collection AND every per-host entry member
+  // (system / alerts / cpuCores / networkInterfaces) declare `{ kind: "log", label }`
+  // policies; route them all through the ONE `interpretClientError`. The membership
+  // collection fires ORIGIN-FREE; a per-key member would carry `{ key }`, which drishti's
+  // log arm ignores (it renders the label + err, host-agnostic).
+  onClientError: (p, e) => interpretClientError(p as ClientErrorPolicy, e),
+});
 
 // The origin's ONE notification seam (kolu W5, `@kolu/surface-app/notify`) —
 // the last hop of cross-host attention. App-scoped alongside the host map it
@@ -112,13 +140,6 @@ export const notify = createNotify<{ host: string; id: string }>((data) => {
   if (typeof d.host !== "string" || typeof d.id !== "string") return undefined;
   return { host: d.host, id: d.id };
 });
-
-/** The ONE membership-error handler for `hostMap.entries` — shared by every
- *  whole-collection consumer (`App.tsx`'s reconcile effect, `TabStrip`'s
- *  strip) so a membership-stream failure toasts once, not per-consumer. */
-export const onHostMembershipError = (err: Error): void => {
-  console.error("host membership subscription failed", err);
-};
 
 /** The per-host PROCEDURE client — `hostRpc(host).process.kill(...)` resolves at
  *  the map's key-folded wire path. The entry's bound `procedures` face, typed

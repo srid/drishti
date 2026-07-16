@@ -143,7 +143,6 @@ import {
   hostRpc,
   hostStreams,
   notify,
-  onHostMembershipError,
   rememberServerProcessId,
   surfaceAppClient,
 } from "./wire";
@@ -455,7 +454,7 @@ function MultiHostApp() {
   // Host membership + status is now the `@kolu/surface-map` host map's OWN
   // `entries` collection (`hostMap`, `wire.ts`) — the old hand-rolled
   // `admin.collections.hosts` is deleted.
-  const hosts = hostMap.entries.use({ onError: onHostMembershipError });
+  const hosts = hostMap.entries.use();
 
   // Preserve insertion order: hostsStore guarantees first-occurrence
   // order, the server's pool seeds the map's `entries` in that order, and
@@ -1105,12 +1104,11 @@ function HostView(props: {
   // JSON round-trip preserving an `undefined`-valued property or on zod
   // accepting a MISSING `z.void()` key — a leniency zod tightened in >=4.3.7.
   // drishti's `zod` therefore rides a normal `^4.3.6` range again (the exact
-  // `4.3.6` pin this once needed is gone). `onError` stays wired here as a
-  // defensive surface (not swallowed) rather than hanging silently, in case a
-  // future dependency drift reintroduces this class of bug.
-  const system = entry.cells.system.use({
-    onError: (err) => console.error("system subscription failed", err),
-  });
+  // `4.3.6` pin this once needed is gone). The subscription-failure log is NOT
+  // swallowed: it rides the member's declared `client.onError` policy (SR11,
+  // `browser.ts`), routed through the ONE `interpretClientError` — no per-use-site
+  // `onError` — in case a future dependency drift reintroduces this class of bug.
+  const system = entry.cells.system.use();
   // SR9 — the word derives from the same entry the dot reads (no second subscription).
   const connection = () => connectionOf(entry.state());
   const entryState = createMemo<EntryState<{ reason: string }>>(() => entry.state());
@@ -1121,9 +1119,7 @@ function HostView(props: {
   // deep-links to a page with no trace of its cause is the honest-connect defect
   // (an indicator you can't act on); `AlertsPanel` below closes it. Same cell,
   // same source of truth as the card pip and the notification.
-  const alerts = entry.cells.alerts.use({
-    onError: (err) => console.error("alerts subscription failed", err),
-  });
+  const alerts = entry.cells.alerts.use();
   const raisedIds = createMemo<AlertId[]>(() => alerts.value()?.items ?? []);
 
   // Re-arm the parent's session after it gave up (state === "failed").
@@ -1257,20 +1253,15 @@ function HostView(props: {
 
   // `cpuCores`/`networkInterfaces` ride the collection `deltas` verb, which
   // is ALSO void-input at the entry-router fold — the same omitted-`input`
-  // envelope `system`/`connection` ride above (see that comment; `onError`
-  // was already wired here, unlike those, since these two pre-date the map
-  // adoption).
-  const cores = entry.collections.cpuCores.use({
-    onError: (err) => console.error("cpuCores subscription failed", err),
-  });
+  // envelope `system`/`connection` ride above. Their subscription-failure log
+  // rides the members' declared `client.onError` policies (SR11, `browser.ts`),
+  // routed through the ONE `interpretClientError` — no per-use-site `onError`.
+  const cores = entry.collections.cpuCores.use();
   const coreIds = createMemo<CoreId[]>(() =>
     [...cores.keys()].sort((a, b) => a - b),
   );
 
-  const nics = entry.collections.networkInterfaces.use({
-    onError: (err) =>
-      console.error("networkInterfaces subscription failed", err),
-  });
+  const nics = entry.collections.networkInterfaces.use();
   // Stable, name-sorted identity array so <For> reuses NetCell DOM across
   // ticks instead of churning rows (same reasoning as coreIds / visiblePids).
   const ifaceNames = createMemo<IfaceName[]>(() =>
@@ -1361,7 +1352,8 @@ function HostView(props: {
           not-yet-`connected` mirror cases the old fallback did; there is no
           separate "degraded" amber notice left to distinguish a live-but-
           erroring sub from a still-warming one — each subscription below
-          already surfaces its OWN error via its `onError` callback. */}
+          already surfaces its OWN error via its member's declared `client.onError`
+          policy (SR11), routed through the ONE `interpretClientError`. */}
       <Show
         when={currentConnection().phase === "connected"}
         fallback={connectingView()}

@@ -7,9 +7,19 @@
  * `drishti-common` (`./surface.ts`) and never reaches this file.
  */
 
-import { defineSurface } from "@kolu/surface/define";
+import { defineSurface, defineSurfaceWithPolicy } from "@kolu/surface/define";
 import { z } from "zod";
 import { MetricHistoryMessage, surface } from "./surface";
+
+/** drishti's app-owned client-error-policy union (SR11, fork-A) — the OPAQUE,
+ *  app-typed value the framework threads to the app's registered `onClientError`
+ *  interpreter (`interpretClientError`, client `wire.ts`) but never reads. ONE arm:
+ *  drishti LOGS (kolu, the other consumer, TOASTS the same seam — "the same member
+ *  interpreted oppositely by two apps"). `label` carries the per-member console
+ *  message so the ONE interpreter renders each member's line verbatim — the log twin
+ *  of kolu's `{ kind: "toast"; label }` arm, and the divergent-app proof that the
+ *  framework never names an app arm (drishti has no Toaster). */
+export type ClientErrorPolicy = { kind: "log"; label: string };
 
 /** The agent surface the parent serves, verbatim. SR9: no `connection` cell composed
  *  here — link health rides the host-map entry's fine `connection` payload (the ONE
@@ -38,9 +48,35 @@ export const historySurface = defineSurface({
  *  `extendSurface(mirroredAgentSurface, historyRuntime)` serves. The browser's client
  *  types off THIS, so it reaches every member the parent serves at the same flat
  *  paths, byte-identical. (A flat spec merge, mirroring `extendSurface`'s own merge.) */
-export const browserSurface = defineSurface({
-  cells: mirroredAgentSurface.spec.cells,
-  collections: mirroredAgentSurface.spec.collections,
+export const browserSurface = defineSurfaceWithPolicy<ClientErrorPolicy>()({
+  cells: {
+    ...mirroredAgentSurface.spec.cells,
+    // SR11 — the members whose client subscription failure the browser LOGS declare
+    // their `{ kind: "log", label }` policy HERE (on the entry surface, the one the
+    // client types off), so the failure routes to the ONE `interpretClientError` with
+    // no per-use-site `onError`. `label` is the exact console message preserved.
+    system: {
+      ...mirroredAgentSurface.spec.cells.system,
+      client: { onError: { kind: "log", label: "system subscription failed" } },
+    },
+    alerts: {
+      ...mirroredAgentSurface.spec.cells.alerts,
+      client: { onError: { kind: "log", label: "alerts subscription failed" } },
+    },
+  },
+  collections: {
+    ...mirroredAgentSurface.spec.collections,
+    cpuCores: {
+      ...mirroredAgentSurface.spec.collections.cpuCores,
+      client: { onError: { kind: "log", label: "cpuCores subscription failed" } },
+    },
+    networkInterfaces: {
+      ...mirroredAgentSurface.spec.collections.networkInterfaces,
+      client: {
+        onError: { kind: "log", label: "networkInterfaces subscription failed" },
+      },
+    },
+  },
   procedures: mirroredAgentSurface.spec.procedures,
   streams: historySurface.spec.streams,
 });
