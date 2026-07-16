@@ -48,8 +48,9 @@ const ProcessSchema = z.object({
    *  tick late and may be stale on a host whose lsof is slow (it fills on
    *  the first LANDED lsof run — one tick on a healthy host). Dead pids are
    *  pruned once a poll tick observes them ABSENT (and a landing is
-   *  intersected with the freshest live set, so a slow in-flight run cannot
-   *  reintroduce one), so the common die-then-observed-dead-then-recycled
+   *  filtered through the run's monotone eligible set, so a slow in-flight
+   *  run cannot reintroduce one — even if the pid was recycled and reads
+   *  live again before the landing), so the common die-then-observed-dead-then-recycled
    *  case blanks within one tick — but a pid recycled within a single poll
    *  window (never observed dead) can inherit the previous process's cwd
    *  until the next LANDED enrichment run; on a host whose enrichment fails

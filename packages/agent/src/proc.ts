@@ -723,10 +723,12 @@ const ENRICH_BACKOFF_CAP_MS = 300_000;
  *      FIRST LANDED run — one tick (~2s) on a healthy host, later on a slow
  *      one; blank until then. The caller passes each tick's LIVE pid set:
  *      the thunk prunes dead pids from the served map at read time AND
- *      intersects every landing with the freshest observed live set (a slow
- *      in-flight child cannot reintroduce a pid a later tick already
- *      observed dead), so the die-then-observed-dead-then-recycled case
- *      blanks within one tick. The one honest hole: a pid recycled within a
+ *      filters every landing through the run's MONOTONE eligible set (live
+ *      at spawn ∩ every tick during the run — an absence is permanent for
+ *      the run even if a recycled pid reads live again before the landing),
+ *      so a slow in-flight child cannot reintroduce a pid any tick observed
+ *      dead and the die-then-observed-dead-then-recycled case blanks within
+ *      one tick. The one honest hole: a pid recycled within a
  *      single poll window (never observed dead) can inherit the dead
  *      process's cwd until the next LANDED run — and persistent enrichment
  *      failures mean that landing may never come, preserving such a stale
@@ -750,10 +752,13 @@ export function createCwdEnricher(
   let inFlight = false;
   let nextSpawnAtMs = 0;
   let consecutiveFailures = 0;
-  // The freshest live pid set any tick has reported — what a LANDING is
-  // intersected with, so a slow child (spawned before pids died) cannot
-  // reintroduce a pid a later tick already observed dead.
-  let latestLive: ReadonlySet<Pid> | undefined;
+  // Per-run MONOTONE eligibility: seeded from the live set at spawn, and
+  // intersected with every tick's live set while the run is in flight. A pid
+  // observed absent by ANY tick during the run leaves the set permanently —
+  // so a slow child cannot hand its dead-process cwd to a pid that died and
+  // was RECYCLED before the landing (a freshest-set-only intersect forgets
+  // the absence the moment the recycled pid reads live again).
+  let eligible: Set<Pid> | undefined;
   // Every settlement path schedules its next spawn through this one closure,
   // so the ENRICH_BACKOFF_CAP_MS ceiling ("EVERY enrichment gap is capped")
   // is structural — a future path cannot schedule an uncapped gap.
@@ -761,9 +766,16 @@ export function createCwdEnricher(
     nextSpawnAtMs = now() + Math.min(gapMs, ENRICH_BACKOFF_CAP_MS);
   };
   return (livePids) => {
-    latestLive = livePids;
+    // Narrow the in-flight run's eligibility monotonically — absences are
+    // permanent for the run, reappearances (pid recycling) do not restore.
+    if (eligible !== undefined) {
+      for (const pid of eligible) {
+        if (!livePids.has(pid)) eligible.delete(pid);
+      }
+    }
     if (!inFlight && now() >= nextSpawnAtMs) {
       inFlight = true;
+      eligible = new Set(livePids);
       const startedMs = now();
       // Fence: a SYNCHRONOUSLY-throwing exec (a broken injected impl, an
       // spawn-time OS error surfacing sync) must land on the same
@@ -779,14 +791,17 @@ export function createCwdEnricher(
       child
         .then(({ stdout }) => {
           const landed = parseLsofCwd(stdout);
-          // Intersect with the freshest tick's observation: the child's
-          // snapshot is OLDER than any tick that completed during its run,
-          // so a pid the latest tick didn't see is dead — reinstalling it
-          // would undo the read-time prune and hand its cwd to a recycled
-          // pid.
-          if (latestLive !== undefined) {
+          // Filter the landing through the run's monotone eligible set: the
+          // child's snapshot is OLDER than any tick that completed during
+          // its run, so a pid any of those ticks observed absent is dead —
+          // reinstalling it would undo the read-time prune and hand its cwd
+          // to a recycled pid. (A pid born mid-run is filtered too — it
+          // reads blank until the next landing, the documented
+          // one-cycle-late deal.)
+          const keep = eligible;
+          if (keep !== undefined) {
             for (const pid of landed.keys()) {
-              if (!latestLive.has(pid)) landed.delete(pid);
+              if (!keep.has(pid)) landed.delete(pid);
             }
           }
           lastMap = landed;
@@ -801,6 +816,7 @@ export function createCwdEnricher(
         })
         .finally(() => {
           inFlight = false;
+          eligible = undefined; // the set belongs to the settled run
         });
     }
     // Prune pids the current tick no longer sees, so a recycled pid can't

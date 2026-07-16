@@ -431,13 +431,28 @@ describe("createCwdEnricher gap + backoff (fake clock)", () => {
     // While the child is in flight, a later tick observes 42 ABSENT.
     enrich(new Set([43]));
     // The old child lands carrying the dead pid — the landing must be
-    // intersected with the freshest observation, or a pid recycled before
+    // filtered through the run's eligible set, or a pid recycled before
     // the next tick would inherit the dead process's cwd despite having
     // been observed dead (the documented one-tick blank bound).
     h.settle?.resolve({ stdout: ["p42", "n/srv", "p43", "n/tmp", ""].join("\n") });
     await drain();
     const served = enrich(new Set([42, 43])); // 42 recycled this tick
     expect(served.has(42)).toBe(false);
+    expect(served.get(43)).toBe("/tmp");
+  });
+
+  it("an absence is permanent for the run: alive → observed-absent → recycled-live → old landing still blanks", async () => {
+    const { h, enrich } = harness();
+    enrich(new Set([42, 43])); // spawn run 1 — 42 alive at spawn
+    enrich(new Set([43])); // 42 observed ABSENT mid-run
+    // 42 is RECYCLED and reads live again BEFORE the old run lands — a
+    // freshest-set-only intersect would forget the absence here and hand
+    // the recycled pid the dead process's cwd.
+    enrich(new Set([42, 43]));
+    h.settle?.resolve({ stdout: ["p42", "n/srv", "p43", "n/tmp", ""].join("\n") });
+    await drain();
+    const served = enrich(new Set([42, 43]));
+    expect(served.has(42)).toBe(false); // blank until the NEXT landed run
     expect(served.get(43)).toBe("/tmp");
   });
 });
