@@ -26,4 +26,7 @@ in
   # The zero-dep POSIX shell-quote leaf surface-remote imports (kolu P2,
   # juspay/kolu#1439) — hydrated so its `@kolu/shell-quote` import resolves.
   kolu-shell-quote = mkKoluPackage "shell-quote";
+  # The zero-dep logging leaf surface-remote imports (the `log:Logger` seam,
+  # juspay/kolu#1876) — hydrated so its `@kolu/log` import resolves.
+  kolu-log = mkKoluPackage "log";
 }
