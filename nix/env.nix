@@ -19,8 +19,11 @@
 #                                    source (the install-card adapter; TODO(pin)).
 #   DRISHTI_KOLU_SHELL_QUOTE      — /nix/store path to @kolu/shell-quote source
 #                                    (the zero-dep POSIX leaf surface-remote imports).
+#   DRISHTI_KOLU_LOG              — /nix/store path to @kolu/log source
+#                                    (the zero-dep logging leaf surface-remote
+#                                    imports — the log:Logger seam).
 #
-# All are hydrated into node_modules/@kolu/{surface,surface-remote,surface-map,shell-quote,surface-app,solid-pwa-install}
+# All are hydrated into node_modules/@kolu/{surface,surface-remote,surface-map,shell-quote,log,surface-app,solid-pwa-install}
 # by scripts/hydrate-kolu-packages.sh (three callers: shell.nix
 # shellHook, the justfile install recipe, and the build derivations'
 # postBunNodeModulesInstallPhase).
@@ -32,4 +35,5 @@
   DRISHTI_KOLU_SURFACE_APP = pkgs.kolu-surface-app;
   DRISHTI_KOLU_SOLID_PWA_INSTALL = pkgs.kolu-solid-pwa-install;
   DRISHTI_KOLU_SHELL_QUOTE = pkgs.kolu-shell-quote;
+  DRISHTI_KOLU_LOG = pkgs.kolu-log;
 }
