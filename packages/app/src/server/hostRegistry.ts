@@ -93,6 +93,19 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         connectOnce: sshConnector<typeof surface.contract>({
           host,
           binary: "drishti-agent",
+          // surface-remote is policy-free: the CONSUMER composes the localhost arm's
+          // spawn env (kolu#1884 / #1872). drishti dials "localhost" for real (every
+          // host, including localhost, dials through this connector — see below), so a
+          // localhost drishti-agent must run with EXACTLY this composed env, never
+          // drishti-server's ambient `process.env` (identity vars, secrets). drishti
+          // can't import kolu-pty's `composeSpawnEnv`, so it picks a clean base inline,
+          // omitting any UNSET key (an empty HOME/PATH would misdirect lookups). Unused
+          // on a real ssh host, where the local ssh client legitimately inherits.
+          localEnv: Object.fromEntries(
+            (["HOME", "PATH"] as const)
+              .map((k): [string, string | undefined] => [k, process.env[k]])
+              .filter((e): e is [string, string] => e[1] !== undefined),
+          ),
           resolveDrvPath: () => opts.resolveDrvPath(host),
         }),
         // `sshConnector` PROVISIONS (nix-copies the agent closure before
