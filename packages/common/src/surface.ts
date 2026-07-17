@@ -41,7 +41,18 @@ const ProcessSchema = z.object({
   /** Current working directory. From `/proc/<pid>/cwd` on linux and a single
    *  batched `lsof -d cwd` on darwin. Empty string when unknown — kernel
    *  threads have no cwd, and other-user pids without root can't be resolved
-   *  (EACCES on `/proc/<pid>/cwd` on linux; no `lsof` cwd line on darwin). */
+   *  (EACCES on `/proc/<pid>/cwd` on linux; no `lsof` cwd line on darwin).
+   *  On darwin the value is the LAST-LANDED enrichment run's observation
+   *  (the lsof child is never awaited by the poll), so it fills on the
+   *  first landed lsof run — one poll tick on a healthy host — and may be
+   *  stale on a host whose lsof is slow. Observable staleness contract: a
+   *  pid observed dead by any poll tick blanks within one tick; a pid
+   *  recycled within a single poll window (never observed dead) can inherit
+   *  the previous process's cwd until the next landed enrichment run — and
+   *  on a host whose enrichment fails persistently that landing may never
+   *  come, so such a stale value can persist indefinitely. The mechanism
+   *  lives with createCwdEnricher in the agent package
+   *  (packages/agent/src/proc.ts). */
   cwd: z.string(),
   /** Parent process id — `/proc/<pid>/stat` field 4 on linux, `ps -o
    *  ppid=` on darwin. 0 for pid 1 / the rare orphan whose parent has

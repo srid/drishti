@@ -17,3 +17,7 @@ state/
 /.ci/
 
 /.worktrees
+
+# Per-worktree review-debate scratch (lens-debate / codex-debate engines) — never commit
+.lens-debate/
+.codex-debate/

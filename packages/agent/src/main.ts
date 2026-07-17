@@ -76,6 +76,36 @@ function usage(): never {
   process.exit(1);
 }
 
+/** Wrap an async tick so a fire that lands while a previous run is still in
+ *  flight is SKIPPED — the same non-overlap law the framework's poll source
+ *  applies to the three collections (and the cwd enricher applies to its lsof
+ *  child), owned here for the one hand-rolled `setInterval` left in the agent:
+ *  the system/alerts tick. Without it a slow `readSystem` (darwin: `vm_stat` +
+ *  `sysctl` children) overlaps itself every 2s on a wedged host — the
+ *  drishti#111 pileup class, just with cheaper children. Skipping (not
+ *  queueing) is correct for a poll: the next interval fire re-samples.
+ *
+ *  SOUND ONLY BECAUSE THE READS SETTLE: the guard releases in `finally`, so a
+ *  never-settling tick would freeze the cell forever — which is why every
+ *  darwin child under this tick rides proc.ts's `CHILD_EXEC_OPTS` kill
+ *  budget (a hung vm_stat settles as a rejection, the catch below logs it,
+ *  and the next fire re-samples), and why the one timeout-less syscall in
+ *  the tick — `statfs` — is decoupled behind proc.ts's probe-cache
+ *  (`readRootDiskUsage` serves a cached observation synchronously; a
+ *  D-state root fs cannot hold the tick). Exported for main.test.ts. */
+export function singleFlight(tick: () => Promise<void>): () => Promise<void> {
+  let inFlight = false;
+  return async () => {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      await tick();
+    } finally {
+      inFlight = false;
+    }
+  };
+}
+
 // (The per-tick change gate for a process row — the old `MUTABLE_PROCESS_FIELDS` /
 // `processChanged` — moved to the `processes` collection spec's `equals` in
 // `drishti-common/surface`, since the framework's `derived.collection` reconciler
@@ -238,12 +268,28 @@ export async function serveAgent(
         "construction — the scan→source eager-subscribe invariant broke",
     );
 
+  // Fail LOUD on an owned runtime fault. The one real producer of this today:
+  // a collection poll's SEED read rejecting — e.g. a kill-budget-expired `ps`
+  // on a host already wedged at boot — which the framework's poll-read
+  // contract makes PERMANENTLY fatal to that collection (cadence torn down,
+  // no retry; only LATER ticks are log-skip-continue). A live agent silently
+  // serving a dead processes table for its whole life is the worst outcome —
+  // exit non-zero instead, so the parent surfaces agent death in the
+  // connection cell where the user actually looks, and a reconnect gets a
+  // fresh seed attempt. (Deliberately NOT made total at the reader: catching
+  // a seed `ps` failure into an empty map would render a healthy-looking
+  // empty table over a broken platform — a silent lie.)
+  void runtime.done.catch((err: unknown) => {
+    log(`surface runtime fault: ${(err as Error).message} — exiting`);
+    process.exit(1);
+  });
+
   // Poll loop for the `system` cell + the `alerts` reactor ONLY: read the cheap
   // host scalars + the per-core aggregate, publish `system`, and feed the metrics
   // source. The three keyed COLLECTIONS are `derived.collection` polls of their own
   // now (above) — the framework owns their reconcile — so the hand-held
   // upsert/remove loops (and the snapshot Maps + `processChanged`) are gone.
-  const tick = async (): Promise<void> => {
+  const tick = singleFlight(async (): Promise<void> => {
     try {
       const nextSystem = await reader.readSystem();
       // Per-core usage for the host-CPU aggregate (cpuPct / coreCount) on the
@@ -265,7 +311,7 @@ export async function serveAgent(
     } catch (err) {
       log(`tick error: ${(err as Error).message}`);
     }
-  };
+  });
   const interval = setInterval(() => {
     void tick();
   }, POLL_INTERVAL_MS);
