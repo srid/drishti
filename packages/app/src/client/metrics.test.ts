@@ -4,6 +4,7 @@ import {
   diskGb,
   diskPct,
   formatBytes,
+  formatProcessUptime,
   formatThroughput,
   formatUptime,
   memGb,
@@ -110,6 +111,27 @@ describe("formatUptime", () => {
 
   it("shows minutes under an hour", () => {
     expect(formatUptime(42 * 60 + 30)).toBe("42m");
+  });
+});
+
+describe("formatProcessUptime", () => {
+  it("reprojects a remote start timestamp before computing elapsed time", () => {
+    expect(
+      formatProcessUptime(
+        3_605_000,
+        7_200_000,
+        (remoteMs) => remoteMs - 5_000,
+      ),
+    ).toBe("1h 0m");
+  });
+
+  it("shows unavailable when the process start or clock offset is unknown", () => {
+    expect(formatProcessUptime(null, 7_200_000, (ms) => ms)).toBe("—");
+    expect(formatProcessUptime(3_605_000, 7_200_000, () => null)).toBe("—");
+  });
+
+  it("clamps a future start timestamp instead of showing negative uptime", () => {
+    expect(formatProcessUptime(10_000, 5_000, (ms) => ms)).toBe("0m");
   });
 });
 

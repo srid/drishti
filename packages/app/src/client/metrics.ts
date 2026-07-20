@@ -60,6 +60,21 @@ export function formatUptime(uptimeSec: number): string {
   return `${m}m`;
 }
 
+/** Format a process's elapsed runtime from its remote-host start timestamp.
+ *  The caller supplies the host-map clock lens: a remote epoch must be
+ *  reprojected before it can be compared with the browser's `nowMs`. Missing
+ *  start data or a clock offset that has not landed yet is honestly unknown. */
+export function formatProcessUptime(
+  remoteStartedAtMs: number | null | undefined,
+  nowMs: number,
+  toLocalTime: (remoteMs: number) => number | null,
+): string {
+  if (remoteStartedAtMs === undefined || remoteStartedAtMs === null) return "—";
+  const localStartedAtMs = toLocalTime(remoteStartedAtMs);
+  if (localStartedAtMs === null) return "—";
+  return formatUptime(Math.max(0, nowMs - localStartedAtMs) / 1000);
+}
+
 // Decimal (1000-based) units, matching the GB convention `memGb` uses —
 // kept consistent so memory and network sizes read the same way.
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
