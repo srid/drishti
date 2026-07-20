@@ -71,6 +71,7 @@ import {
   diskGb,
   diskPct,
   formatBytes,
+  formatProcessUptime,
   formatThroughput,
   formatUptime,
   memGb,
@@ -147,7 +148,7 @@ import {
   surfaceAppClient,
 } from "./wire";
 
-const SORT_KEYS = ["cpu", "mem", "pid", "user"] as const;
+const SORT_KEYS = ["cpu", "mem", "uptime", "pid", "user"] as const;
 type SortKey = (typeof SORT_KEYS)[number];
 
 // The human word for a raised alert id — a CLIENT-owned presentation lookup
@@ -1408,6 +1409,7 @@ function HostView(props: {
           <ProcessTable
             pids={visiblePids()}
             processes={processes}
+            toLocalTime={(remoteMs) => entry.clock.toLocal(remoteMs)}
             sortKey={sortKey()}
             onSort={setSortKey}
           />
@@ -1432,6 +1434,16 @@ function pidComparator(
     return (a, b) => procs[b]!.cpuPct - procs[a]!.cpuPct || a - b;
   if (key === "mem")
     return (a, b) => procs[b]!.rssBytes - procs[a]!.rssBytes || a - b;
+  if (key === "uptime")
+    return (a, b) => {
+      const aStarted = procs[a]!.startedAtMs;
+      const bStarted = procs[b]!.startedAtMs;
+      // Earlier start means longer uptime. Keep unavailable timestamps after
+      // known ones, then use pid as the stable tie-breaker.
+      if (aStarted === null) return bStarted === null ? a - b : 1;
+      if (bStarted === null) return -1;
+      return aStarted - bStarted || a - b;
+    };
   if (key === "user")
     return (a, b) => procs[a]!.user.localeCompare(procs[b]!.user) || a - b;
   return (a, b) => a - b;
@@ -1705,9 +1717,18 @@ function FailedCard(props: {
 function ProcessTable(props: {
   pids: readonly Pid[];
   processes: Accessor<Record<Pid, Process>>;
+  toLocalTime: (remoteMs: number) => number | null;
   sortKey: SortKey;
   onSort: (k: SortKey) => void;
 }) {
+  // One coarse clock for the whole table — process start timestamps are
+  // immutable, but their elapsed labels must still advance while a row stays
+  // mounted. `formatUptime` only displays minute-or-coarser precision, so one
+  // shared minute tick avoids an interval per process and needless per-second
+  // work across a large table.
+  const [nowMs, setNowMs] = createSignal(Date.now());
+  const clock = setInterval(() => setNowMs(Date.now()), 60_000);
+  onCleanup(() => clearInterval(clock));
   return (
     // `flex-1 min-h-0` makes the table the single scroll region: it grows to
     // fill whatever the pinned vitals above leave, and `min-h-0` lets it shrink
@@ -1741,13 +1762,24 @@ function ProcessTable(props: {
               active={props.sortKey === "mem"}
               onClick={() => props.onSort("mem")}
             />
+            <SortableTh
+              label="UPTIME"
+              align="right"
+              active={props.sortKey === "uptime"}
+              onClick={() => props.onSort("uptime")}
+            />
             <th class="px-3 py-1.5 text-left">COMMAND</th>
           </tr>
         </thead>
         <tbody>
           <For each={props.pids}>
             {(pid) => (
-              <ProcessRow pid={pid} processes={props.processes} />
+              <ProcessRow
+                pid={pid}
+                processes={props.processes}
+                toLocalTime={props.toLocalTime}
+                nowMs={nowMs()}
+              />
             )}
           </For>
         </tbody>
@@ -1766,11 +1798,22 @@ function ProcessTable(props: {
 function ProcessRow(props: {
   pid: Pid;
   processes: Accessor<Record<Pid, Process>>;
+  toLocalTime: (remoteMs: number) => number | null;
+  nowMs: number;
 }) {
   const selection = useContext(SelectionContext);
   const proc = () => props.processes()[props.pid];
   const cpu = () => proc()?.cpuPct ?? 0;
   const rssBytes = () => proc()?.rssBytes ?? 0;
+  // The timestamp was minted on the monitored host. The pure formatter
+  // reprojects it through the map entry's measured clock offset before
+  // comparing it with the browser clock.
+  const uptime = () =>
+    formatProcessUptime(
+      proc()?.startedAtMs,
+      props.nowMs,
+      props.toLocalTime,
+    );
   const isSelected = () => selection?.selectedPid() === props.pid;
   return (
     <tr
@@ -1781,7 +1824,7 @@ function ProcessRow(props: {
           : "hover:bg-gray-50 dark:hover:bg-gray-800/40"
       }`}
     >
-      {/* The four leading columns shrink to their content via `w-px` +
+      {/* The five leading columns shrink to their content via `w-px` +
           `whitespace-nowrap`: `w-px` makes each column's preferred width
           tiny so the auto-layout table collapses it to its (nowrap) content
           width, leaving COMMAND's `w-full` as the sole absorber of the row's
@@ -1801,6 +1844,9 @@ function ProcessRow(props: {
       </td>
       <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
         {formatBytes(rssBytes())}
+      </td>
+      <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
+        {uptime()}
       </td>
       {/* COMMAND absorbs the row's residual width and ellipsizes at the cell
           edge. Both classes are load-bearing in `table-layout: auto`: `w-full`
