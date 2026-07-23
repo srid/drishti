@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "conn-progress",
+      "branch": "master",
       "submodules": false,
-      "revision": "a37a879f6d260c6b2a86bdb132dd8d5425e51140",
-      "url": "https://github.com/juspay/kolu/archive/a37a879f6d260c6b2a86bdb132dd8d5425e51140.tar.gz",
-      "hash": "sha256-vFeWNffQhZ8lkIPNgZ9/QnzuB3bSz3yLoJzfH2lM4TI="
+      "revision": "29642d4ed5618d3db14b983dadeb7229835752b2",
+      "url": "https://github.com/juspay/kolu/archive/29642d4ed5618d3db14b983dadeb7229835752b2.tar.gz",
+      "hash": "sha256-mxZuVSOgdYXFWjES1QC1EureeDscPfKJgLb+Y17jhDA="
     },
     "nixpkgs": {
       "type": "Git",
