@@ -9,9 +9,9 @@
       },
       "branch": "conn-progress",
       "submodules": false,
-      "revision": "928a7d79c17d6c1c14d6b80abd648922df4f15d8",
-      "url": "https://github.com/juspay/kolu/archive/928a7d79c17d6c1c14d6b80abd648922df4f15d8.tar.gz",
-      "hash": "sha256-Fn0kcVW0Uh0otdeMsp9RSFckXXIYKlfPOSGNtwDGo1U="
+      "revision": "a37a879f6d260c6b2a86bdb132dd8d5425e51140",
+      "url": "https://github.com/juspay/kolu/archive/a37a879f6d260c6b2a86bdb132dd8d5425e51140.tar.gz",
+      "hash": "sha256-vFeWNffQhZ8lkIPNgZ9/QnzuB3bSz3yLoJzfH2lM4TI="
     },
     "nixpkgs": {
       "type": "Git",
