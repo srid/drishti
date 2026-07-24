@@ -9,9 +9,9 @@
       },
       "branch": "deocouple-flake",
       "submodules": false,
-      "revision": "9a8e0ce587aa84791497699e88678b20dabdd0bb",
-      "url": "https://github.com/juspay/kolu/archive/9a8e0ce587aa84791497699e88678b20dabdd0bb.tar.gz",
-      "hash": "sha256-FqlBl9DbRbNtvKtcT5sF8f36i1VU5rxl7cWu6oZreR0="
+      "revision": "6c1a8824a6bf48a250efc545c3a3b672cd2f962f",
+      "url": "https://github.com/juspay/kolu/archive/6c1a8824a6bf48a250efc545c3a3b672cd2f962f.tar.gz",
+      "hash": "sha256-XJBqkvVyJPtPGaQE9Z7l7OKJAYXl/5ROchIIlxg1SlY="
     },
     "nixpkgs": {
       "type": "Git",
