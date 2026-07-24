@@ -7,10 +7,10 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "deocouple-flake",
+      "branch": "master",
       "submodules": false,
-      "revision": "6f1b5bceabf029f6e8bb23f4de732648b1635395",
-      "url": "https://github.com/juspay/kolu/archive/6f1b5bceabf029f6e8bb23f4de732648b1635395.tar.gz",
+      "revision": "3ff256f0d3de8cb585e588f490bae5b42eb7d89c",
+      "url": "https://github.com/juspay/kolu/archive/3ff256f0d3de8cb585e588f490bae5b42eb7d89c.tar.gz",
       "hash": "sha256-8B20Dbw8IQuCWeJzkOO+WtCTMssDK5q3a+VfBBqouRo="
     },
     "nixpkgs": {
