@@ -28,8 +28,8 @@ describe("connection STATE presentation", () => {
   it("only connected is non-pending and emerald", () => {
     expect(STATE.connected.pending).toBe(false);
     expect(STATE.connected.text).toBe("text-emerald-500");
-    // copying/connecting are in-flight → pending.
-    expect(STATE.copying.pending).toBe(true);
+    // provisioning/connecting are in-flight → pending.
+    expect(STATE.provisioning.pending).toBe(true);
     expect(STATE.connecting.pending).toBe(true);
   });
 });
@@ -55,8 +55,8 @@ describe("withElapsed", () => {
   it("appends the elapsed seconds once a second has ticked", () => {
     expect(withElapsed("Connecting…", 1)).toBe("Connecting… 1s");
     expect(withElapsed("Connecting…", 18)).toBe("Connecting… 18s");
-    expect(withElapsed("Copying agent to remote…", 42)).toBe(
-      "Copying agent to remote… 42s",
+    expect(withElapsed("Provisioning agent on remote…", 42)).toBe(
+      "Provisioning agent on remote… 42s",
     );
   });
 });

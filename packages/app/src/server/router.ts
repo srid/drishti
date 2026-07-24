@@ -7,7 +7,7 @@
  * On a fresh subscriber, the parent:
  *
  *   1. Synchronously yields the parent's connection-state-aware
- *      `system` snapshot (state = "copying" / "connecting" / etc.).
+ *      `system` snapshot (state = "probing" / "provisioning" / "connecting" / etc.).
  *   2. Once the agent's link is up, mirrors the agent's `system` and
  *      `processes` updates into the parent's local store/collection.
  *   3. Per-key process upserts/removes from the agent flow through to

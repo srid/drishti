@@ -25,9 +25,11 @@
 
 import {
   type AgentClient,
+  type AgentDerivation,
   buildRemotePool,
   makeSession,
   type PoolControls,
+  type ResolveDrvPathContext,
   type RemotePool,
   type Session,
   sshConnector,
@@ -64,7 +66,10 @@ export interface HostPoolOptions {
    *  business knowing how the answer was reached (arch probe, map
    *  lookup, a static value for localhost-only dev) — it just awaits
    *  the resolved path per host. */
-  resolveDrvPath: (host: string) => Promise<string>;
+  resolveDrvPath: (
+    host: string,
+    context: ResolveDrvPathContext,
+  ) => Promise<AgentDerivation>;
   hostsFile: string;
 }
 
@@ -79,7 +84,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
     buildEntry: (host) => {
       // `makeSession` over an `sshConnector` transport plug (kolu S9/S10 —
       // the deleted `getHostSession` is now this composition). The connector
-      // owns everything transport-specific (resolve .drv per dial, nix copy,
+          // owns everything transport-specific (resolve .drv per dial, provision,
       // spawn ssh, wire stdio to a typed client); `makeSession` owns the
       // durable lifecycle (pin/ref-count, backoff, give-up, watchdogs,
       // reconnect/recheck, the connection-state cell). The agent .drv is
@@ -106,12 +111,12 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
               .map((k): [string, string | undefined] => [k, process.env[k]])
               .filter((e): e is [string, string] => e[1] !== undefined),
           ),
-          resolveDrvPath: () => opts.resolveDrvPath(host),
+          resolveDrvPath: (context) => opts.resolveDrvPath(host, context),
         }),
         // `sshConnector` PROVISIONS (nix-copies the agent closure before
         // dialing), so its true opening phase is the connector's FIRST
-        // provisioning phase, "probing" (kolu W6 widened `SshProv` to
-        // `probing → copying → building`) — every drishti host, including
+        // provisioning phase, "probing" (the remote connector advances
+        // `probing → provisioning`) — every drishti host, including
         // "localhost", dials through it (kolu#1716/#1808: the connector's own
         // opening phase, never a LOCAL-set one).
         initialConnection: "probing",

@@ -96,8 +96,10 @@ async function main(): Promise<void> {
     `agent drvs (${Object.keys(agentDrvBySystem).length}): ${Object.keys(agentDrvBySystem).join(", ")}`,
   );
 
-  const resolveDrvPath = (host: string): Promise<string> =>
-    resolveDrvForHost(host, agentDrvBySystem);
+  const resolveDrvPath: Parameters<typeof buildHostPool>[0]["resolveDrvPath"] = (
+    host,
+    context,
+  ) => resolveDrvForHost(host, agentDrvBySystem, context);
 
   const hostsFile = resolveHostsFile();
   const cliHosts = argv._.host;

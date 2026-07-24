@@ -126,7 +126,7 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
             },
             reconnect: ({ input }: { input: { host: string } }) => {
               // No `entries` publish here either: membership is unchanged.
-              // The session's copying→connecting→connected transition
+              // The session's probing→provisioning→connecting→connected transition
               // streams back through the per-host `connection` cell AND the
               // map's fused per-session `onState` → `EntryStatus` republish.
               if (!opts.pool.has(input.host)) return { ok: false };
