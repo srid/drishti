@@ -32,7 +32,13 @@ const connectedFrame: EntryState<{ reason: string }, ConnectionInfo> = {
   kind: "connected",
   membershipId: testMembershipId(),
   clockOffset: 0,
-  connection: { phase: "connected", clockOffset: 0, log: [], sinceMs: 0 },
+  connection: {
+    phase: "connected",
+    clockOffset: 0,
+    log: [],
+    sinceMs: 0,
+    campaignEpoch: 0,
+  },
 };
 
 describe("connection authority (drishti#102 regression)", () => {
@@ -67,7 +73,12 @@ describe("connection authority (drishti#102 regression)", () => {
     const warmingFrame: EntryState<{ reason: string }, ConnectionInfo> = {
       kind: "warming",
       membershipId: testMembershipId(),
-      connection: { phase: "copying", log: [], sinceMs: 0 },
+      connection: {
+        phase: "copying",
+        log: [],
+        sinceMs: 0,
+        campaignEpoch: 0,
+      },
     };
     expect(dotClass(warmingFrame)).not.toContain("emerald"); // dot: not green
     const conn = connectionOf(warmingFrame);

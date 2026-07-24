@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "//": "@kolu/surface-app is NOT a bun dependency — like @kolu/surface, @kolu/surface-remote, and @kolu/surface-map it is hydrated into node_modules/@kolu/surface-app (its raw .ts sources are consumed directly: no build step). It is sourced hermetically from the npins-pinned kolu tree (npins/sources.json → kolu): nix/overlay.nix extracts it as a nix-store path, nix/env.nix exports it as $DRISHTI_KOLU_SURFACE_APP, and the dev shell / install recipe / build derivation copy it into node_modules exactly like the other @kolu/* packages. @kolu/solid-pwa-install (the PWA install-card adapter) is hydrated the same way; src/client/TabStrip.tsx's Pin-app button consumes it (createPwaInstall + installInstructions), gated on the canInstallPwa/isInstalled signals from useSurfaceApp(). The kolu pin tracks branch surface-map (juspay/kolu's dynamic host-map framework) which ships the package source, those signals, and defineSurfaceMap/serveSurfaceMap/connectSurfaceMap.",
+  "//": "@kolu/surface-app is NOT a bun dependency — like @kolu/surface, @kolu/surface-remote, and @kolu/surface-map it is hydrated into node_modules/@kolu/surface-app (its raw .ts sources are consumed directly: no build step). It is sourced hermetically from the npins-pinned kolu tree (npins/sources.json → kolu): nix/overlay.nix extracts it as a nix-store path, nix/env.nix exports it as $DRISHTI_KOLU_SURFACE_APP, and the dev shell / install recipe / build derivation copy it into node_modules exactly like the other @kolu/* packages. Runtime dependencies of those hydrated sources are declared here; lru-cache backs surface-remote's bounded successful derivation cache. @kolu/solid-pwa-install (the PWA install-card adapter) is hydrated the same way; src/client/TabStrip.tsx's Pin-app button consumes it (createPwaInstall + installInstructions), gated on the canInstallPwa/isInstalled signals from useSurfaceApp(). The kolu pin tracks branch deocouple-flake, which ships lazy per-system agent derivation resolution along with the shared surface packages.",
   "scripts": {
     "dev": "bun --watch src/server/main.ts",
     "start": "bun src/server/main.ts",
@@ -25,6 +25,7 @@
     "cleye": "^2.3.0",
     "drishti-common": "workspace:*",
     "hono": "^4.12.16",
+    "lru-cache": "^11.2.7",
     "partysocket": "^1.1.16",
     "solid-js": "^1.9.0",
     "ws": "^8.20.1",

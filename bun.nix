@@ -551,6 +551,10 @@
     url = "https://registry.npmjs.org/lightningcss/-/lightningcss-1.32.0.tgz";
     hash = "sha512-NXYBzinNrblfraPGyrbPoD19C1h9lfI/1mzgWYvXUTe414Gz/X1FD2XBZSZM7rRTrMA8JL3OtAaGifrIKhQ5yQ==";
   };
+  "lru-cache@11.5.2" = fetchurl {
+    url = "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.2.tgz";
+    hash = "sha512-4pfM1Ff0x50o0tQwb5ucw/RzNyD0/YJME6IVcStalZuMWxdt3sR3huStTtxz4PUmvZfRguvDejasvQ2kifR11g==";
+  };
   "lru-cache@5.1.1" = fetchurl {
     url = "https://registry.npmjs.org/lru-cache/-/lru-cache-5.1.1.tgz";
     hash = "sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==";
