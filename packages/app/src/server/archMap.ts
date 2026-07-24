@@ -10,18 +10,32 @@
  * resolved system.
  */
 
-import { resolveSystem } from "@kolu/surface-remote";
+import {
+  type AgentDerivation,
+  directAgentDerivation,
+  type ResolveDrvPathContext,
+  resolveSystem,
+} from "@kolu/surface-remote";
+
+type HostProbeContext = Pick<
+  ResolveDrvPathContext,
+  "signal" | "localProgress"
+>;
 
 export async function resolveDrvForHost(
   host: string,
   drvBySystem: Readonly<Record<string, string>>,
-): Promise<string> {
-  const sys = await resolveSystem(host);
+  context: HostProbeContext,
+): Promise<AgentDerivation> {
+  const sys = await resolveSystem(host, {
+    signal: context.signal,
+    onProgress: context.localProgress,
+  });
   const drv = drvBySystem[sys];
   if (drv === undefined) {
     throw new Error(
       `${host}: no agent .drv baked for system=${sys} (known: ${Object.keys(drvBySystem).join(", ")})`,
     );
   }
-  return drv;
+  return directAgentDerivation(drv);
 }

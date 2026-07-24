@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "//": "@kolu/surface-app is NOT a bun dependency — like @kolu/surface, @kolu/surface-remote, and @kolu/surface-map it is hydrated into node_modules/@kolu/surface-app (its raw .ts sources are consumed directly: no build step). It is sourced hermetically from the npins-pinned kolu tree (npins/sources.json → kolu): nix/overlay.nix extracts it as a nix-store path, nix/env.nix exports it as $DRISHTI_KOLU_SURFACE_APP, and the dev shell / install recipe / build derivation copy it into node_modules exactly like the other @kolu/* packages. Runtime dependencies of those hydrated sources are declared here; quick-lru backs surface-remote's bounded successful derivation cache. @kolu/solid-pwa-install (the PWA install-card adapter) is hydrated the same way; src/client/TabStrip.tsx's Pin-app button consumes it (createPwaInstall + installInstructions), gated on the canInstallPwa/isInstalled signals from useSurfaceApp(). The kolu pin tracks branch deocouple-flake, which ships lazy per-system agent derivation resolution along with the shared surface packages.",
+  "//": "@kolu/surface-app is NOT a bun dependency — like @kolu/surface, @kolu/surface-remote, and @kolu/surface-map it is hydrated into node_modules/@kolu/surface-app (its raw .ts sources are consumed directly: no build step). It is sourced hermetically from the npins-pinned kolu tree (npins/sources.json → kolu): nix/overlay.nix extracts it as a nix-store path, nix/env.nix exports it as $DRISHTI_KOLU_SURFACE_APP, and the dev shell / install recipe / build derivation copy it into node_modules exactly like the other @kolu/* packages. Runtime dependencies of those hydrated sources are declared here; neverthrow carries Surface Remote's explicit agent-source result, quick-lru bounds its successful derivation cache, split2 frames child output, and ts-pattern keeps its closed state folds exhaustive. @kolu/solid-pwa-install (the PWA install-card adapter) is hydrated the same way; src/client/TabStrip.tsx's Pin-app button consumes it (createPwaInstall + installInstructions), gated on the canInstallPwa/isInstalled signals from useSurfaceApp(). The kolu pin tracks branch deocouple-flake, which ships lazy per-system agent derivation resolution along with the shared surface packages.",
   "scripts": {
     "dev": "bun --watch src/server/main.ts",
     "start": "bun src/server/main.ts",
@@ -25,9 +25,12 @@
     "cleye": "^2.3.0",
     "drishti-common": "workspace:*",
     "hono": "^4.12.16",
+    "neverthrow": "^8.2.0",
     "partysocket": "^1.1.16",
     "quick-lru": "^7.3.0",
     "solid-js": "^1.9.0",
+    "split2": "^4.2.0",
+    "ts-pattern": "^5.9.0",
     "ws": "^8.20.1",
     "zod": "^4.3.6"
   },
@@ -35,6 +38,7 @@
     "@types/babel__core": "^7.20.5",
     "@types/bun": "^1.2.0",
     "@types/node": "^22.0.0",
+    "@types/split2": "^4.2.3",
     "@types/ws": "^8.18.1",
     "typescript": "^5.8.0"
   }

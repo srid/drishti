@@ -69,12 +69,12 @@ describe("connection authority (drishti#102 regression)", () => {
 
   it("a warming frame's word tracks its own fine phase (still one source)", () => {
     // A host still coming up: the dot is amber (warming) and the word rides the
-    // fine phase from the SAME frame — e.g. "copying" reads "provisioning agent…".
+    // fine phase from the SAME frame — "provisioning" reads "provisioning agent…".
     const warmingFrame: EntryState<{ reason: string }, ConnectionInfo> = {
       kind: "warming",
       membershipId: testMembershipId(),
       connection: {
-        phase: "copying",
+        phase: "provisioning",
         log: [],
         sinceMs: 0,
         campaignEpoch: 0,

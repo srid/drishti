@@ -27,7 +27,7 @@ import type { ConnectionInfo } from "drishti-common/browser";
 // hide.
 const DOT_TONE: Record<EntryState["kind"], string> = {
   connected: "bg-emerald-500", // live — the map floors this on transport liveness
-  warming: "bg-amber-500", // copying / connecting / pre-clock-offset — coming up
+  warming: "bg-amber-500", // probing / provisioning / connecting — coming up
   failed: "bg-red-500", // provisioning or link failed
   "not-a-member": "bg-gray-400 dark:bg-gray-600", // unreached — we only render members
 };
