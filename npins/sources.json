@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "master",
+      "branch": "port-forwarding-prt2",
       "submodules": false,
-      "revision": "3ff256f0d3de8cb585e588f490bae5b42eb7d89c",
-      "url": "https://github.com/juspay/kolu/archive/3ff256f0d3de8cb585e588f490bae5b42eb7d89c.tar.gz",
-      "hash": "sha256-8B20Dbw8IQuCWeJzkOO+WtCTMssDK5q3a+VfBBqouRo="
+      "revision": "15193a039ecaa45bf32be99585d17e5d0eb0f438",
+      "url": "https://github.com/juspay/kolu/archive/15193a039ecaa45bf32be99585d17e5d0eb0f438.tar.gz",
+      "hash": "sha256-GqHoGPm0frvk58BGLPDnLR+a9JkpdIsHOPnuEpAL+pg="
     },
     "nixpkgs": {
       "type": "Git",
