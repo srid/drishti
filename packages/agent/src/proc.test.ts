@@ -5,6 +5,7 @@ import { parseOsfactsOutput } from "osfacts-client";
 import {
   budgetedExec,
   computeNetThroughput,
+  createProcReader,
   createOsfactsProcessReader,
   darwinReader,
   diskBytesFromStatfs,
@@ -67,6 +68,29 @@ describe("osfacts process inspection", () => {
     expect(calls).toEqual([
       { bin: "/nix/store/osfacts/bin/osfacts", roots: [1] },
     ]);
+  });
+
+  it("does not make readable system processes permission-blind for listeners", async () => {
+    // Production regression (zest monitoring naiveintent): the normal SSH
+    // user received 202 P rows, zero L rows, and 41 `U … EACCES` rows. The P
+    // rows prove process identity was readable; with only --procs + --ports
+    // requested, EACCES/EPERM on the same pid means the listener facet was
+    // lost to the agent user's privileges. Exercise the real baked binary
+    // through the same reader the deployed agent constructs.
+    const processes = await createProcReader().readProcesses();
+    const permissionBlind = Array.from(processes, ([pid, process]) => ({
+      pid,
+      command: process.command,
+      errno: process.unreadableErrno,
+    })).filter(
+      ({ command, errno }) =>
+        command !== "" && (errno === "EACCES" || errno === "EPERM"),
+    );
+
+    expect({
+      count: permissionBlind.length,
+      sample: permissionBlind.slice(0, 5),
+    }).toEqual({ count: 0, sample: [] });
   });
 
   it("keeps the remaining darwin telemetry children on one kill-budget boundary", async () => {
