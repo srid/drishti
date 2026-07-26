@@ -31,71 +31,43 @@ import { alertsEqual, AlertsSchema, NO_ALERTS } from "./alerts";
 
 const PidSchema = z.number().int().nonnegative();
 const ProcessSchema = z.object({
-  user: z.string(),
-  cpuPct: z.number(),
-  /** Resident set size in bytes — the absolute physical memory the
-   *  process occupies. The headline memory number the UI shows; a ratio
-   *  view can derive `rssBytes / system.memTotal` at the call site. */
-  rssBytes: z.number(),
+  /** Process name from osfacts' versioned `P` row. The current osfacts
+   *  contract intentionally does not expose argv. Empty only for a pid that
+   *  appears solely as a mandatory unreadable (`U`) row. */
   command: z.string(),
-  /** Current working directory. From `/proc/<pid>/cwd` on linux and a single
-   *  batched `lsof -d cwd` on darwin. Empty string when unknown — kernel
-   *  threads have no cwd, and other-user pids without root can't be resolved
-   *  (EACCES on `/proc/<pid>/cwd` on linux; no `lsof` cwd line on darwin).
-   *  On darwin the value is the LAST-LANDED enrichment run's observation
-   *  (the lsof child is never awaited by the poll), so it fills on the
-   *  first landed lsof run — one poll tick on a healthy host — and may be
-   *  stale on a host whose lsof is slow. Observable staleness contract: a
-   *  pid observed dead by any poll tick blanks within one tick; a pid
-   *  recycled within a single poll window (never observed dead) can inherit
-   *  the previous process's cwd until the next landed enrichment run — and
-   *  on a host whose enrichment fails persistently that landing may never
-   *  come, so such a stale value can persist indefinitely. The mechanism
-   *  lives with createCwdEnricher in the agent package
-   *  (packages/agent/src/proc.ts). */
-  cwd: z.string(),
-  /** Parent process id — `/proc/<pid>/stat` field 4 on linux, `ps -o
-   *  ppid=` on darwin. 0 for pid 1 / the rare orphan whose parent has
-   *  already reaped. */
+  /** Parent process id from the same osfacts snapshot. 0 for a root/orphan,
+   *  and for a pid represented only by a `U` row (no readable `P` row). */
   ppid: PidSchema,
-  /** Single-char kernel state code: `R` running, `S` sleeping, `D`
-   *  uninterruptible, `Z` zombie, `T` stopped, `I` idle, … `/proc/<pid>/stat`
-   *  field 3 on linux; the first char of `ps -o state=` on darwin (its
-   *  trailing flags like `+`/`s` are dropped). Empty when unknown. */
-  state: z.string(),
-  /** Nice value (scheduling priority, -20..19). `/proc/<pid>/stat` field 19
-   *  on linux, `ps -o nice=` on darwin. */
-  nice: z.number().int(),
-  /** Thread count (`/proc/<pid>/stat` field 20), or null when the platform
-   *  can't cheaply source it — darwin's `ps` has no per-process thread count.
-   *  Null (not 0) so "unavailable" is distinct from a real count at the type
-   *  level; a live linux process always has >= 1. */
-  threads: z.number().int().positive().nullable(),
-  /** Process start time as epoch milliseconds, or null when unknown. Derived
-   *  on linux from the host boot time plus `/proc/<pid>/stat` field 22
-   *  (start-ticks-since-boot); null on darwin, which has no cheap per-pid start
-   *  source in the `ps` columns we read. Immutable per pid, so the poll loop
-   *  excludes it from change detection. */
-  startedAtMs: z.number().nullable(),
+  /** Listening TCP sockets attributed to this pid in the same snapshot.
+   *  Address remains network-order hex: classification is consumer policy. */
+  listeners: z.array(
+    z.object({
+      port: z.number().int().positive().max(65535),
+      address: z.string(),
+    }),
+  ),
+  /** Mandatory osfacts `U` row, when present. `listeners: []` with null means
+   *  observed-empty; `listeners: []` with an errno means inspection was blind.
+   *  This is the wire-level distinction the old readers silently erased. */
+  unreadableErrno: z.string().nullable(),
 });
 
 /** The process fields whose change re-publishes a row — the `processes`
  *  collection's per-key value `equals` gate (was the agent's `processChanged`,
  *  now declared once on the spec so the `derived.collection` reconciler dedups by
- *  it instead of the write site hand-holding it). `startedAtMs` is immutable per
- *  pid, so it is deliberately absent; `satisfies` ties each entry to a real schema
- *  field so a typo or renamed field fails to compile. */
-const MUTABLE_PROCESS_FIELDS = [
-  "user",
-  "cpuPct",
-  "rssBytes",
-  "command",
-  "cwd",
-  "ppid",
-  "state",
-  "nice",
-  "threads",
-] as const satisfies readonly (keyof z.infer<typeof ProcessSchema>)[];
+ *  it instead of the write site hand-holding it). Listener arrays are rebuilt
+ *  from every snapshot, so compare their contents rather than references. */
+type ProcessValue = z.infer<typeof ProcessSchema>;
+const processEqual = (a: ProcessValue, b: ProcessValue): boolean =>
+  a.command === b.command &&
+  a.ppid === b.ppid &&
+  a.unreadableErrno === b.unreadableErrno &&
+  a.listeners.length === b.listeners.length &&
+  a.listeners.every(
+    (listener, i) =>
+      listener.port === b.listeners[i]?.port &&
+      listener.address === b.listeners[i]?.address,
+  );
 
 const CpuCoreSchema = z.object({
   /** Busy-percentage since the previous poll tick (0-100). */
@@ -282,7 +254,7 @@ export const surface = defineSurface({
       // is the reconciler's per-key diff — republish a row only when a mutable field
       // moved (the old agent-side `processChanged`, declared once here).
       verbs: ["keys", "get", "deltas"],
-      equals: (a, b) => MUTABLE_PROCESS_FIELDS.every((f) => a[f] === b[f]),
+      equals: processEqual,
     },
     /** Per-core CPU usage — small-N (typical 4-32) `Collection<K,T>`.
      *  The host drill-in renders one bar per core, so per-key reactive identity

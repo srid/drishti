@@ -64,7 +64,7 @@ function log(...args: unknown[]): void {
 function usage(): never {
   process.stderr.write(
     [
-      "drishti-agent — exposes /proc or sysctl as a typed @kolu/surface over stdio.",
+      "drishti-agent — exposes osfacts and host telemetry as a typed @kolu/surface over stdio.",
       "",
       "Usage:",
       "  drishti-agent --stdio                # serve over stdin/stdout (normal mode)",
@@ -78,8 +78,8 @@ function usage(): never {
 
 /** Wrap an async tick so a fire that lands while a previous run is still in
  *  flight is SKIPPED — the same non-overlap law the framework's poll source
- *  applies to the three collections (and the cwd enricher applies to its lsof
- *  child), owned here for the one hand-rolled `setInterval` left in the agent:
+ *  applies to the three collections, owned here for the one hand-rolled
+ *  `setInterval` left in the agent:
  *  the system/alerts tick. Without it a slow `readSystem` (darwin: `vm_stat` +
  *  `sysctl` children) overlaps itself every 2s on a wedged host — the
  *  drishti#111 pileup class, just with cheaper children. Skipping (not
@@ -131,8 +131,8 @@ type Serve = (opts: {
  *
  * **Serve before you enumerate.** The connect handshake — the parent's first
  * `system.get` — needs only the cheap `system` snapshot, so that is the one
- * read we seed before serving. The expensive process scan (darwin: `ps` +
- * `lsof -nP -d cwd` over the *whole* table) and network read (`netstat`) are
+ * read we seed before serving. The process/socket snapshot (osfacts) and
+ * network read (`netstat` on darwin) are
  * NOT on the handshake's critical path: they start empty and the poll loop
  * fills them. `await`-ing them before `serve` is what let a busy,
  * high-process-count host (a loaded macOS box as `localhost`, say) blow the
@@ -160,8 +160,8 @@ export async function serveAgent(
   // `derived.collection(source({ read, install }))` below — the reactor owns the
   // poll loop, the keyed reconcile (diff-by-`equals`, evict-absent), and the T+0
   // seed. `processes`/`networkInterfaces` still start EMPTY and fill on the async
-  // seed read (off the serving critical path — `read` runs async, so awaiting a
-  // full `ps`+`lsof` scan never gates the first RPC), exactly as the hand loop did.
+  // seed read (off the serving critical path — `read` runs async, so awaiting an
+  // osfacts snapshot never gates the first RPC), exactly as the hand loop did.
   const pollInstall = (tick: () => void): (() => void) => {
     const iv = setInterval(tick, POLL_INTERVAL_MS);
     return () => clearInterval(iv);
@@ -281,15 +281,15 @@ export async function serveAgent(
     );
 
   // Fail LOUD on an owned runtime fault. The one real producer of this today:
-  // a collection poll's SEED read rejecting — e.g. a kill-budget-expired `ps`
-  // on a host already wedged at boot — which the framework's poll-read
+  // a collection poll's SEED read rejecting — e.g. osfacts failing at boot —
+  // which the framework's poll-read
   // contract makes PERMANENTLY fatal to that collection (cadence torn down,
   // no retry; only LATER ticks are log-skip-continue). A live agent silently
   // serving a dead processes table for its whole life is the worst outcome —
   // exit non-zero instead, so the parent surfaces agent death in the
   // connection cell where the user actually looks, and a reconnect gets a
   // fresh seed attempt. (Deliberately NOT made total at the reader: catching
-  // a seed `ps` failure into an empty map would render a healthy-looking
+  // a seed osfacts failure into an empty map would render a healthy-looking
   // empty table over a broken platform — a silent lie.)
   void runtime.done.catch((err: unknown) => {
     log(`surface runtime fault: ${(err as Error).message} — exiting`);

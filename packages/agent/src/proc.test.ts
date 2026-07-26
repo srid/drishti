@@ -1,24 +1,89 @@
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, expect, it } from "bun:test";
+import { parseOsfactsOutput } from "osfacts-client";
 import {
-  type BudgetedRun,
   budgetedExec,
   computeNetThroughput,
-  createCwdEnricher,
+  createOsfactsProcessReader,
   darwinReader,
   diskBytesFromStatfs,
   type ExecFn,
   type NetCounters,
-  parseLsofCwd,
   parseMeminfo,
   parseNetstatIb,
   parseProcNetDev,
-  parseProcStat,
-  parsePsLine,
   parseSwapusage,
   parseVmStat,
+  processesFromOsfacts,
 } from "./proc";
+
+describe("osfacts process inspection", () => {
+  const fixture = [
+    "V\t1",
+    "P\t1\t0\tinit",
+    "P\t42\t1\tserver",
+    "L\t42\t8080\t00000000",
+    "U\t42\tEACCES",
+    "U\t99\tEPERM",
+    "",
+  ].join("\n");
+
+  it("maps parsed P/L/U rows without confusing unreadable with empty", () => {
+    const processes = processesFromOsfacts(parseOsfactsOutput(fixture));
+
+    expect(processes.get(1)).toEqual({
+      command: "init",
+      ppid: 0,
+      listeners: [],
+      unreadableErrno: null,
+    });
+    expect(processes.get(42)).toEqual({
+      command: "server",
+      ppid: 1,
+      listeners: [{ port: 8080, address: "00000000" }],
+      unreadableErrno: "EACCES",
+    });
+    expect(processes.get(99)).toEqual({
+      command: "",
+      ppid: 0,
+      listeners: [],
+      unreadableErrno: "EPERM",
+    });
+  });
+
+  it("reads the host process tree through osfacts at the baked path", async () => {
+    const calls: Array<{ bin: string; roots: readonly number[] }> = [];
+    const reading = parseOsfactsOutput(fixture);
+    const read = createOsfactsProcessReader(
+      "/nix/store/osfacts/bin/osfacts",
+      async (bin, roots) => {
+        calls.push({ bin, roots });
+        return reading;
+      },
+    );
+
+    expect(await read()).toEqual(processesFromOsfacts(reading));
+    expect(calls).toEqual([
+      { bin: "/nix/store/osfacts/bin/osfacts", roots: [1] },
+    ]);
+  });
+
+  it("keeps the remaining darwin telemetry children on one kill-budget boundary", async () => {
+    let options:
+      | { timeout?: number; killSignal?: NodeJS.Signals; maxBuffer?: number }
+      | undefined;
+    const execImpl: ExecFn = (_file, _args, opts) => {
+      options = opts;
+      return Promise.resolve({ stdout: "" });
+    };
+
+    await budgetedExec(execImpl)("vm_stat", []);
+    expect(options?.timeout).toBe(20_000);
+    expect(options?.killSignal).toBe("SIGKILL");
+    expect(options?.maxBuffer).toBeGreaterThanOrEqual(16 * 1024 * 1024);
+  });
+});
 
 describe("parseProcNetDev", () => {
   // Real /proc/net/dev shape: two header lines, then `name: rx_bytes
@@ -73,440 +138,18 @@ describe("parseNetstatIb", () => {
   });
 });
 
-describe("parsePsLine", () => {
-  // `ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=` — rss is in KB
-  // on macOS, comm is last/greedy (may contain spaces), and ppid/nice/state
-  // sit between rss and comm.
-  // parsePsLine returns a DarwinProcRaw — the fields a ps line carries. cwd
-  // (lsof), threads, and startedAtMs are not on the raw; they're filled at the
-  // Process-construction site in darwinReader.readProcesses.
-  it("parses rss (KB) into absolute resident bytes and the ppid/nice/state fields", () => {
-    const raw = parsePsLine("  501 alice 12.5 348160 1 0 S /usr/bin/foo");
-    expect(raw).not.toBeNull();
-    expect(raw!.pid).toBe(501);
-    expect(raw!.user).toBe("alice");
-    expect(raw!.cpuPct).toBe(12.5);
-    // 348160 KB × 1024 = absolute bytes (≈ 356 MB).
-    expect(raw!.rssBytes).toBe(348160 * 1024);
-    expect(raw!.command).toBe("/usr/bin/foo");
-    expect(raw!.ppid).toBe(1);
-    expect(raw!.nice).toBe(0);
-    expect(raw!.state).toBe("S");
-  });
-
-  it("keeps a command with embedded spaces intact (comm is the trailing field)", () => {
-    const raw = parsePsLine("99 root 0.0 2048 1 -5 Ss com.apple.Some Helper")!;
-    expect(raw.command).toBe("com.apple.Some Helper");
-    expect(raw.rssBytes).toBe(2048 * 1024);
-    // negative nice survives; the multi-char state token collapses to its
-    // leading code (`Ss` → `S`) for parity with linux's single-char state.
-    expect(raw.nice).toBe(-5);
-    expect(raw.state).toBe("S");
-  });
-
-  it("returns null for blank or malformed lines", () => {
-    expect(parsePsLine("")).toBeNull();
-    expect(parsePsLine("   ")).toBeNull();
-    expect(parsePsLine("not a ps line")).toBeNull();
-    // The pre-extension 5-column shape no longer matches (missing
-    // ppid/nice/state before comm).
-    expect(parsePsLine("501 alice 12.5 348160 /usr/bin/foo")).toBeNull();
-  });
-});
-
-describe("parseLsofCwd", () => {
-  // `lsof -nP -d cwd -Fpn` field output: one `p<pid>` line per process, then
-  // an `n<path>` line for the cwd descriptor. lsof prepends an `f cwd` marker
-  // for the fd in real output — the parser must ignore it.
-  const sample = [
-    "p501",
-    "fcwd",
-    "n/Users/alice/code/drishti",
-    "p502",
-    "fcwd",
-    "n/tmp",
-    "",
-  ].join("\n");
-
-  it("maps each pid to the cwd path on its following n line", () => {
-    const m = parseLsofCwd(sample);
-    expect(m.get(501)).toBe("/Users/alice/code/drishti");
-    expect(m.get(502)).toBe("/tmp");
-    expect([...m.keys()].sort()).toEqual([501, 502]);
-  });
-
-  it("omits pids whose cwd lsof could not resolve (no n line)", () => {
-    // pid 777 is denied (other user, no root) — lsof emits the p line but no
-    // n line, so it stays absent and the reader falls back to "" via `?? ""`.
-    const denied = ["p777", "p778", "fcwd", "n/var/run", ""].join("\n");
-    const m = parseLsofCwd(denied);
-    expect(m.has(777)).toBe(false);
-    expect(m.get(778)).toBe("/var/run");
-  });
-
-  it("truncates an over-long cwd to PROC_STRING_MAX (parity with linux)", () => {
-    const long = "/" + "a".repeat(300);
-    const m = parseLsofCwd(["p1", `n${long}`, ""].join("\n"));
-    expect(m.get(1)!.length).toBe(200);
-  });
-
-  it("returns an empty map for blank output (lsof absent or failed)", () => {
-    expect(parseLsofCwd("").size).toBe(0);
-  });
-});
-
-describe("darwinReader cwd enrichment discipline (drishti#111)", () => {
-  // One ps row is enough — the pins are about the lsof CHILD's lifecycle,
-  // not row parsing (parsePsLine has its own suite above).
-  const PS_OUT = "  501 alice 12.5 348160 1 0 S /usr/bin/foo\n";
-
-  /** A fake exec whose lsof child the test controls: hangs until the test
-   *  resolves it, counting spawns and capturing the exec options so the pins
-   *  can assert the single-flight / budget contract. ps resolves instantly. */
-  function fakeExecEnv() {
-    const env = {
-      lsofSpawns: 0,
-      resolveLsof: undefined as ((v: { stdout: string }) => void) | undefined,
-    };
-    const execImpl: ExecFn = (file, _args, _opts) => {
-      if (file === "ps") return Promise.resolve({ stdout: PS_OUT });
-      if (file === "lsof") {
-        env.lsofSpawns++;
-        return new Promise((r) => {
-          env.resolveLsof = r;
-        });
-      }
-      return Promise.reject(new Error(`unexpected exec: ${file}`));
-    };
-    return { env, execImpl };
-  }
-
-  it("spawns exactly one lsof across N polls while the child is in flight (single-flight)", async () => {
-    const { env, execImpl } = fakeExecEnv();
-    const reader = darwinReader(execImpl);
-    // Three poll ticks land while the enrichment child hangs. The rasam
-    // pileup (drishti#111) was this exact overlap on pre-migration binaries;
-    // the reader must own the invariant now: one child, never N.
-    await reader.readProcesses();
-    await reader.readProcesses();
-    await reader.readProcesses();
-    expect(env.lsofSpawns).toBe(1);
-  });
-
-  it("completes the poll without cwd while the child is in flight (never wedges the table)", async () => {
-    const { execImpl } = fakeExecEnv();
-    const reader = darwinReader(execImpl);
-    // A hung lsof must not hold the processes table hostage: the poll
-    // resolves at ps speed with the last-known (here: empty) cwd.
-    const raced = await Promise.race([
-      reader.readProcesses(),
-      Bun.sleep(250).then(() => "wedged" as const),
-    ]);
-    expect(raced).not.toBe("wedged");
-    const procs = raced as Map<number, { cwd: string }>;
-    expect(procs.get(501)?.cwd).toBe("");
-  });
-
-  it("budgets EVERY darwin child — a hung ps/lsof/vm_stat/netstat would freeze its collection under the settlement-dependent guards", async () => {
-    const seen = new Map<
-      string,
-      | { timeout?: number; killSignal?: NodeJS.Signals; maxBuffer?: number }
-      | undefined
-    >();
-    const execImpl: ExecFn = (file, _args, opts) => {
-      seen.set(file, opts);
-      if (file === "ps") return Promise.resolve({ stdout: PS_OUT });
-      return Promise.resolve({ stdout: "" });
-    };
-    const reader = darwinReader(execImpl);
-    await reader.readProcesses();
-    await reader.readSystem();
-    await reader.readNetwork();
-    for (const child of ["ps", "lsof", "vm_stat", "sysctl", "netstat"]) {
-      // 20s, not 5s: rasam's pathological-but-COMPLETING lsof took ~14s — a
-      // 5s budget would kill it every attempt and deliver no cwd forever on
-      // exactly the host that needs the data; the budget exists to reap
-      // genuinely-hung children, and decoupling makes it invisible to the
-      // table's cadence. maxBuffer explicit: node's 1 MiB default would
-      // reject a huge host's lsof/ps output into the silent failure backoff.
-      expect(seen.get(child)?.timeout).toBe(20_000);
-      expect(seen.get(child)?.killSignal).toBe("SIGKILL");
-      expect(seen.get(child)?.maxBuffer).toBeGreaterThanOrEqual(
-        16 * 1024 * 1024,
-      );
-    }
-  });
-
-  it("budgetedExec is the one boundary that attaches the budget — the narrowed run has no options socket to forget", async () => {
-    // The enumerating pin above is a regression net over the KNOWN children;
-    // this is the structural pin: every darwin spawn goes through
-    // budgetedExec, so asserting the wrapper once covers any child added
-    // later.
-    let opts:
-      | { timeout?: number; killSignal?: NodeJS.Signals; maxBuffer?: number }
-      | undefined;
-    const execImpl: ExecFn = (_file, _args, o) => {
-      opts = o;
-      return Promise.resolve({ stdout: "" });
-    };
-    await budgetedExec(execImpl)("anything", []);
-    expect(opts?.timeout).toBe(20_000);
-    expect(opts?.killSignal).toBe("SIGKILL");
-    expect(opts?.maxBuffer).toBeGreaterThanOrEqual(16 * 1024 * 1024);
-  });
-
-  it("merges the landed cwd map into subsequent polls (stale-beats-blank)", async () => {
-    const { env, execImpl } = fakeExecEnv();
-    const reader = darwinReader(execImpl);
-    await reader.readProcesses(); // fires the child; rows blank this tick
-    env.resolveLsof?.({ stdout: ["p501", "fcwd", "n/Users/alice/code", ""].join("\n") });
-    await Bun.sleep(0); // let the landed child's map install
-    const procs = await reader.readProcesses();
-    expect(procs.get(501)?.cwd).toBe("/Users/alice/code");
-  });
-});
-
-describe("createCwdEnricher gap + backoff (fake clock)", () => {
-  /** Harness: a controllable child (resolve/reject per spawn) under a fake
-   *  clock, so the gap/backoff arithmetic is pinned deterministically. */
-  function harness() {
-    const h = {
-      t: 0,
-      spawns: 0,
-      settle: undefined as
-        | { resolve: (v: { stdout: string }) => void; reject: (e: Error) => void }
-        | undefined,
-    };
-    const run: BudgetedRun = () => {
-      h.spawns++;
-      return new Promise((resolve, reject) => {
-        h.settle = { resolve, reject };
-      });
-    };
-    const enrich = createCwdEnricher(run, () => h.t);
-    return { h, enrich };
-  }
-  // Let the settled child's .then/.catch install its bookkeeping.
-  const drain = () => Bun.sleep(0);
-  // Ticks where pruning is irrelevant to the assertion (the served map is
-  // empty) pass an empty live set — livePids is required, mirroring the
-  // production call site.
-  const noPids: ReadonlySet<number> = new Set();
-
-  it("a slow run stretches the gap (GAP_FACTOR × duration); a fast run restores per-tick cadence", async () => {
-    const { h, enrich } = harness();
-    enrich(new Set([1])); // t=0: spawns
-    expect(h.spawns).toBe(1);
-    h.t = 14_000; // rasam-shaped run: 14s
-    h.settle?.resolve({ stdout: "p1\nn/tmp\n" });
-    await drain();
-    // Next spawn allowed at 14s + 3×14s = 56s — ticks inside the gap serve
-    // the stale map without a child.
-    h.t = 55_999;
-    expect(enrich(new Set([1])).get(1)).toBe("/tmp");
-    expect(h.spawns).toBe(1);
-    h.t = 56_000;
-    enrich(new Set([1]));
-    expect(h.spawns).toBe(2);
-    // Recovery: this run is fast (300ms) → gap 0.9s → the next 2s tick spawns.
-    h.t = 56_300;
-    h.settle?.resolve({ stdout: "p1\nn/tmp\n" });
-    await drain();
-    h.t = 58_000;
-    enrich(new Set([1]));
-    expect(h.spawns).toBe(3);
-  });
-
-  it("consecutive failures back off exponentially, capped, and reset on success", async () => {
-    const { h, enrich } = harness();
-    const fail = async () => {
-      h.settle?.reject(new Error("killed at budget"));
-      await drain();
-    };
-    enrich(noPids); // t=0: spawn 1
-    await fail(); // k=1 → gap 3×20s = 60s
-    h.t = 59_999;
-    enrich(noPids);
-    expect(h.spawns).toBe(1);
-    h.t = 60_000;
-    enrich(noPids); // spawn 2
-    expect(h.spawns).toBe(2);
-    await fail(); // k=2 → gap 120s
-    h.t = 179_999;
-    enrich(noPids);
-    expect(h.spawns).toBe(2);
-    h.t = 180_000;
-    enrich(noPids); // spawn 3
-    await fail(); // k=3 → gap 240s
-    h.t = 420_000;
-    enrich(noPids); // spawn 4
-    await fail(); // k=4 → 480s exceeds the 300s cap → gap 300s
-    h.t = 719_999;
-    enrich(noPids);
-    expect(h.spawns).toBe(4);
-    h.t = 720_000;
-    enrich(noPids); // spawn 5
-    expect(h.spawns).toBe(5);
-    // First success resets the failure ladder: instant run → zero gap.
-    h.settle?.resolve({ stdout: "" });
-    await drain();
-    h.t = 720_001;
-    enrich(noPids);
-    expect(h.spawns).toBe(6);
-  });
-
-  it("keeps serving the last-landed map through failures (stale beats blank)", async () => {
-    const { h, enrich } = harness();
-    enrich(new Set([42]));
-    h.settle?.resolve({ stdout: "p42\nn/srv\n" });
-    await drain();
-    expect(enrich(new Set([42])).get(42)).toBe("/srv"); // also spawns run 2 (zero gap)
-    h.settle?.reject(new Error("lsof gone"));
-    await drain();
-    // The failed run must not blank the map.
-    expect(enrich(new Set([42])).get(42)).toBe("/srv");
-  });
-
-  it("caps the success gap so a pathological duration reading cannot starve enrichment past the backoff ceiling", async () => {
-    const { h, enrich } = harness();
-    enrich(noPids); // t=0: spawns
-    // A laptop sleeping mid-run (or any clock pathology) reads as a huge
-    // duration: 3×200s = 600s would exceed the 300s ceiling every other
-    // path is bounded to — the cap must clamp it.
-    h.t = 200_000;
-    h.settle?.resolve({ stdout: "" });
-    await drain();
-    h.t = 200_000 + 299_999;
-    enrich(noPids);
-    expect(h.spawns).toBe(1);
-    h.t = 200_000 + 300_000;
-    enrich(noPids);
-    expect(h.spawns).toBe(2);
-  });
-
-  it("routes a SYNCHRONOUSLY-throwing exec onto the failure backoff instead of wedging in-flight forever", async () => {
-    let t = 0;
-    let spawns = 0;
-    const throwingRun: BudgetedRun = () => {
-      spawns++;
-      throw new Error("spawn failed sync");
-    };
-    const enrich = createCwdEnricher(throwingRun, () => t);
-    expect(enrich(noPids).size).toBe(0); // must not throw out of the thunk
-    await Bun.sleep(0);
-    // Backoff scheduled (k=1 → 60s), then the enricher recovers to retry —
-    // a wedged inFlight would spawn nothing ever again.
-    t = 59_999;
-    enrich(noPids);
-    expect(spawns).toBe(1);
-    t = 60_000;
-    enrich(noPids);
-    expect(spawns).toBe(2);
-  });
-
-  it("prunes dead pids from the served map so a recycled pid cannot inherit a stale cwd", async () => {
-    const { h, enrich } = harness();
-    enrich(new Set([42, 43]));
-    h.settle?.resolve({ stdout: ["p42", "n/srv", "p43", "n/tmp", ""].join("\n") });
-    await drain();
-    // pid 42 died; this tick's live set no longer carries it.
-    const served = enrich(new Set([43]));
-    expect(served.has(42)).toBe(false);
-    expect(served.get(43)).toBe("/tmp");
-  });
-
-  it("a slow landing cannot reintroduce a pid a later tick already observed dead", async () => {
-    const { h, enrich } = harness();
-    enrich(new Set([42, 43])); // spawn run 1 — 42 alive when it started
-    // While the child is in flight, a later tick observes 42 ABSENT.
-    enrich(new Set([43]));
-    // The old child lands carrying the dead pid — the landing must be
-    // filtered through the run's eligible set, or a pid recycled before
-    // the next tick would inherit the dead process's cwd despite having
-    // been observed dead (the documented one-tick blank bound).
-    h.settle?.resolve({ stdout: ["p42", "n/srv", "p43", "n/tmp", ""].join("\n") });
-    await drain();
-    const served = enrich(new Set([42, 43])); // 42 recycled this tick
-    expect(served.has(42)).toBe(false);
-    expect(served.get(43)).toBe("/tmp");
-  });
-
-  it("an absence is permanent for the run: alive → observed-absent → recycled-live → old landing still blanks", async () => {
-    const { h, enrich } = harness();
-    enrich(new Set([42, 43])); // spawn run 1 — 42 alive at spawn
-    enrich(new Set([43])); // 42 observed ABSENT mid-run
-    // 42 is RECYCLED and reads live again BEFORE the old run lands — a
-    // freshest-set-only intersect would forget the absence here and hand
-    // the recycled pid the dead process's cwd.
-    enrich(new Set([42, 43]));
-    h.settle?.resolve({ stdout: ["p42", "n/srv", "p43", "n/tmp", ""].join("\n") });
-    await drain();
-    const served = enrich(new Set([42, 43]));
-    expect(served.has(42)).toBe(false); // blank until the NEXT landed run
-    expect(served.get(43)).toBe("/tmp");
-  });
-});
-
 describe("readSystem disk probe (decoupled statfs)", () => {
   it("serves the cached observation and fills after the probe lands (never awaits the syscall)", async () => {
     // statfs has no timeout knob, so readSystem must not await it under the
     // settlement-dependent singleFlight guard — it serves the last-known
     // value and a background probe refreshes it. On this test host statfs(/)
     // succeeds, so after a microtask drain the real capacity appears.
-    const execImpl: ExecFn = (file) =>
-      file === "ps"
-        ? Promise.resolve({ stdout: "" })
-        : Promise.resolve({ stdout: "" });
-    const reader = darwinReader(execImpl);
+    const execImpl: ExecFn = () => Promise.resolve({ stdout: "" });
+    const reader = darwinReader(execImpl, "/nix/store/osfacts/bin/osfacts");
     await reader.readSystem(); // kicks the probe (or serves an already-landed cache)
     await Bun.sleep(10); // let the real statfs land
     const sys = await reader.readSystem();
     expect(sys.diskTotal).toBeGreaterThan(0);
-  });
-});
-
-describe("enrichment failure diagnostics", () => {
-  it("logs one stderr line per failure episode and one on recovery — never one per attempt", async () => {
-    const lines: string[] = [];
-    const original = process.stderr.write.bind(process.stderr);
-    // biome-ignore lint/suspicious/noExplicitAny: narrow spy for the test
-    (process.stderr as any).write = (s: string) => {
-      lines.push(String(s));
-      return true;
-    };
-    try {
-      let t = 0;
-      let spawns = 0;
-      let fail = true;
-      const run: BudgetedRun = () => {
-        spawns++;
-        return fail
-          ? Promise.reject(new Error("lsof exploded"))
-          : Promise.resolve({ stdout: "" });
-      };
-      const enrich = createCwdEnricher(run, () => t);
-      const noPids: ReadonlySet<number> = new Set();
-      enrich(noPids); // failure 1 — logs
-      await Bun.sleep(0);
-      t = 60_000;
-      enrich(noPids); // failure 2 — quiet (same episode)
-      await Bun.sleep(0);
-      const failureLines = lines.filter((l) => l.includes("enrichment failed"));
-      expect(failureLines.length).toBe(1);
-      expect(failureLines[0]).toContain("lsof exploded");
-      // Recovery logs once.
-      fail = false;
-      t = 60_000 + 180_000;
-      enrich(noPids);
-      await Bun.sleep(0);
-      expect(
-        lines.filter((l) => l.includes("enrichment recovered")).length,
-      ).toBe(1);
-      expect(spawns).toBe(3);
-    } finally {
-      // biome-ignore lint/suspicious/noExplicitAny: restore the spy
-      (process.stderr as any).write = original;
-    }
   });
 });
 
@@ -548,44 +191,6 @@ describe("child kill budget (real execFile contract)", () => {
       }
     }
     expect(gone).toBe(true);
-  });
-});
-
-describe("parseProcStat", () => {
-  // proc(5) /proc/<pid>/stat: `pid (comm) state ppid … utime stime … nice
-  // num_threads … starttime …`. After comm the fields index from state=0.
-  const sample =
-    "4242 (bash) S 1000 4242 4242 0 -1 4194560 100 0 5 0 56 12 0 0 20 5 7 0 987654 0 0";
-
-  it("reads state, ppid, utime+stime ticks, nice, threads, and starttime", () => {
-    const stat = parseProcStat(sample);
-    expect(stat).not.toBeNull();
-    expect(stat).toEqual({
-      comm: "bash",
-      state: "S",
-      ppid: 1000,
-      ticks: 56 + 12,
-      nice: 5,
-      threads: 7,
-      startTime: 987654,
-    });
-  });
-
-  it("splits on the LAST paren so a comm containing parens survives", () => {
-    // Kernel comms like `(sd-pam)` or a renamed thread can embed parens; the
-    // state/ppid that follow must still align.
-    const stat = parseProcStat(
-      "77 (foo (bar)) R 2 0 0 0 -1 0 0 0 0 0 1 2 0 0 20 0 3 0 555",
-    );
-    expect(stat?.comm).toBe("foo (bar)");
-    expect(stat?.state).toBe("R");
-    expect(stat?.ppid).toBe(2);
-    expect(stat?.threads).toBe(3);
-  });
-
-  it("returns null when there is no comm paren to split on", () => {
-    expect(parseProcStat("not a stat line")).toBeNull();
-    expect(parseProcStat("")).toBeNull();
   });
 });
 

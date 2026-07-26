@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { serveAgent, singleFlight } from "./main";
 import type { ProcReader } from "./proc";
 
-// A reader whose process enumeration is the expensive part — the darwin
-// `ps` + `lsof` scan, modelled here as a promise the test controls. The
+// A reader whose process enumeration is the expensive part — the osfacts
+// snapshot, modelled here as a promise the test controls. The
 // system/cpu/network reads are trivial; only `readProcesses` blocks, so we
 // can prove the agent answers the first RPC *without* waiting for that scan.
 function gatedReader(processesGate: Promise<void>): ProcReader {
@@ -21,7 +21,7 @@ function gatedReader(processesGate: Promise<void>): ProcReader {
       os: "linux",
       hostname: "test",
     }),
-    // Stand-in for the lsof-over-every-pid scan: blocks until released.
+    // Stand-in for the osfacts snapshot: blocks until released.
     readProcesses: async () => {
       await processesGate;
       return new Map();

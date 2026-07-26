@@ -8,6 +8,7 @@
 final: _prev:
 let
   mkKoluPackage = import ./packages/kolu-package.nix { pkgs = final; };
+  kolu = (import ../npins).kolu;
 in
 {
   kolu-surface = mkKoluPackage "surface";
@@ -29,4 +30,19 @@ in
   # The zero-dep logging leaf surface-remote imports (the `log:Logger` seam,
   # juspay/kolu#1876) — hydrated so its `@kolu/log` import resolves.
   kolu-log = mkKoluPackage "log";
+  # osfacts incubates at the kolu repo root (juspay/kolu#1996), outside the
+  # `packages/` workspace. Keep its binary and dependency-free TypeScript
+  # client on the same npins revision so the client's `V 1` gate can never be
+  # paired with a binary from another source.
+  osfacts = import (kolu + "/osfacts") { pkgs = final; };
+  osfacts-client = final.runCommand "osfacts-client"
+    {
+      meta = {
+        description = "TypeScript client source for osfacts";
+        homepage = "https://github.com/juspay/kolu/tree/osfacts-plan/osfacts/client-ts";
+      };
+    }
+    ''
+      cp -r ${kolu}/osfacts/client-ts $out
+    '';
 }

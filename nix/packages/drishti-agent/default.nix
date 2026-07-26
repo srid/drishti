@@ -34,7 +34,7 @@
 # server/peer-server deps the agent serves (@orpc/server, @orpc/client — the
 # latter pulled by peer-server's stdio-codec) live on drishti-agent. No agent-
 # reachable @kolu/surface entrypoint imports solid-js, so it is not declared.
-{ stdenv, lib, bun, bun2nix, kolu-surface }:
+{ stdenv, lib, bun, bun2nix, kolu-surface, osfacts-client }:
 let
   src = lib.fileset.toSource {
     root = ../../..;
@@ -97,7 +97,8 @@ stdenv.mkDerivation {
   # provisioning + fleet-membership libs).
   postBunNodeModulesInstallPhase = ''
     sh scripts/hydrate-kolu-packages.sh \
-      ${kolu-surface} @kolu/surface
+      ${kolu-surface} @kolu/surface \
+      ${osfacts-client} osfacts-client
   '';
 
   installPhase = ''

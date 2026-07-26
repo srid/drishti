@@ -1,12 +1,10 @@
 /**
  * Cross-platform process + system info readers.
  *
- *   - `linux`: parse `/proc/<pid>/{stat,status,cmdline}` + `/proc/meminfo`
- *     + `/proc/loadavg`. Pure file reads, universally readable by the
- *     running user.
- *   - `darwin`: shell out to `ps -axo pid=,user=,pcpu=,rss=,comm=` and
- *     `sysctl -n vm.loadavg hw.memsize`. The `ps` command is in every
- *     base install; sysctl reads are unprivileged.
+ * Process/socket inspection is one path on both supported platforms:
+ * `osfacts-client` over the Nix-baked osfacts binary. System and network
+ * telemetry remain platform-specific (`/proc` on linux, vm_stat/sysctl/
+ * netstat on darwin) because they are outside osfacts' process contract.
  *
  * Universality is the point. The plan considered tailing logs and cut it
  * — no plain-text log file is universally readable, universally present,
@@ -15,8 +13,7 @@
  */
 
 import { execFile as execFileCb } from "node:child_process";
-import { monotonicNow } from "@kolu/surface/time";
-import { readFile, readdir, readlink, statfs } from "node:fs/promises";
+import { readFile, statfs } from "node:fs/promises";
 import {
   cpus,
   freemem,
@@ -27,6 +24,10 @@ import {
   uptime,
 } from "node:os";
 import { promisify } from "node:util";
+import {
+  type OsfactsReading,
+  snapshotSubtree,
+} from "osfacts-client";
 import type {
   CoreId,
   CpuCore,
@@ -273,8 +274,8 @@ export function diskBytesFromStatfs(stat: {
  *  damage to ONE wedged libuv threadpool thread (an awaited deadline-race
  *  would stack a fresh wedged statfs every tick until the pool starves), and
  *  callers always get the last observation immediately — 0/0 ("unavailable"
- *  via `pctOf`) until the first probe lands, one tick on a healthy host,
- *  mirroring the cwd enricher's decoupling. A FAILED probe keeps the last
+ *  via `pctOf`) until the first probe lands, one tick on a healthy host.
+ *  A FAILED probe keeps the last
  *  observation: statfs-unavailable platforms (e.g. Windows) fail instantly
  *  each tick, which is cheap and stays 0/0; a once-working disk that starts
  *  erroring serves its last reading rather than flapping to zeros. */
@@ -302,38 +303,90 @@ const readRootDiskUsage = (() => {
 
 export function createProcReader(): ProcReader {
   const plat = platform();
-  if (plat === "linux") return linuxReader();
-  if (plat === "darwin") return darwinReader();
+  if (plat === "linux") return linuxReader(osfactsBinPath());
+  if (plat === "darwin") return darwinReader(execFile, osfactsBinPath());
   return stubReader();
 }
 
-// ── Linux: /proc reader ─────────────────────────────────────────────────
+/** Absolute binary path baked by the Nix wrapper/dev shell. Required by
+ * design: a missing bake is a broken package, never a cue to search PATH or
+ * fall back to lsof/ps/proc inspection. */
+export function osfactsBinPath(): string {
+  const bin = process.env.DRISHTI_OSFACTS_BIN;
+  if (!bin) {
+    throw new Error(
+      "DRISHTI_OSFACTS_BIN is not set — run the Nix-wrapped drishti-agent (no PATH fallback)",
+    );
+  }
+  return bin;
+}
 
-function linuxReader(): ProcReader {
+/** Join one atomic osfacts reading into drishti's keyed collection. U-only
+ * pids get explicit rows, while a readable pid may also carry a U row when a
+ * requested facet (notably ports) was denied. Thus `listeners: []` is only
+ * observed-empty when `unreadableErrno` is null. */
+export function processesFromOsfacts(
+  reading: OsfactsReading,
+): Map<Pid, Process> {
+  const out = new Map<Pid, Process>();
+  for (const row of reading.procs) {
+    out.set(row.pid, {
+      command: row.name,
+      ppid: row.ppid,
+      listeners: [],
+      unreadableErrno: null,
+    });
+  }
+  for (const listener of reading.ports) {
+    const proc = out.get(listener.pid) ?? {
+      command: "",
+      ppid: 0,
+      listeners: [],
+      unreadableErrno: null,
+    };
+    proc.listeners.push({ port: listener.port, address: listener.address });
+    out.set(listener.pid, proc);
+  }
+  for (const unreadable of reading.unreadable) {
+    const proc = out.get(unreadable.pid) ?? {
+      command: "",
+      ppid: 0,
+      listeners: [],
+      unreadableErrno: null,
+    };
+    proc.unreadableErrno = unreadable.errno;
+    out.set(unreadable.pid, proc);
+  }
+  for (const proc of out.values()) {
+    proc.listeners.sort(
+      (a, b) => a.port - b.port || a.address.localeCompare(b.address),
+    );
+  }
+  return out;
+}
+
+export type SnapshotSubtree = typeof snapshotSubtree;
+
+/** The host process tree is PID 1's subtree on linux and launchd-based
+ * darwin. osfacts performs the traversal and socket attribution in one
+ * versioned snapshot; drishti performs no second OS walk. */
+export function createOsfactsProcessReader(
+  bin: string,
+  snapshot: SnapshotSubtree = snapshotSubtree,
+): () => Promise<Map<Pid, Process>> {
+  return async () => processesFromOsfacts(await snapshot(bin, [1]));
+}
+
+// ── Linux: system/network reader ─────────────────────────────────────────
+
+function linuxReader(osfactsBin: string): ProcReader {
   const readCpuCores = createCpuCoresReader();
+  const readProcesses = createOsfactsProcessReader(osfactsBin);
   const readNetwork = createNetReader(async () =>
     filterLoopback(
       parseProcNetDev(await readFile("/proc/net/dev", "utf-8")),
     ),
   );
-  // Per-PID previous tick reading so we can compute "% of one core
-  // during the last poll window" — the metric `top`/`htop` show.
-  // Without this delta, dividing lifetime ticks by lifetime uptime
-  // returns the process's *average* CPU usage since fork — which is
-  // ~0 for any long-running mostly-idle daemon. round2 then snaps it
-  // to 0.0 and every row in the UI reads dead. (`startTime` is the
-  // PID's fork-time-in-ticks-since-boot; we use it as a tombstone so
-  // pid recycling doesn't compute a delta against a different process'
-  // counters.)
-  const prevPid = new Map<number, { ticks: number; startTime: number }>();
-  let prevWallMs = 0;
-  // Host boot time as epoch ms, resolved once and reused. `/proc/<pid>/stat`
-  // gives a process's start as ticks-since-boot; `bootEpochMs + startTicks/HZ`
-  // turns that into an absolute wall-clock instant. Boot time is fixed, so
-  // caching it (rather than recomputing `now - uptime` each tick, whose
-  // centisecond uptime + ms now would jitter) keeps `startedAtMs` stable per
-  // pid across polls.
-  let bootEpochMs = 0;
   return {
     os: "linux",
     readCpuCores,
@@ -362,60 +415,7 @@ function linuxReader(): ProcReader {
         hostname: hostname(),
       };
     },
-    readProcesses: async () => {
-      const entries = await readdir("/proc");
-      const pids = entries.filter((e) => /^\d+$/.test(e)).map((e) => Number(e));
-      // Avoid /proc churn racing the read: ENOENT on a vanished pid is
-      // expected — just skip it.
-      const results = await Promise.allSettled(
-        pids.map((pid) => readProcLinuxRaw(pid)),
-      );
-      const nowMs = Date.now();
-      // Resolve the boot epoch once, on the first poll: now − uptime.
-      if (bootEpochMs === 0) {
-        const up = Number(
-          (await readFile("/proc/uptime", "utf-8")).split(" ")[0],
-        );
-        bootEpochMs = nowMs - up * 1000;
-      }
-      const winSec = prevWallMs > 0 ? (nowMs - prevWallMs) / 1000 : 0;
-      const out = new Map<Pid, Process>();
-      const seen = new Set<number>();
-      for (let i = 0; i < pids.length; i++) {
-        const r = results[i];
-        const pid = pids[i];
-        if (r === undefined || pid === undefined) continue;
-        if (r.status !== "fulfilled" || r.value === null) continue;
-        const raw = r.value;
-        seen.add(pid);
-        const prev = prevPid.get(pid);
-        let cpuPct = 0;
-        if (prev && prev.startTime === raw.startTime && winSec > 0) {
-          const deltaTicks = raw.ticks - prev.ticks;
-          cpuPct = (deltaTicks / (winSec * USER_HZ)) * 100;
-          if (cpuPct < 0) cpuPct = 0;
-        }
-        prevPid.set(pid, { ticks: raw.ticks, startTime: raw.startTime });
-        out.set(pid, {
-          user: raw.user,
-          cpuPct: round2(cpuPct),
-          rssBytes: raw.rssBytes,
-          command: raw.command,
-          cwd: raw.cwd,
-          ppid: raw.ppid,
-          state: raw.state,
-          nice: raw.nice,
-          threads: raw.threads,
-          startedAtMs: Math.round(bootEpochMs + raw.startTime * USER_HZ_MS),
-        });
-      }
-      // Evict dead pids so the map doesn't grow without bound.
-      for (const pid of prevPid.keys()) {
-        if (!seen.has(pid)) prevPid.delete(pid);
-      }
-      prevWallMs = nowMs;
-      return out;
-    },
+    readProcesses,
   };
 }
 
@@ -442,170 +442,8 @@ export function parseMeminfo(s: string): MemInfo {
   };
 }
 
-interface LinuxProcRaw {
-  user: string;
-  /** utime + stime, in clock ticks. */
-  ticks: number;
-  /** /proc/<pid>/stat field 22 — ticks-since-boot at fork; the
-   *  tombstone we use to detect PID recycling between polls AND the offset
-   *  the reader turns into a wall-clock start time via the boot epoch. */
-  startTime: number;
-  /** Resident set size in bytes (VmRSS × 1024). */
-  rssBytes: number;
-  command: string;
-  cwd: string;
-  ppid: Pid;
-  /** Single-char kernel state code (R/S/D/Z/T/I/…). */
-  state: string;
-  nice: number;
-  threads: number;
-}
-
-/** The subset of `/proc/<pid>/stat` (proc(5)) drishti reads. Pure — no I/O —
- *  so it's unit-testable against a fixture, mirroring `parsePsLine` /
- *  `parseMeminfo`. After `comm` (wrapped in parens and free to contain spaces,
- *  so we split on the LAST `)`), the remaining fields are space-separated and
- *  index from `state` at 0:
- *    state=0  ppid=1  utime=11  stime=12  nice=16  num_threads=17  starttime=19
- *  Returns null when there's no `)` to split on (not a stat line). Absent
- *  trailing fields default to 0. */
-export function parseProcStat(stat: string): {
-  comm: string;
-  state: string;
-  ppid: number;
-  ticks: number;
-  nice: number;
-  threads: number;
-  startTime: number;
-} | null {
-  const commStart = stat.indexOf("(");
-  const commEnd = stat.lastIndexOf(")");
-  if (commStart < 0 || commEnd < commStart) return null;
-  const comm = stat.slice(commStart + 1, commEnd);
-  const tail = stat.slice(commEnd + 2).split(" ");
-  return {
-    comm,
-    state: tail[0] ?? "",
-    ppid: Number(tail[1] ?? 0),
-    ticks: Number(tail[11] ?? 0) + Number(tail[12] ?? 0),
-    nice: Number(tail[16] ?? 0),
-    threads: Number(tail[17] ?? 0),
-    startTime: Number(tail[19] ?? 0),
-  };
-}
-
-async function readProcLinuxRaw(pid: number): Promise<LinuxProcRaw | null> {
-  try {
-    // `/proc/<pid>/cwd` is a symlink that EACCES for other-user pids
-    // and ENOENT for kernel threads. The `.catch(() => "")` resolves
-    // the rejection in place so it can't bubble out of the surrounding
-    // `Promise.all` and discard the rest of the row's reads.
-    const [statRaw, statusRaw, cmdlineRaw, cwdResult] = await Promise.all([
-      readFile(`/proc/${pid}/stat`, "utf-8"),
-      readFile(`/proc/${pid}/status`, "utf-8"),
-      readFile(`/proc/${pid}/cmdline`, "utf-8"),
-      readlink(`/proc/${pid}/cwd`).catch(() => ""),
-    ]);
-    const stat = parseProcStat(statRaw);
-    if (stat === null) return null;
-    const vmRssMatch = statusRaw.match(/^VmRSS:\s+(\d+)\s+kB/m);
-    const rssKb =
-      vmRssMatch && vmRssMatch[1] !== undefined ? Number(vmRssMatch[1]) : 0;
-    const userMatch = statusRaw.match(/^Uid:\s+(\d+)/m);
-    const uid =
-      userMatch && userMatch[1] !== undefined ? Number(userMatch[1]) : 0;
-    const command =
-      cmdlineRaw.length > 0 ? cmdlineRaw.replace(/\0/g, " ").trim() : stat.comm;
-    return {
-      // Best-effort user display — /etc/passwd lookup synchronous would
-      // block, so render the uid (and humanize uid 0 → "root").
-      user: uid === 0 ? "root" : String(uid),
-      ticks: stat.ticks,
-      startTime: stat.startTime,
-      rssBytes: rssKb * 1024,
-      command: truncate(command, PROC_STRING_MAX),
-      cwd: truncate(cwdResult, PROC_STRING_MAX),
-      ppid: stat.ppid,
-      state: stat.state,
-      nice: stat.nice,
-      threads: stat.threads,
-    };
-  } catch {
-    // ENOENT is expected for PIDs that vanish between readdir and the
-    // per-file reads. Any other error (EPERM on a kernel thread, I/O
-    // error, parse failure) is also safe to skip — the worst outcome is
-    // a missing row in the process table for one poll cycle.
-    return null;
-  }
-}
-
-// ── darwin: ps + sysctl reader ──────────────────────────────────────────
-
-// Compiled once — matches `ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=`
-// lines. `comm` is greedy/last (it can contain spaces), so it stays the
-// trailing `(.*)`; `state` is a no-space token like `S`/`Ss`/`R+`; `nice`
-// can be negative. All of pid/user/pcpu/rss/ppid/nice/state precede comm.
-const PS_LINE_RE =
-  /^(\d+)\s+(\S+)\s+([\d.]+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)\s+(.*)$/;
-
-/** The subset of `ps -axo …` fields a single ps line carries. `cwd`,
- *  `threads`, and `startedAtMs` are deliberately absent — a ps line has none
- *  of them — so the final `Process` is assembled in `darwinReader.readProcesses`
- *  where the lsof-derived cwd map is in scope. Mirrors linux's
- *  `LinuxProcRaw` → `Process` split so neither parser fabricates a field it
- *  cannot see (no placeholder `cwd: ""` that a caller is silently obliged to
- *  overwrite). */
-interface DarwinProcRaw {
-  pid: Pid;
-  user: string;
-  cpuPct: number;
-  /** Resident set size in bytes (ps reports KB, ×1024 here). */
-  rssBytes: number;
-  command: string;
-  ppid: Pid;
-  /** Single-char kernel state code (R/S/D/Z/T/I/…). */
-  state: string;
-  nice: number;
-}
-
-/** Parse one `ps -axo pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=` line
- *  into a `DarwinProcRaw`. `rss` is in KB on macOS, so ×1024 for `rssBytes`;
- *  the multi-char `state` token's trailing flags (`+`, `s`, …) are dropped to
- *  the leading single-char code for parity with linux. Returns null for lines
- *  that don't match (blank/garbage) so the caller skips them. Pure — no clock
- *  or platform state — to stay unit-testable. */
-export function parsePsLine(line: string): DarwinProcRaw | null {
-  const m = line.trim().match(PS_LINE_RE);
-  if (!m) return null;
-  const [, pidStr, user, cpu, rssKb, ppid, nice, state, command] = m;
-  if (
-    !pidStr ||
-    !user ||
-    !cpu ||
-    !rssKb ||
-    !ppid ||
-    !nice ||
-    !state ||
-    !command
-  )
-    return null;
-  return {
-    pid: Number(pidStr),
-    user,
-    cpuPct: Number(cpu),
-    rssBytes: Number(rssKb) * 1024,
-    command: truncate(command, PROC_STRING_MAX),
-    ppid: Number(ppid),
-    state: state[0] ?? "",
-    nice: Number(nice),
-  };
-}
-
-/** The exec shape darwin's readers spawn children through — node's promisified
- *  `execFile` (executable + argv, NO shell — see the note on `execFile`
- *  above) narrowed to what they consume, so a test can inject a
- *  deterministic fake (a hung, slow, or failing child) without real
- *  subprocesses. */
+/** The exec shape for darwin system/network probes. Process inspection
+ * itself never reaches this boundary; it is owned by osfacts-client. */
 export type ExecFn = (
   file: string,
   args: readonly string[],
@@ -616,267 +454,22 @@ export type ExecFn = (
   },
 ) => Promise<{ stdout: string }>;
 
-/** Parse `lsof -nP -d cwd -Fpn` field output into a pid→cwd map — darwin's
- *  batch equivalent of linux's per-pid `readlink(/proc/<pid>/cwd)`, in one
- *  fork rather than one per row. lsof's `-F` mode emits one set per process: a
- *  `p<pid>` line, then (for the single cwd descriptor `-d cwd` selects) an
- *  `n<path>` line. We track the pid from each `p` line and attach the next `n`
- *  path to it. A process whose cwd lsof cannot resolve — other-user pids
- *  without root — emits no `n` line and stays absent from the map, so the
- *  caller's `?? ""` reproduces linux's EACCES-to-blank fallback. Any other
- *  field line (e.g. an `f` fd marker) is ignored, so the parse is robust to
- *  lsof's exact field framing. Pure — no I/O — to stay unit-testable,
- *  mirroring parsePsLine / parseVmStat / parseNetstatIb. */
-export function parseLsofCwd(stdout: string): Map<Pid, string> {
-  const out = new Map<Pid, string>();
-  let pid: Pid | null = null;
-  for (const line of stdout.split("\n")) {
-    if (line[0] === "p") pid = Number(line.slice(1));
-    else if (line[0] === "n" && pid !== null) {
-      out.set(pid, truncate(line.slice(1), PROC_STRING_MAX));
-      pid = null; // consume: one cwd per process (-d cwd guarantees one n per p)
-    }
-  }
-  return out;
-}
-
-// ── darwin cwd enrichment discipline (drishti#111) ──────────────────────
-
-/** Kill budget for EVERY darwin child (lsof, ps, vm_stat, sysctl, netstat).
- *  A hung child under a settlement-dependent non-overlap guard — the
- *  framework poll's `inFlight` latch, this module's enricher, main.ts's
- *  `singleFlight` tick — never releases the guard, so without a budget one
- *  hang silently freezes its collection/cell for the life of the agent
- *  (worse than the pileup it replaced). The budget guarantees settlement,
- *  which the guards' `.finally` releases turn into "one logged failure, next
- *  tick re-samples".
- *
- *  20s, deliberately NOT the ~5s a ">10× healthy" framing suggests: rasam's
- *  pathological-but-COMPLETING lsof took ~14s (a sick 44GB-RSS fseventsd made
- *  fd enumeration slow), so a 5s budget would kill every attempt and deliver
- *  no cwd forever on exactly the host that needs the data. Since none of
- *  these children gate the poll's latency-critical path beyond one tick, the
- *  budget is invisible to healthy cadence — generous is free for the success
- *  path. One caveat: it also seeds the enricher's failure backoff (first
- *  retry at GAP_FACTOR × budget), so enlarging it slows recovery probing on
- *  failing hosts. */
-const EXEC_BUDGET_MS = 20_000;
-
-/** Shared exec options for every darwin child. `maxBuffer` is explicit and
- *  generous (node's default 1 MiB would turn a huge host's lsof/ps output —
- *  both scale with process count — into a rejected run and, for the enricher,
- *  a silent backoff); 16 MiB covers ~100k rows, PER CHILD — the guards are
- *  per read kind, so a small bounded set of children (ps, lsof, vm_stat,
- *  sysctl, netstat — at most one each) can be alive concurrently. */
 const CHILD_EXEC_OPTS = {
-  timeout: EXEC_BUDGET_MS,
+  timeout: 20_000,
   killSignal: "SIGKILL",
   maxBuffer: 16 * 1024 * 1024,
 } as const;
 
-/** The narrowed run shape darwin's read closures spawn children through:
- *  executable + argv in, stdout out — no options socket, so an unbudgeted
- *  child cannot be spelled at a call site. */
 export type BudgetedRun = (
   file: string,
   args: readonly string[],
 ) => Promise<{ stdout: string }>;
 
-/** The ONE place `CHILD_EXEC_OPTS` attaches to an exec. `darwinReader` wraps
- *  its injected `ExecFn` here once and hands the narrowed `run` to every read
- *  closure and to `createCwdEnricher`, so the kill-budget invariant ("EVERY
- *  darwin child is budgeted") is owned by this boundary instead of
- *  re-asserted at each spawn. */
+/** One budgeted subprocess boundary for vm_stat/sysctl/netstat. */
 export const budgetedExec =
   (execImpl: ExecFn): BudgetedRun =>
   (file, args) =>
     execImpl(file, args, CHILD_EXEC_OPTS);
-
-/** Rest-to-run ratio after a successful enrichment: the next child may spawn
- *  no earlier than completion + GAP_FACTOR × duration. A healthy-mac lsof
- *  (~100-400ms) yields a sub-second gap — every 2s poll tick enriches, exactly
- *  the pre-fix cadence — while rasam's 14s lsof self-limits to one run per
- *  ~56s, bounding a slow host to ≤ 1/(1+GAP_FACTOR) = 25% of one core. */
-const ENRICH_GAP_FACTOR = 3;
-
-/** Ceiling on EVERY enrichment gap — the consecutive-failure backoff AND the
- *  success-path adaptive gap. 5 minutes: a host whose lsof is absent or
- *  persistently hung costs one bounded attempt per 5min, yet recovers to
- *  per-tick cadence within one gap of the first success; capping the success
- *  gap too means no duration reading (however pathological) can starve
- *  enrichment longer than that same bound. */
-const ENRICH_BACKOFF_CAP_MS = 300_000;
-
-/** Discipline around darwin's cwd-enrichment child (`lsof -nP -d cwd -Fpn`
- *  — the ONLY reason the agent forks lsof, and on a big host the whole cost
- *  of the process poll). The returned thunk is what `readProcesses` calls
- *  each tick; it is deliberately SYNCHRONOUS — it returns the last-landed
- *  pid→cwd map immediately and fires a new child in the background when
- *  allowed, so the table's cadence never depends on enrichment health
- *  (drishti#111: an unbudgeted awaited lsof either wedged the collection
- *  forever or, pre-migration, piled up 40 concurrent children):
- *
- *    - SINGLE-FLIGHT: never a second child while one is in flight — the
- *      reader owns this invariant itself rather than inheriting it from the
- *      framework poll's non-overlap, so any future second caller (another
- *      subscriber, an on-demand path) gets it for free. The spawn is fenced
- *      (a synchronous exec throw is normalized to a rejection — the same
- *      hazard the framework pollSource routes through Promise.resolve) so it
- *      lands on the failure-backoff path instead of wedging `inFlight` true
- *      forever.
- *    - KILL BUDGET: the budget (`CHILD_EXEC_OPTS`: timeout + SIGKILL) rides
- *      the reader's single `budgetedExec` boundary — darwinReader constructs
- *      the narrowed `run` and hands it to this enricher — so the exec reaps a
- *      genuinely-hung child (the fseventsd-wedge class), guaranteeing the
- *      promise settles and the single-flight guard releases.
- *    - ADAPTIVE GAP: after a run of duration d, the next spawn waits
- *      GAP_FACTOR × d — fast hosts enrich every tick, slow hosts self-limit.
- *      Capped at ENRICH_BACKOFF_CAP_MS so a pathological duration reading (a
- *      laptop sleeping mid-run under a wall clock) cannot starve enrichment
- *      beyond the same 5min every other path is bounded to.
- *    - FAILURE BACKOFF: consecutive failures (killed at budget, lsof absent,
- *      output over maxBuffer) back off exponentially from GAP_FACTOR ×
- *      budget, capped at ENRICH_BACKOFF_CAP_MS, reset by the first success.
- *      The first failure of an episode logs one stderr line (and recovery
- *      logs another) so an operator debugging a blank/stale cwd column has
- *      the cause in the agent's log; the retry cadence itself stays quiet —
- *      lsof-absent is a documented environment, and the backoff bounds the
- *      retry cost.
- *    - STALE-BEATS-BLANK: skipped/failed ticks keep the last observed cwds
- *      rather than blanking — no double full-table delta churn, and a slow
- *      host was already serving stale values. Consequence: cwd fills on the
- *      FIRST LANDED run — one tick (~2s) on a healthy host, later on a slow
- *      one; blank until then. The caller passes each tick's LIVE pid set:
- *      the thunk prunes dead pids from the served map at read time AND
- *      filters every landing through the run's MONOTONE eligible set (live
- *      at spawn ∩ every tick during the run — an absence is permanent for
- *      the run even if a recycled pid reads live again before the landing),
- *      so a slow in-flight child cannot reintroduce a pid any tick observed
- *      dead and the die-then-observed-dead-then-recycled case blanks within
- *      one tick. The one honest hole: a pid recycled within a
- *      single poll window (never observed dead) can inherit the dead
- *      process's cwd until the next LANDED run — and persistent enrichment
- *      failures mean that landing may never come, preserving such a stale
- *      value indefinitely. The returned map is a per-tick SNAPSHOT (O(live
- *      pids), trivial beside the ps parse the caller just did), so no
- *      internal reference escapes — a holder is structurally immune to
- *      later prunes and landings.
- *
- *  `now` is injectable so the gap/backoff arithmetic is unit-testable against
- *  a fake clock; the default is the framework's MONOTONIC `monotonicNow` (a
- *  wall clock jumps across sleep/NTP and would mis-measure durations). Teardown: at
- *  agent exit at most ONE child can be in flight (single-flight); a
- *  completing child self-reaps, but the kill-budget timer dies with the agent
- *  process, so a genuinely-hung child can orphan until it unwedges or the OS
- *  reaps it — bounded to one, vs. the unbounded pre-fix pileup (and the #110
- *  framework-owned exit path is untouched). */
-export function createCwdEnricher(
-  run: BudgetedRun,
-  now: () => number = monotonicNow,
-): (livePids: ReadonlySet<Pid>) => ReadonlyMap<Pid, string> {
-  let lastMap = new Map<Pid, string>();
-  let nextSpawnAtMs = 0;
-  let consecutiveFailures = 0;
-  // Per-run MONOTONE eligibility — and the single-flight latch in one value:
-  // the set EXISTS iff a run is in flight (they are one concept — the run's
-  // eligibility lives exactly as long as the run, so a separate boolean
-  // would be lockstep state a future edit could desync). Seeded from the
-  // live set at spawn, intersected with every tick's live set while the run
-  // is in flight: a pid observed absent by ANY tick during the run leaves
-  // the set permanently, so a slow child cannot hand its dead-process cwd
-  // to a pid that died and was RECYCLED before the landing (a
-  // freshest-set-only intersect forgets the absence the moment the recycled
-  // pid reads live again).
-  let eligible: Set<Pid> | undefined;
-  // Every settlement path schedules its next spawn through this one closure,
-  // so the ENRICH_BACKOFF_CAP_MS ceiling ("EVERY enrichment gap is capped")
-  // is structural — a future path cannot schedule an uncapped gap.
-  const restFor = (gapMs: number) => {
-    nextSpawnAtMs = now() + Math.min(gapMs, ENRICH_BACKOFF_CAP_MS);
-  };
-  return (livePids) => {
-    // Narrow the in-flight run's eligibility monotonically — absences are
-    // permanent for the run, reappearances (pid recycling) do not restore.
-    if (eligible !== undefined) {
-      for (const pid of eligible) {
-        if (!livePids.has(pid)) eligible.delete(pid);
-      }
-    }
-    if (eligible === undefined && now() >= nextSpawnAtMs) {
-      // `runEligible` aliases the run's set: ticks narrow it through
-      // `eligible` (same object); the landing reads it directly, so no
-      // null-check is needed in the .then even after .finally clears the
-      // in-flight marker.
-      const runEligible = new Set(livePids);
-      eligible = runEligible;
-      const startedMs = now();
-      // Fence: a SYNCHRONOUSLY-throwing exec (a broken injected impl, an
-      // spawn-time OS error surfacing sync) must land on the same
-      // failure-backoff path as a rejection — an escaped throw here would
-      // leave `inFlight` true forever, the exact wedge this module exists to
-      // prevent.
-      let child: Promise<{ stdout: string }>;
-      try {
-        child = run("lsof", ["-nP", "-d", "cwd", "-Fpn"]);
-      } catch (err) {
-        child = Promise.reject(err);
-      }
-      child
-        .then(({ stdout }) => {
-          const landed = parseLsofCwd(stdout);
-          // Filter the landing through the run's monotone eligible set: the
-          // child's snapshot is OLDER than any tick that completed during
-          // its run, so a pid any of those ticks observed absent is dead —
-          // reinstalling it would undo the read-time prune and hand its cwd
-          // to a recycled pid. (A pid born mid-run is filtered too — it
-          // reads blank until the next landing, the documented
-          // one-cycle-late deal.)
-          for (const pid of landed.keys()) {
-            if (!runEligible.has(pid)) landed.delete(pid);
-          }
-          lastMap = landed;
-          if (consecutiveFailures > 0) {
-            process.stderr.write(
-              `cwd enrichment recovered after ${consecutiveFailures} failed attempt(s)\n`,
-            );
-          }
-          consecutiveFailures = 0;
-          restFor(ENRICH_GAP_FACTOR * (now() - startedMs));
-        })
-        .catch((err) => {
-          consecutiveFailures++;
-          // The RETRY CADENCE stays quiet (backoff bounds the cost, and
-          // lsof-absent is an expected environment), but the FAILURE must
-          // leave a diagnostic trace: an operator debugging a blank/stale
-          // cwd column needs the cause in the agent's log (stderr — the
-          // parent forwards it), not silence. One line per failure episode
-          // (first failure only; recovery logs on the success path), so a
-          // persistently-failing host costs one line, not one per attempt.
-          if (consecutiveFailures === 1) {
-            process.stderr.write(
-              `cwd enrichment failed, backing off: ${(err as Error).message}\n`,
-            );
-          }
-          restFor(
-            ENRICH_GAP_FACTOR * EXEC_BUDGET_MS * 2 ** (consecutiveFailures - 1),
-          );
-        })
-        .finally(() => {
-          eligible = undefined; // run settled — no run in flight
-        });
-    }
-    // Prune pids the current tick no longer sees, so a recycled pid can't
-    // read a dead process's cwd across an enrichment gap. Mutating lastMap in
-    // place is safe: a landed run REPLACES the map wholesale.
-    for (const pid of lastMap.keys()) {
-      if (!livePids.has(pid)) lastMap.delete(pid);
-    }
-    // Per-tick snapshot: no internal reference escapes, so a holder is
-    // structurally immune to later prunes/landings (cheap next to the ps
-    // parse the caller just did).
-    return new Map(lastMap);
-  };
-}
 
 /** Parse `vm_stat` (darwin) into a cache-aware *available* byte count, so
  *  the darwin path can mean the same thing as linux's MemAvailable-based
@@ -908,8 +501,8 @@ export function createCwdEnricher(
  *  the reader owns; it pairs total with this available where the two are
  *  genuinely co-present. `pageSize` defaults to the size in the header
  *  (`(page size of N bytes)`); the param lets tests pin it. Pure — no
- *  clock or platform state — to stay unit-testable, mirroring parsePsLine
- *  / parseNetstatIb. */
+ *  clock or platform state — to stay unit-testable, mirroring
+ *  parseNetstatIb. */
 export function parseVmStat(
   stdout: string,
   pageSize?: number,
@@ -974,10 +567,13 @@ export function parseSwapusage(stdout: string): {
  *  poll contract makes a seed rejection permanently fatal to that
  *  collection, which is why serveAgent observes `runtime.done` and exits
  *  loud instead of serving a silently-dead table for the process's life. */
-export function darwinReader(execImpl: ExecFn = execFile): ProcReader {
+export function darwinReader(
+  execImpl: ExecFn,
+  osfactsBin: string,
+): ProcReader {
   const readCpuCores = createCpuCoresReader();
   const run = budgetedExec(execImpl);
-  const enrichCwd = createCwdEnricher(run);
+  const readProcesses = createOsfactsProcessReader(osfactsBin);
   const readNetwork = createNetReader(async () => {
     const { stdout } = await run("netstat", ["-ib"]);
     return filterLoopback(parseNetstatIb(stdout));
@@ -1024,44 +620,7 @@ export function darwinReader(execImpl: ExecFn = execFile): ProcReader {
         hostname: hostname(),
       };
     },
-    readProcesses: async () => {
-      // ps gives the rows; cwd merges from the enricher's LAST-LANDED lsof
-      // map, never awaited — the table refreshes at ps speed regardless of
-      // enrichment health (see createCwdEnricher for the full discipline:
-      // single-flight, kill budget, adaptive gap, failure backoff). A pid the
-      // last map doesn't know (new process, lsof failing/absent) reads "" via
-      // `?? ""` — mirroring linux's per-pid EACCES-to-blank fallback. ps runs
-      // FIRST so the tick's live pid set rides into the enricher, which
-      // prunes recycled pids from the served map.
-      const { stdout: psOut } = await run("ps", [
-        "-axo",
-        "pid=,user=,pcpu=,rss=,ppid=,nice=,state=,comm=",
-      ]);
-      const raws: DarwinProcRaw[] = [];
-      for (const line of psOut.split("\n")) {
-        const raw = parsePsLine(line);
-        if (raw) raws.push(raw);
-      }
-      const cwdByPid = enrichCwd(new Set(raws.map((r) => r.pid)));
-      const out = new Map<Pid, Process>();
-      for (const raw of raws) {
-        // Single Process-construction site, like linuxReader: cwd from the
-        // lsof map; threads/startedAtMs null — darwin's ps has no cheap source.
-        out.set(raw.pid, {
-          user: raw.user,
-          cpuPct: raw.cpuPct,
-          rssBytes: raw.rssBytes,
-          command: raw.command,
-          cwd: cwdByPid.get(raw.pid) ?? "",
-          ppid: raw.ppid,
-          state: raw.state,
-          nice: raw.nice,
-          threads: null,
-          startedAtMs: null,
-        });
-      }
-      return out;
-    },
+    readProcesses,
   };
 }
 
@@ -1102,43 +661,15 @@ function stubReader(): ProcReader {
     },
     readProcesses: async () => {
       // Surface the agent's own process so the demo still shows
-      // something even on platforms without /proc or BSD ps.
+      // something even on platforms osfacts does not support.
       const out = new Map<Pid, Process>();
       out.set(process.pid, {
-        user: process.env.USER ?? "unknown",
-        cpuPct: 0,
-        rssBytes: 0,
         command: `${process.execPath} ${process.argv.slice(1).join(" ")}`,
-        cwd: process.cwd(),
         ppid: process.ppid,
-        state: "",
-        nice: 0,
-        threads: null,
-        startedAtMs: null,
+        listeners: [],
+        unreadableErrno: "ENOTSUP",
       });
       return out;
     },
   };
-}
-
-// ── Tiny helpers ─────────────────────────────────────────────────────────
-
-/** Wire cap for per-process string fields (command, cwd, …). One
- *  constant so a change to the limit stays in parity across platforms. */
-const PROC_STRING_MAX = 200;
-
-// `USER_HZ` — kernel jiffies-per-second. The kernel reports utime/stime in
-// jiffies; we divide by Δseconds × USER_HZ to get "fraction of a core during
-// this window". `getconf CLK_TCK` is 100 on every standard linux kernel build
-// (it's a Kconfig at CONFIG_HZ_100/250/300/1000 with 100 as the universal
-// default). Hardcoding it avoids an extra subprocess on every poll.
-const USER_HZ = 100;
-const USER_HZ_MS = 1000 / USER_HZ; // ms per clock tick
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
-function truncate(s: string, max: number): string {
-  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
