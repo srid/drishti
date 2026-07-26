@@ -217,17 +217,29 @@ export async function serveAgent(
       // The reactor owns the T+0 seed, the poll cadence, and the reconcile; the graph
       // is the one writer, so there is no ctx `upsert`/`remove` seam here.
       processes: derived.collection(
-        source({ read: () => reader.readProcesses(), install: pollInstall }),
+        source({
+          read: () => reader.readProcesses(),
+          install: pollInstall,
+          // Names this source in a reactor loop-guard error. Diagnostics only —
+          // there is no field that can silence the guard. Worth setting because
+          // the alternative is a stack trace pointing into framework code.
+          label: "processes",
+        }),
       ),
       cpuCores: derived.collection(
         source({
           // `readCpuCores` is synchronous (os.cpus()); the poll shape wants a promise.
           read: () => Promise.resolve(reader.readCpuCores()),
           install: pollInstall,
+          label: "cpuCores",
         }),
       ),
       networkInterfaces: derived.collection(
-        source({ read: () => reader.readNetwork(), install: pollInstall }),
+        source({
+          read: () => reader.readNetwork(),
+          install: pollInstall,
+          label: "networkInterfaces",
+        }),
       ),
     },
     // No `streams`: the whole-process-set protocol is the `processes` collection's
