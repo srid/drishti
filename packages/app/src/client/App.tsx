@@ -55,6 +55,7 @@ import {
   type Pid,
   type Process,
   type SystemInfo,
+  type UnclaimedListener,
 } from "drishti-common";
 import {
   type ConnectionInfo,
@@ -71,6 +72,7 @@ import {
   diskGb,
   diskPct,
   formatBytes,
+  formatProcessUptime,
   formatThroughput,
   formatUptime,
   memGb,
@@ -146,7 +148,7 @@ import {
   surfaceAppClient,
 } from "./wire";
 
-const SORT_KEYS = ["pid", "ppid", "ports", "command"] as const;
+const SORT_KEYS = ["pid", "ppid", "mem", "uptime", "ports", "command"] as const;
 type SortKey = (typeof SORT_KEYS)[number];
 
 // The human word for a raised alert id — a CLIENT-owned presentation lookup
@@ -1155,6 +1157,13 @@ function HostView(props: {
     },
   );
   const processes = (): Record<Pid, Process> => processesSub() ?? {};
+  const unclaimedListeners = entry.collections.unclaimedListeners.use();
+  const unclaimedListenerValues = createMemo(() =>
+    [...unclaimedListeners.keys()]
+      .map((key) => unclaimedListeners.byKey(key)?.())
+      .filter((value) => value !== undefined)
+      .sort((a, b) => a.port - b.port || a.address.localeCompare(b.address)),
+  );
 
   // Which PID is expanded into the detail panel (null = none). A transient focus,
   // not a per-host persisted pref — but now OWNED per-host by the host-map scope,
@@ -1282,7 +1291,10 @@ function HostView(props: {
               String(listener.port).includes(q) ||
               listener.address.toLowerCase().includes(q),
           ) ||
-          (proc.unreadableErrno?.toLowerCase().includes(q) ?? false)
+          proc.unreadable.some(
+            ({ facet, errno }) =>
+              facet.includes(q) || errno.toLowerCase().includes(q),
+          )
         )
           filtered.push(pid);
       }
@@ -1363,6 +1375,7 @@ function HostView(props: {
           ifaceNames={ifaceNames()}
           getNic={(name) => nics.byKey(name)?.()}
         />
+        <UnclaimedListeners listeners={unclaimedListenerValues()} />
         <FilterBar
           filter={filter()}
           onFilter={setFilter}
@@ -1418,6 +1431,13 @@ function pidComparator(
   if (key === "ports")
     return (a, b) =>
       procs[b]!.listeners.length - procs[a]!.listeners.length || a - b;
+  if (key === "mem")
+    return (a, b) =>
+      (procs[b]!.rssBytes ?? -1) - (procs[a]!.rssBytes ?? -1) || a - b;
+  if (key === "uptime")
+    return (a, b) =>
+      (procs[a]!.startedAtMs ?? Number.POSITIVE_INFINITY) -
+        (procs[b]!.startedAtMs ?? Number.POSITIVE_INFINITY) || a - b;
   if (key === "command")
     return (a, b) =>
       procs[a]!.command.localeCompare(procs[b]!.command) || a - b;
@@ -1558,6 +1578,34 @@ function FilterBar(props: {
   );
 }
 
+function UnclaimedListeners(props: {
+  listeners: readonly UnclaimedListener[];
+}) {
+  return (
+    <Show when={props.listeners.length > 0}>
+      <MetricSection class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
+        <span class="font-semibold text-amber-700 dark:text-amber-400">
+          {props.listeners.length} unclaimed {props.listeners.length === 1 ? "listener" : "listeners"}
+        </span>
+        <For each={props.listeners.slice(0, 12)}>
+          {(listener) => (
+            <span
+              class="tabular-nums text-gray-600 dark:text-gray-400"
+              title="Socket observed; owning pid could not be attributed"
+            >
+              {listener.address}:{listener.port}
+              <Show when={listener.uid !== null}> u{listener.uid}</Show>
+            </span>
+          )}
+        </For>
+        <Show when={props.listeners.length > 12}>
+          <span class="text-gray-400">+{props.listeners.length - 12} more</span>
+        </Show>
+      </MetricSection>
+    </Show>
+  );
+}
+
 function ConnectingOverlay(props: {
   connection: ConnectionInfo;
   onReconnect: () => void;
@@ -1695,6 +1743,9 @@ function ProcessTable(props: {
   sortKey: SortKey;
   onSort: (k: SortKey) => void;
 }) {
+  const [nowMs, setNowMs] = createSignal(Date.now());
+  const clock = setInterval(() => setNowMs(Date.now()), 60_000);
+  onCleanup(() => clearInterval(clock));
   return (
     // `flex-1 min-h-0` makes the table the single scroll region: it grows to
     // fill whatever the pinned vitals above leave, and `min-h-0` lets it shrink
@@ -1717,6 +1768,18 @@ function ProcessTable(props: {
               onClick={() => props.onSort("ppid")}
             />
             <SortableTh
+              label="MEM"
+              align="right"
+              active={props.sortKey === "mem"}
+              onClick={() => props.onSort("mem")}
+            />
+            <SortableTh
+              label="UPTIME"
+              align="right"
+              active={props.sortKey === "uptime"}
+              onClick={() => props.onSort("uptime")}
+            />
+            <SortableTh
               label="PORTS"
               align="right"
               active={props.sortKey === "ports"}
@@ -1737,6 +1800,7 @@ function ProcessTable(props: {
               <ProcessRow
                 pid={pid}
                 processes={props.processes}
+                nowMs={nowMs()}
               />
             )}
           </For>
@@ -1756,11 +1820,18 @@ function ProcessTable(props: {
 function ProcessRow(props: {
   pid: Pid;
   processes: Accessor<Record<Pid, Process>>;
+  nowMs: number;
 }) {
   const selection = useContext(SelectionContext);
   const proc = () => props.processes()[props.pid];
   const listenerPorts = () =>
     (proc()?.listeners ?? []).map((listener) => listener.port).join(", ");
+  const unreadable = () =>
+    (proc()?.unreadable ?? [])
+      .map(({ facet, errno }) => `${facet} · ${errno}`)
+      .join(", ");
+  const uptime = () =>
+    formatProcessUptime(proc()?.startedAtMs ?? null, props.nowMs, (ms) => ms);
   const isSelected = () => selection?.selectedPid() === props.pid;
   return (
     <tr
@@ -1782,6 +1853,14 @@ function ProcessRow(props: {
         {proc()?.ppid ?? 0}
       </td>
       <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
+        {proc()?.rssBytes === null || proc()?.rssBytes === undefined
+          ? "—"
+          : formatBytes(proc()!.rssBytes!)}
+      </td>
+      <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
+        {uptime()}
+      </td>
+      <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
         {listenerPorts() || "—"}
       </td>
       {/* COMMAND absorbs the row's residual width and ellipsizes at the cell
@@ -1795,12 +1874,12 @@ function ProcessRow(props: {
       </td>
       <td class="w-px whitespace-nowrap px-3 py-0.5 text-left">
         <Show
-          when={proc()?.unreadableErrno}
+          when={unreadable()}
           fallback={<span class="text-gray-400">readable</span>}
         >
-          {(errno) => (
+          {(facts) => (
             <span class="text-amber-600 dark:text-amber-400">
-              blind · {errno()}
+              {facts()}
             </span>
           )}
         </Show>
@@ -1850,6 +1929,14 @@ function ProcessDetail(props: {
   onKill: (signal: "TERM" | "KILL") => Promise<{ ok: boolean; error?: string }>;
 }) {
   const p = () => props.process;
+  const memoryText = () => {
+    const rss = p().rssBytes;
+    return rss === null ? "—" : formatBytes(rss);
+  };
+  const startedText = () => {
+    const started = p().startedAtMs;
+    return started === null ? "—" : new Date(started).toLocaleString();
+  };
   // Kill-action state: "idle" | "killing" | <error message to show inline>.
   const [killState, setKillState] = createSignal<string>("idle");
   const runKill = async (signal: "TERM" | "KILL"): Promise<void> => {
@@ -1906,6 +1993,12 @@ function ProcessDetail(props: {
             )}
           </Show>
         </DetailRow>
+        <DetailRow label="memory">
+          <span class="tabular-nums">{memoryText()}</span>
+        </DetailRow>
+        <DetailRow label="started">
+          <span class="tabular-nums">{startedText()}</span>
+        </DetailRow>
         <DetailRow label="listeners">
           <Show
             when={p().listeners.length > 0}
@@ -1924,14 +2017,18 @@ function ProcessDetail(props: {
         </DetailRow>
         <DetailRow label="inspection">
           <Show
-            when={p().unreadableErrno}
-            fallback={<span>readable · empty listeners are observed empty</span>}
+            when={p().unreadable.length > 0}
+            fallback={<span>all requested facets readable</span>}
           >
-            {(errno) => (
-              <span class="text-amber-600 dark:text-amber-400">
-                blind ({errno()}) · empty listeners are not authoritative
-              </span>
-            )}
+            <span class="flex flex-wrap gap-x-3 text-amber-600 dark:text-amber-400">
+              <For each={p().unreadable}>
+                {({ facet, errno }) => (
+                  <span>
+                    {facet} blind ({errno})
+                  </span>
+                )}
+              </For>
+            </span>
           </Show>
         </DetailRow>
       </dl>

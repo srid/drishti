@@ -66,6 +66,15 @@ export const browserSurface = defineSurfaceWithPolicy<ClientErrorPolicy>()({
   },
   collections: {
     ...mirroredAgentSurface.spec.collections,
+    unclaimedListeners: {
+      ...mirroredAgentSurface.spec.collections.unclaimedListeners,
+      client: {
+        onError: {
+          kind: "log",
+          label: "unclaimed listeners subscription failed",
+        },
+      },
+    },
     cpuCores: {
       ...mirroredAgentSurface.spec.collections.cpuCores,
       client: { onError: { kind: "log", label: "cpuCores subscription failed" } },

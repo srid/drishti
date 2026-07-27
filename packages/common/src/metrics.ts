@@ -44,7 +44,7 @@ export function swapPct(system: SystemInfo): number {
 
 /** Root-filesystem used as a percentage of total — the disk twin of `memPct`,
  *  reusing the same guarded `pctOf`. 0 when the host reports no disk total (agent
- *  couldn't `statfs`), never NaN. */
+ *  has no usable disk fact), never NaN. */
 export function diskPct(system: SystemInfo): number {
   return pctOf(system.diskUsed, system.diskTotal);
 }

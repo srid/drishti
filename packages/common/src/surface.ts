@@ -38,6 +38,12 @@ const ProcessSchema = z.object({
   /** Parent process id from the same osfacts snapshot. 0 for a root/orphan,
    *  and for a pid represented only by a `U` row (no readable `P` row). */
   ppid: PidSchema,
+  /** Resident set size reported by osfacts' `M` facet. Null when that facet
+   *  is explicitly unreadable for this pid. */
+  rssBytes: z.number().int().nonnegative().nullable(),
+  /** Process start identity as epoch milliseconds, derived from osfacts' `S`
+   *  microsecond timestamp. Null when that facet is explicitly unreadable. */
+  startedAtMs: z.number().nonnegative().nullable(),
   /** Listening TCP sockets attributed to this pid in the same snapshot.
    *  Address remains network-order hex: classification is consumer policy. */
   listeners: z.array(
@@ -46,10 +52,23 @@ const ProcessSchema = z.object({
       address: z.string(),
     }),
   ),
-  /** Mandatory osfacts `U` row, when present. `listeners: []` with null means
-   *  observed-empty; `listeners: []` with an errno means inspection was blind.
-   *  This is the wire-level distinction the old readers silently erased. */
-  unreadableErrno: z.string().nullable(),
+  /** Facet-specific mandatory osfacts `U` rows. A blind `ports` facet no
+   *  longer makes the host listener table empty: OSF6 emits those listeners
+   *  separately as claimed or unclaimed facts. */
+  unreadable: z.array(
+    z.object({
+      facet: z.enum(["proc", "ports", "mem", "start_time"]),
+      errno: z.string(),
+    }),
+  ),
+});
+
+const UnclaimedListenerSchema = z.object({
+  port: z.number().int().positive().max(65535),
+  address: z.string(),
+  /** Linux can identify the socket owner without identifying a pid. Darwin
+   *  legitimately leaves this null. */
+  uid: z.number().int().nonnegative().nullable(),
 });
 
 /** The process fields whose change re-publishes a row — the `processes`
@@ -61,7 +80,14 @@ type ProcessValue = z.infer<typeof ProcessSchema>;
 const processEqual = (a: ProcessValue, b: ProcessValue): boolean =>
   a.command === b.command &&
   a.ppid === b.ppid &&
-  a.unreadableErrno === b.unreadableErrno &&
+  a.rssBytes === b.rssBytes &&
+  a.startedAtMs === b.startedAtMs &&
+  a.unreadable.length === b.unreadable.length &&
+  a.unreadable.every(
+    (fact, i) =>
+      fact.facet === b.unreadable[i]?.facet &&
+      fact.errno === b.unreadable[i]?.errno,
+  ) &&
   a.listeners.length === b.listeners.length &&
   a.listeners.every(
     (listener, i) =>
@@ -113,17 +139,13 @@ const SystemSchema = z.object({
   /** Bytes used / total — UI converts to GB. */
   memUsed: z.number(),
   memTotal: z.number(),
-  /** Swap bytes used / total. `swapUsed = SwapTotal − SwapFree` on linux
-   *  (`/proc/meminfo`); `total`/`used` from `sysctl vm.swapusage` on darwin.
-   *  Both 0 on a host with swap disabled (no swap device, or an unknown
-   *  platform) — `swapPct` guards the divide, so it reads as 0% rather than
-   *  NaN, the same "unavailable → 0" convention memory and disk use. */
+  /** Swap bytes used / total from osfacts V2. Both are 0 on a host with swap
+   *  disabled; `swapPct` guards the divide. */
   swapUsed: z.number(),
   swapTotal: z.number(),
-  /** Bytes used / total on the **root filesystem** (`/`), via `statfs("/")`
-   *  in the agent. `diskUsed = (blocks − bfree) × bsize`, the bytes-occupied
-   *  parity of `memUsed = memTotal − available` — so `diskPct` reuses the
-   *  same `pctOf` "share of total" formula memory does.
+  /** Bytes used / total on the **root filesystem** (`/`) from osfacts V2.
+   *  `diskUsed = total − available`, the bytes-occupied parity of
+   *  `memUsed = memTotal − available`.
    *
    *  ⚠ **Mount-selection policy: root `/` only.** Unlike memory (one
    *  authoritative host figure), a host has many filesystems and no single
@@ -131,13 +153,12 @@ const SystemSchema = z.object({
    *  that splits `/var`, `/nix`, or `/data` onto separate disks will not see
    *  those here — a per-mount view is a future `diskDevices` collection
    *  (mirroring `networkInterfaces`), not a reinterpretation of this field.
-   *  Both 0 when the agent can't `statfs` (unknown platform) — `pctOf`
-   *  guards the divide. */
+   *  `pctOf` guards the divide. */
   diskUsed: z.number(),
   diskTotal: z.number(),
   /** Seconds since boot. */
   uptime: z.number(),
-  /** OS family — `linux` reads /proc/*, `darwin` reads sysctl. */
+  /** OS family observed through osfacts. */
   os: z.enum(["linux", "darwin", "unknown"]),
   /** Resolved hostname inside the agent (parent shows this in the
    *  header chip — useful when the parent ssh'd by an alias). */
@@ -256,6 +277,15 @@ export const surface = defineSurface({
       verbs: ["keys", "get", "deltas"],
       equals: processEqual,
     },
+    /** Host listeners whose socket fact is readable but whose owning pid is
+     *  not attributable. This is the OSF6 distinction that lets drishti show
+     *  a complete listener table without pretending permission-blind sockets
+     *  do not exist. */
+    unclaimedListeners: {
+      keySchema: z.string(),
+      schema: UnclaimedListenerSchema,
+      verbs: ["keys", "get", "deltas"],
+    },
     /** Per-core CPU usage — small-N (typical 4-32) `Collection<K,T>`.
      *  The host drill-in renders one bar per core, so per-key reactive identity
      *  is the right shape. But every core ticks every poll, so the host view
@@ -307,6 +337,8 @@ type SF = SurfaceTypes<typeof surface.spec>;
 
 export type Pid = SF["collections"]["processes"]["Key"];
 export type Process = SF["collections"]["processes"]["Value"];
+export type UnclaimedListenerId = SF["collections"]["unclaimedListeners"]["Key"];
+export type UnclaimedListener = SF["collections"]["unclaimedListeners"]["Value"];
 export type CoreId = SF["collections"]["cpuCores"]["Key"];
 export type CpuCore = SF["collections"]["cpuCores"]["Value"];
 export type IfaceName = SF["collections"]["networkInterfaces"]["Key"];

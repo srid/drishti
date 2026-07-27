@@ -60,6 +60,8 @@ import {
   type Pid,
   type Process,
   type SystemInfo,
+  type UnclaimedListener,
+  type UnclaimedListenerId,
   surface,
 } from "drishti-common";
 import { type Alerts, NO_ALERTS } from "drishti-common/alerts";
@@ -98,6 +100,10 @@ export function buildRouter(opts: BuildRouterOptions) {
   // (`NO_ALERTS`) until the first agent frame lands.
   const alertsStore: CellStore<Alerts> = inMemoryStore({ ...NO_ALERTS });
   const processCache = new Map<Pid, Process>();
+  const unclaimedListenerCache = new Map<
+    UnclaimedListenerId,
+    UnclaimedListener
+  >();
   const coreCache = new Map<CoreId, CpuCore>();
   const netCache = new Map<IfaceName, NetInterface>();
   // No browser snapshot bus: the whole-process-set protocol is the `processes`
@@ -151,6 +157,15 @@ export function buildRouter(opts: BuildRouterOptions) {
         },
         remove: (key) => {
           processCache.delete(key);
+        },
+      },
+      unclaimedListeners: {
+        readAll: () => unclaimedListenerCache,
+        upsert: (key, value) => {
+          unclaimedListenerCache.set(key, value);
+        },
+        remove: (key) => {
+          unclaimedListenerCache.delete(key);
         },
       },
       cpuCores: {
@@ -283,6 +298,13 @@ export function buildRouter(opts: BuildRouterOptions) {
             remove: (key) => runtime.ctx.collections.processes.remove(key),
             initialKeys: () => new Set(processCache.keys()),
           },
+          unclaimedListeners: {
+            upsert: (key, value) =>
+              runtime.ctx.collections.unclaimedListeners.upsert(key, value),
+            remove: (key) =>
+              runtime.ctx.collections.unclaimedListeners.remove(key),
+            initialKeys: () => new Set(unclaimedListenerCache.keys()),
+          },
           cpuCores: {
             upsert: (key, value) =>
               runtime.ctx.collections.cpuCores.upsert(key, value),
@@ -366,6 +388,10 @@ type FragmentCtx = {
       processes: {
         upsert: (k: Pid, v: Process) => void;
         remove: (k: Pid) => void;
+      };
+      unclaimedListeners: {
+        upsert: (k: UnclaimedListenerId, v: UnclaimedListener) => void;
+        remove: (k: UnclaimedListenerId) => void;
       };
       cpuCores: {
         upsert: (k: CoreId, v: CpuCore) => void;

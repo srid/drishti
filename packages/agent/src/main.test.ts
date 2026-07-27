@@ -26,7 +26,8 @@ function gatedReader(processesGate: Promise<void>): ProcReader {
       await processesGate;
       return new Map();
     },
-    readCpuCores: () => new Map(),
+    readUnclaimedListeners: async () => new Map(),
+    readCpuCores: async () => new Map(),
     readNetwork: async () => new Map(),
   };
 }

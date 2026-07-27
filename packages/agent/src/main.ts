@@ -78,21 +78,16 @@ function usage(): never {
 
 /** Wrap an async tick so a fire that lands while a previous run is still in
  *  flight is SKIPPED — the same non-overlap law the framework's poll source
- *  applies to the three collections, owned here for the one hand-rolled
+ *  applies to the keyed collections, owned here for the one hand-rolled
  *  `setInterval` left in the agent:
- *  the system/alerts tick. Without it a slow `readSystem` (darwin: `vm_stat` +
- *  `sysctl` children) overlaps itself every 2s on a wedged host — the
- *  drishti#111 pileup class, just with cheaper children. Skipping (not
+ *  the system/alerts tick. Without it a slow osfacts host read overlaps itself
+ *  every 2s on a wedged host — the drishti#111 pileup class. Skipping (not
  *  queueing) is correct for a poll: the next interval fire re-samples.
  *
  *  SOUND ONLY BECAUSE THE READS SETTLE: the guard releases in `finally`, so a
  *  never-settling tick would freeze the cell forever — which is why every
- *  darwin child under this tick rides proc.ts's `CHILD_EXEC_OPTS` kill
- *  budget (a hung vm_stat settles as a rejection, the catch below logs it,
- *  and the next fire re-samples), and why the one timeout-less syscall in
- *  the tick — `statfs` — is decoupled behind proc.ts's probe-cache
- *  (`readRootDiskUsage` serves a cached observation synchronously; a
- *  D-state root fs cannot hold the tick). Exported for main.test.ts. */
+ *  osfacts client command carries a five-second SIGKILL budget. Exported for
+ *  main.test.ts. */
 export function singleFlight(tick: () => Promise<void>): () => Promise<void> {
   let inFlight = false;
   return async () => {
@@ -132,7 +127,7 @@ type Serve = (opts: {
  * **Serve before you enumerate.** The connect handshake — the parent's first
  * `system.get` — needs only the cheap `system` snapshot, so that is the one
  * read we seed before serving. The process/socket snapshot (osfacts) and
- * network read (`netstat` on darwin) are
+ * process and network reads are
  * NOT on the handshake's critical path: they start empty and the poll loop
  * fills them. `await`-ing them before `serve` is what let a busy,
  * high-process-count host (a loaded macOS box as `localhost`, say) blow the
@@ -145,18 +140,17 @@ export async function serveAgent(
   reader: ProcReader,
   serve: Serve = serveOverStdio,
 ): Promise<void> {
-  // Seed the `system` cell synchronously — the cheap read (vm_stat + statfs
-  // on darwin, a couple of /proc reads on linux) the handshake actually needs, so
-  // the cell is live the instant we serve. The per-core aggregate rides a fresh
-  // synchronous `readCpuCores()` (just os.cpus(), no fork). The `cpuCores`
+  // Seed the `system` cell from one cached osfacts host reading, so the cell is
+  // live the instant we serve. The per-core aggregate shares that same reading.
+  // The `cpuCores`
   // collection is its OWN `derived.collection` poll now (below), so there is no
   // shared snapshot Map to seed — the reconciler owns the per-core map.
   const systemStore = inMemoryStore({
     ...(await reader.readSystem()),
-    ...cpuAggregate(reader.readCpuCores()),
+    ...cpuAggregate(await reader.readCpuCores()),
     pollIntervalMs: POLL_INTERVAL_MS,
   });
-  // The three keyed collections (processes, cpuCores, networkInterfaces) are
+  // The keyed collections are
   // `derived.collection(source({ read, install }))` below — the reactor owns the
   // poll loop, the keyed reconcile (diff-by-`equals`, evict-absent), and the T+0
   // seed. `processes`/`networkInterfaces` still start EMPTY and fill on the async
@@ -210,7 +204,7 @@ export async function serveAgent(
       alerts: derived.cell(scan(metrics, NO_ALERTS, applyHysteresis)),
     },
     collections: {
-      // The three keyed poll-reconciles, now the framework's `derived.collection`
+      // The keyed poll-reconciles, now the framework's `derived.collection`
       // over a poll `source`: each frame's whole-map read is diffed against the last
       // by the collection's `equals` (per-key upsert for a moved value, evict for an
       // absent key) — the "most-repeated hand-roll in both trees" (kolu SR8), gone.
@@ -226,10 +220,16 @@ export async function serveAgent(
           label: "processes",
         }),
       ),
+      unclaimedListeners: derived.collection(
+        source({
+          read: () => reader.readUnclaimedListeners(),
+          install: pollInstall,
+          label: "unclaimedListeners",
+        }),
+      ),
       cpuCores: derived.collection(
         source({
-          // `readCpuCores` is synchronous (os.cpus()); the poll shape wants a promise.
-          read: () => Promise.resolve(reader.readCpuCores()),
+          read: () => reader.readCpuCores(),
           install: pollInstall,
           label: "cpuCores",
         }),
@@ -298,20 +298,17 @@ export async function serveAgent(
 
   // Poll loop for the `system` cell + the `alerts` reactor ONLY: read the cheap
   // host scalars + the per-core aggregate, publish `system`, and feed the metrics
-  // source. The three keyed COLLECTIONS are `derived.collection` polls of their own
+  // source. The keyed COLLECTIONS are `derived.collection` polls of their own
   // now (above) — the framework owns their reconcile — so the hand-held
   // upsert/remove loops (and the snapshot Maps + `processChanged`) are gone.
   const tick = singleFlight(async (): Promise<void> => {
     try {
       const nextSystem = await reader.readSystem();
-      // Per-core usage for the host-CPU aggregate (cpuPct / coreCount) on the
-      // `system` cell — the fleet card reads that one scalar instead of subscribing
-      // to all N per-core cells (the O(hosts×cores) fan-out). Read here as well as
-      // in the `cpuCores` collection poll: `readCpuCores` is a cheap synchronous
-      // os.cpus() delta, so the fleet scalar and the per-core bars each take a read.
+      // The reader coalesces this with the preceding system read, so aggregate
+      // and per-core views come from one atomic osfacts host frame.
       const sys = {
         ...nextSystem,
-        ...cpuAggregate(reader.readCpuCores()),
+        ...cpuAggregate(await reader.readCpuCores()),
         pollIntervalMs: POLL_INTERVAL_MS,
       };
       runtime.ctx.cells.system.set(sys);
