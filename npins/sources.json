@@ -9,9 +9,9 @@
       },
       "branch": "osfacts-improve",
       "submodules": false,
-      "revision": "7238fe0616cb7fc43f873e5b129c722903f8f6da",
-      "url": "https://github.com/juspay/kolu/archive/7238fe0616cb7fc43f873e5b129c722903f8f6da.tar.gz",
-      "hash": "sha256-24u33ZtkSsQdfk7v9/SNuMIWiTdfE7D5fPJaDQPLUA0="
+      "revision": "04b8dfc3691458a5653e62a381b8b9643ad92e68",
+      "url": "https://github.com/juspay/kolu/archive/04b8dfc3691458a5653e62a381b8b9643ad92e68.tar.gz",
+      "hash": "sha256-g1/CxS0kprVxKGFbC2PzWQsF+LCXPvJUf0eExMHuaXw="
     },
     "nixpkgs": {
       "type": "Git",

@@ -51,6 +51,8 @@ Open <http://localhost:7720>. The UI opens on the **fleet** tab — a single ove
 
 On macOS, other users' processes report memory and CPU as unreadable: Apple gates task info behind a private entitlement. Apple's `ps` is setuid-root and carries it; drishti's agent is deliberately an ordinary, unprivileged binary. Linux hosts are unaffected.
 
+On macOS 27+, Apple platform signing gates the host-wide unclaimed-listener table, so the `ports` source reports a named failure there. Claimed listeners for the agent's own processes still work.
+
 Requirements:
 
 - The remote host must be `ssh`-reachable with **passwordless** auth and a working **`nix-daemon`** that **trusts your user** (`trusted-users` in `nix.conf`) — drishti provisions the agent by shipping its `.drv` to the remote with `nix copy --derivation` and realising it there.
