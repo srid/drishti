@@ -92,9 +92,11 @@ import {
   processRowCell,
   processRowUptime,
   PROCESS_SORT_KEYS,
+  type ProcessTableCellPresentation,
   type ProcessSortKey,
   processStateText,
   processTableCell,
+  unreadableTableMarker,
 } from "./processPresentation";
 import {
   type SourceErrorFact,
@@ -1835,12 +1837,6 @@ function ProcessTable(props: {
               onClick={() => props.onSort("uptime")}
             />
             <SortableTh
-              label="PORTS"
-              align="right"
-              active={props.sortKey === "ports"}
-              onClick={() => props.onSort("ports")}
-            />
-            <SortableTh
               label="COMMAND"
               align="left"
               active={props.sortKey === "command"}
@@ -1880,8 +1876,6 @@ function ProcessRow(props: {
 }) {
   const selection = useContext(SelectionContext);
   const proc = () => props.processes()[props.pid];
-  const listenerPorts = () =>
-    (proc()?.listeners ?? []).map((listener) => listener.port).join(", ");
   const uptime = () =>
     processRowUptime(
       proc()?.startedAtMs ?? null,
@@ -1904,10 +1898,11 @@ function ProcessRow(props: {
       ? { text: readableText, warning: false }
       : processRowCell(process, facet, readableText);
   };
-  const fullyBlind = () => {
+  const blindErrno = () => {
     const process = proc();
-    return process !== undefined && fullyBlindErrno(process) !== null;
+    return process === undefined ? null : fullyBlindErrno(process);
   };
+  const fullyBlind = () => blindErrno() !== null;
   const memoryCell = () => {
     const rss = proc()?.rssBytes;
     return cell("mem", rss === null || rss === undefined ? "—" : formatBytes(rss));
@@ -1915,7 +1910,6 @@ function ProcessRow(props: {
   const cpuCell = () => cell("cpu_time", `${(proc()?.cpuPct ?? 0).toFixed(1)}%`);
   const userCell = () => cell("uid", proc()?.user || "—");
   const uptimeCell = () => cell("start_time", uptime());
-  const portsCell = () => cell("ports", listenerPorts() || "—");
   const commandCell = () => cell("proc", proc()?.name || "(unreadable)");
   const cwdCell = () => cell("cwd", proc()?.cwd ?? "—");
   const isSelected = () => selection?.selectedPid() === props.pid;
@@ -1942,7 +1936,7 @@ function ProcessRow(props: {
             : "text-gray-700 dark:text-gray-300"
         }`}
       >
-        {userCell().text}
+        <CompactCellValue cell={userCell()} />
       </td>
       <td
         class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
@@ -1951,7 +1945,7 @@ function ProcessRow(props: {
             : processPctColor(proc()?.cpuPct ?? 0)
         }`}
       >
-        {cpuCell().text}
+        <CompactCellValue cell={cpuCell()} />
       </td>
       <td class="w-px whitespace-nowrap px-2 py-0 text-left">
         {fullyBlind() ? "—" : (proc()?.ppid ?? 0)}
@@ -1963,7 +1957,7 @@ function ProcessRow(props: {
             : "text-gray-700 dark:text-gray-300"
         }`}
       >
-        {memoryCell().text}
+        <CompactCellValue cell={memoryCell()} />
       </td>
       <td
         class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
@@ -1972,16 +1966,7 @@ function ProcessRow(props: {
             : "text-gray-700 dark:text-gray-300"
         }`}
       >
-        {uptimeCell().text}
-      </td>
-      <td
-        class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
-          portsCell().warning
-            ? "text-amber-600 dark:text-amber-400"
-            : "text-gray-700 dark:text-gray-300"
-        }`}
-      >
-        {portsCell().text}
+        <CompactCellValue cell={uptimeCell()} />
       </td>
       {/* COMMAND absorbs the row's residual width and ellipsizes at the cell
           edge. Both classes are load-bearing in `table-layout: auto`: `w-full`
@@ -1997,9 +1982,21 @@ function ProcessRow(props: {
         }`}
       >
         <div class="flex min-w-0 items-baseline gap-2">
-          <span class="min-w-0 max-w-[70%] truncate">
-            {commandCell().text}
-          </span>
+          <Show
+            when={blindErrno()}
+            fallback={
+              <span class="min-w-0 max-w-[70%] truncate">
+                <CompactCellValue cell={commandCell()} />
+              </span>
+            }
+          >
+            {(errno) => (
+              <span class="flex items-center gap-1">
+                unreadable
+                <UnreadableMark errno={errno()} />
+              </span>
+            )}
+          </Show>
           <Show when={!fullyBlind()}>
             <span class="text-gray-500">·</span>
             <span
@@ -2009,12 +2006,36 @@ function ProcessRow(props: {
                   : "text-gray-400"
               }`}
             >
-              {cwdCell().text}
+              <CompactCellValue cell={cwdCell()} />
             </span>
           </Show>
         </div>
       </td>
     </tr>
+  );
+}
+
+function UnreadableMark(props: { errno: string }) {
+  const marker = () => unreadableTableMarker(props.errno);
+  return (
+    <span
+      class="cursor-help text-amber-500/60 hover:text-amber-500 dark:text-amber-400/60 dark:hover:text-amber-400"
+      title={marker().title}
+      aria-label={marker().ariaLabel}
+    >
+      <span aria-hidden="true">{marker().glyph}</span>
+    </span>
+  );
+}
+
+function CompactCellValue(props: { cell: ProcessTableCellPresentation }) {
+  return (
+    <Show
+      when={props.cell.warning}
+      fallback={props.cell.text}
+    >
+      <UnreadableMark errno={props.cell.text} />
+    </Show>
   );
 }
 

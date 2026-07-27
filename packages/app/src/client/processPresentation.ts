@@ -29,6 +29,22 @@ export interface ProcessTableCellPresentation {
   warning: boolean;
 }
 
+export interface UnreadableTableMarker {
+  glyph: "⊘";
+  title: string;
+  ariaLabel: string;
+}
+
+/** Compact table rows keep errno detail behind one quiet, discoverable mark.
+ * Details and search continue to use the original errno text. */
+export function unreadableTableMarker(errno: string): UnreadableTableMarker {
+  return {
+    glyph: "⊘",
+    title: errno,
+    ariaLabel: `Unreadable: ${errno}`,
+  };
+}
+
 export interface ProcessTableRowPresentation {
   dimmed: boolean;
   cells: Record<
@@ -58,7 +74,6 @@ export const PROCESS_SORT_KEYS = [
   "ppid",
   "mem",
   "uptime",
-  "ports",
   "command",
 ] as const;
 export type ProcessSortKey = (typeof PROCESS_SORT_KEYS)[number];
@@ -90,9 +105,6 @@ export function processComparator(
 ): (a: Pid, b: Pid) => number {
   if (key === "ppid")
     return (a, b) => procs[a]!.ppid - procs[b]!.ppid || a - b;
-  if (key === "ports")
-    return (a, b) =>
-      procs[b]!.listeners.length - procs[a]!.listeners.length || a - b;
   if (key === "mem")
     return (a, b) =>
       (procs[b]!.rssBytes ?? -1) - (procs[a]!.rssBytes ?? -1) || a - b;

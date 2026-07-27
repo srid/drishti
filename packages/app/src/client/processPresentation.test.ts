@@ -10,6 +10,7 @@ import {
   processStateText,
   processTableRowPresentation,
   processTableCell,
+  unreadableTableMarker,
 } from "./processPresentation";
 
 const process = (unreadable: Process["unreadable"]): Process => ({
@@ -86,6 +87,14 @@ describe("process table qualified cells", () => {
       warning: false,
     });
   });
+
+  it("reduces an errno to a subtle marker without losing hover or accessible text", () => {
+    expect(unreadableTableMarker("EACCES")).toEqual({
+      glyph: "⊘",
+      title: "EACCES",
+      ariaLabel: "Unreadable: EACCES",
+    });
+  });
 });
 
 describe("process detail presentation", () => {
@@ -111,6 +120,7 @@ describe("restored process sorting and search", () => {
   it("accepts legacy cpu/user preferences and defaults to CPU", () => {
     expect(PROCESS_SORT_KEYS).toContain("cpu");
     expect(PROCESS_SORT_KEYS).toContain("user");
+    expect(PROCESS_SORT_KEYS).not.toContain("ports");
     expect(DEFAULT_PROCESS_SORT_KEY).toBe("cpu");
   });
 
