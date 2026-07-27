@@ -21,6 +21,57 @@ import { defineSurface, type SurfaceTypes } from "@kolu/surface/define";
 import { z } from "zod";
 import { alertsEqual, AlertsSchema, NO_ALERTS } from "./alerts";
 
+/** Present osfacts' network-order listener bytes at the consumer edge.
+ *
+ * The wire deliberately stays raw and versioned. This formatter owns the one
+ * UI policy: dotted IPv4, RFC 5952-compressed/bracketed IPv6, and plain dotted
+ * IPv4 for v4-mapped v6 addresses. Unknown input is left visible rather than
+ * throwing during rendering. */
+export function formatListenerAddress(address: string, port: number): string {
+  if (/^[0-9a-f]{8}$/i.test(address)) {
+    const octets = address.match(/../g)?.map((byte) => Number.parseInt(byte, 16));
+    return `${octets?.join(".") ?? address}:${port}`;
+  }
+  if (!/^[0-9a-f]{32}$/i.test(address)) return `${address}:${port}`;
+
+  const bytes = address.match(/../g)?.map((byte) => Number.parseInt(byte, 16));
+  if (bytes === undefined) return `${address}:${port}`;
+  const isV4Mapped =
+    bytes.slice(0, 10).every((byte) => byte === 0) &&
+    bytes[10] === 0xff &&
+    bytes[11] === 0xff;
+  if (isV4Mapped) return `${bytes.slice(12).join(".")}:${port}`;
+
+  const groups = Array.from(
+    { length: 8 },
+    (_, i) => ((bytes[i * 2] ?? 0) << 8) | (bytes[i * 2 + 1] ?? 0),
+  );
+  let bestStart = -1;
+  let bestLength = 0;
+  for (let start = 0; start < groups.length; ) {
+    if (groups[start] !== 0) {
+      start++;
+      continue;
+    }
+    let end = start;
+    while (end < groups.length && groups[end] === 0) end++;
+    const length = end - start;
+    if (length > bestLength && length >= 2) {
+      bestStart = start;
+      bestLength = length;
+    }
+    start = end;
+  }
+  const rendered = groups.map((group) => group.toString(16));
+  const ipv6 =
+    bestStart < 0
+      ? rendered.join(":")
+      : `${rendered.slice(0, bestStart).join(":")}::${rendered
+          .slice(bestStart + bestLength)
+          .join(":")}`;
+  return `[${ipv6}]:${port}`;
+}
+
 // IMPORTANT: this module is AGENT-shared (drishti-common's `.` export — the
 // agent serves the base surface from it). It must NOT import
 // `@kolu/surface-remote`: the agent's scoped build hydrates only `@kolu/surface`,

@@ -48,6 +48,7 @@ import {
   type CoreId,
   type CpuCore,
   DEFAULT_SYSTEM,
+  formatListenerAddress,
   type IfaceName,
   type MetricHistoryMsg,
   type MetricSample,
@@ -82,6 +83,7 @@ import {
   swapPct,
 } from "./metrics";
 import { isActiveNic } from "./nic";
+import { processTableCell } from "./processPresentation";
 import type { CollectionDeltasMsg } from "@kolu/surface/define";
 
 /** Fold one `processes` collection `deltas` frame into the accumulated process map
@@ -1286,10 +1288,10 @@ function HostView(props: {
         if (
           String(pid).includes(q) ||
           proc.command.toLowerCase().includes(q) ||
-          proc.listeners.some(
-            (listener) =>
-              String(listener.port).includes(q) ||
-              listener.address.toLowerCase().includes(q),
+          proc.listeners.some((listener) =>
+            formatListenerAddress(listener.address, listener.port)
+              .toLowerCase()
+              .includes(q),
           ) ||
           proc.unreadable.some(
             ({ facet, errno }) =>
@@ -1593,8 +1595,8 @@ function UnclaimedListeners(props: {
               class="tabular-nums text-gray-600 dark:text-gray-400"
               title="Socket observed; owning pid could not be attributed"
             >
-              {listener.address}:{listener.port}
-              <Show when={listener.uid !== null}> u{listener.uid}</Show>
+              {formatListenerAddress(listener.address, listener.port)}
+              <Show when={listener.uid !== null}> uid {listener.uid}</Show>
             </span>
           )}
         </For>
@@ -1791,7 +1793,6 @@ function ProcessTable(props: {
               active={props.sortKey === "command"}
               onClick={() => props.onSort("command")}
             />
-            <th class="px-3 py-1.5 text-left">INSPECTION</th>
           </tr>
         </thead>
         <tbody>
@@ -1826,12 +1827,24 @@ function ProcessRow(props: {
   const proc = () => props.processes()[props.pid];
   const listenerPorts = () =>
     (proc()?.listeners ?? []).map((listener) => listener.port).join(", ");
-  const unreadable = () =>
-    (proc()?.unreadable ?? [])
-      .map(({ facet, errno }) => `${facet} · ${errno}`)
-      .join(", ");
   const uptime = () =>
     formatProcessUptime(proc()?.startedAtMs ?? null, props.nowMs, (ms) => ms);
+  const cell = (
+    facet: "proc" | "ports" | "mem" | "start_time",
+    readableText: string,
+  ) => {
+    const process = proc();
+    return process === undefined
+      ? { text: readableText, warning: false }
+      : processTableCell(process, facet, readableText);
+  };
+  const memoryCell = () => {
+    const rss = proc()?.rssBytes;
+    return cell("mem", rss === null || rss === undefined ? "—" : formatBytes(rss));
+  };
+  const uptimeCell = () => cell("start_time", uptime());
+  const portsCell = () => cell("ports", listenerPorts() || "—");
+  const commandCell = () => cell("proc", proc()?.command || "(unreadable)");
   const isSelected = () => selection?.selectedPid() === props.pid;
   return (
     <tr
@@ -1852,16 +1865,32 @@ function ProcessRow(props: {
       <td class="w-px whitespace-nowrap px-3 py-0.5 text-left">
         {proc()?.ppid ?? 0}
       </td>
-      <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
-        {proc()?.rssBytes === null || proc()?.rssBytes === undefined
-          ? "—"
-          : formatBytes(proc()!.rssBytes!)}
+      <td
+        class={`w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums ${
+          memoryCell().warning
+            ? "text-amber-600 dark:text-amber-400"
+            : "text-gray-700 dark:text-gray-300"
+        }`}
+      >
+        {memoryCell().text}
       </td>
-      <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
-        {uptime()}
+      <td
+        class={`w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums ${
+          uptimeCell().warning
+            ? "text-amber-600 dark:text-amber-400"
+            : "text-gray-700 dark:text-gray-300"
+        }`}
+      >
+        {uptimeCell().text}
       </td>
-      <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
-        {listenerPorts() || "—"}
+      <td
+        class={`w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums ${
+          portsCell().warning
+            ? "text-amber-600 dark:text-amber-400"
+            : "text-gray-700 dark:text-gray-300"
+        }`}
+      >
+        {portsCell().text}
       </td>
       {/* COMMAND absorbs the row's residual width and ellipsizes at the cell
           edge. Both classes are load-bearing in `table-layout: auto`: `w-full`
@@ -1869,20 +1898,14 @@ function ProcessRow(props: {
           `max-w-0` stops the `truncate` nowrap content from ballooning the cell
           past the card (the card clips horizontally, so an un-capped cell would
           run off-screen with no ellipsis). Dropping either one breaks it. */}
-      <td class="w-full max-w-0 truncate px-3 py-0.5 text-left text-gray-700 dark:text-gray-300">
-        <span>{proc()?.command || "(unreadable)"}</span>
-      </td>
-      <td class="w-px whitespace-nowrap px-3 py-0.5 text-left">
-        <Show
-          when={unreadable()}
-          fallback={<span class="text-gray-400">readable</span>}
-        >
-          {(facts) => (
-            <span class="text-amber-600 dark:text-amber-400">
-              {facts()}
-            </span>
-          )}
-        </Show>
+      <td
+        class={`w-full max-w-0 truncate px-3 py-0.5 text-left ${
+          commandCell().warning
+            ? "text-amber-600 dark:text-amber-400"
+            : "text-gray-700 dark:text-gray-300"
+        }`}
+      >
+        <span>{commandCell().text}</span>
       </td>
     </tr>
   );
@@ -2007,8 +2030,8 @@ function ProcessDetail(props: {
             <span class="flex flex-wrap gap-x-3 gap-y-1 tabular-nums">
               <For each={p().listeners}>
                 {(listener) => (
-                  <span title={`network-order address: ${listener.address}`}>
-                    {listener.address}:{listener.port}
+                  <span title={`raw network-order address: ${listener.address}`}>
+                    {formatListenerAddress(listener.address, listener.port)}
                   </span>
                 )}
               </For>
