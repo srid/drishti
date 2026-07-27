@@ -21,6 +21,16 @@ export {
   swapPct,
 } from "drishti-common/metrics";
 
+/** Per-core clock label. An honestly absent frequency has no presentation;
+ * a reported frequency keeps the compact MHz label used in the CPU grid. */
+export function cpuCoreFrequencyText(
+  speedMHz: number | null | undefined,
+): string | null {
+  return speedMHz === null || speedMHz === undefined
+    ? null
+    : `${speedMHz} MHz`;
+}
+
 /** Used / total memory in gigabytes, formatted to one decimal — the
  *  string form the header and the fleet cards both render. */
 export function memGb(system: SystemInfo): { used: string; total: string } {

@@ -70,6 +70,7 @@ import { HostDot } from "./HostDot";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
 import {
+  cpuCoreFrequencyText,
   diskGb,
   diskPct,
   formatBytes,
@@ -2342,10 +2343,7 @@ function CpuStrip(props: {
 function CpuCoreCell(props: { id: CoreId; get: () => CpuCore | undefined }) {
   const core = createMemo(() => props.get());
   const pct = () => core()?.usagePct ?? 0;
-  const clock = () => {
-    const speed = core()?.speedMHz;
-    return speed === null || speed === undefined ? "— MHz" : `${speed} MHz`;
-  };
+  const clock = () => cpuCoreFrequencyText(core()?.speedMHz);
   return (
     <div class="flex flex-col" title={core()?.model ?? "CPU model unavailable"}>
       <div class="flex items-center gap-1 text-xs">
@@ -2359,9 +2357,13 @@ function CpuCoreCell(props: { id: CoreId; get: () => CpuCore | undefined }) {
           {pct().toFixed(0)}%
         </span>
       </div>
-      <span class="pl-7 text-[10px] tabular-nums text-gray-400">
-        {clock()}
-      </span>
+      <Show when={clock()}>
+        {(text) => (
+          <span class="pl-7 text-[10px] tabular-nums text-gray-400">
+            {text()}
+          </span>
+        )}
+      </Show>
     </div>
   );
 }

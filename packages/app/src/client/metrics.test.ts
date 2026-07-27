@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { SystemInfo } from "drishti-common";
 import {
+  cpuCoreFrequencyText,
   diskGb,
   diskPct,
   formatBytes,
@@ -32,6 +33,16 @@ function sys(over: Partial<SystemInfo> = {}): SystemInfo {
     ...over,
   };
 }
+
+describe("CPU core frequency presentation", () => {
+  it("renders no frequency text when the frequency is absent", () => {
+    expect(cpuCoreFrequencyText(null)).toBeNull();
+  });
+
+  it("keeps the MHz text when the frequency is present", () => {
+    expect(cpuCoreFrequencyText(2400)).toBe("2400 MHz");
+  });
+});
 
 describe("pctOf", () => {
   it("computes part as a percentage of whole", () => {
