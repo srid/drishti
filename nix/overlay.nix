@@ -9,6 +9,13 @@ final: _prev:
 let
   mkKoluPackage = import ./packages/kolu-package.nix { pkgs = final; };
   kolu = (import ../npins).kolu;
+  # osfacts owns a Rust MSRV/toolchain axis that drishti's TypeScript packages
+  # do not. Build it with the exact nixpkgs pin Kolu tests it against; importing
+  # its default.nix with drishti's older package set paired sysinfo 0.39.6
+  # (MSRV 1.95) with rustc 1.93 on Darwin.
+  koluPkgs = import (kolu + "/nix/nixpkgs.nix") {
+    system = final.stdenv.hostPlatform.system;
+  };
 in
 {
   kolu-surface = mkKoluPackage "surface";
@@ -34,7 +41,7 @@ in
   # `packages/` workspace. Keep its binary and dependency-free TypeScript
   # client on the same npins revision so the client's `V 2` gate can never be
   # paired with a binary from another source.
-  osfacts = import (kolu + "/osfacts") { pkgs = final; };
+  osfacts = import (kolu + "/osfacts") { pkgs = koluPkgs; };
   osfacts-client = final.runCommand "osfacts-client"
     {
       meta = {
