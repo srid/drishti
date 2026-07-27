@@ -29,3 +29,14 @@ html[data-theme="light"] {
   background: #f7f8fb;
   color: #1a1d23;
 }
+
+/* Keep long fleet tab lists horizontally navigable without permanently
+ * spending a full row on Chrome's classic scrollbar. Trackpad/wheel scrolling
+ * and keyboard focus still move the strip. */
+.tab-strip-scroll {
+  scrollbar-width: none;
+}
+
+.tab-strip-scroll::-webkit-scrollbar {
+  display: none;
+}

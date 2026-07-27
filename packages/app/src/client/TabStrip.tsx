@@ -42,7 +42,7 @@ export function TabStrip(props: {
   onToggleTheme: () => void;
 }) {
   return (
-    <div class="flex flex-nowrap items-stretch overflow-x-auto border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/60">
+    <div class="tab-strip-scroll flex flex-nowrap items-stretch overflow-x-auto border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/60">
       <FleetTab
         active={props.activeTab.kind === "fleet"}
         count={props.hosts.length}
