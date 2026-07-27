@@ -83,12 +83,19 @@ import {
 } from "./metrics";
 import { isActiveNic } from "./nic";
 import {
+  DEFAULT_PROCESS_SORT_KEY,
+  processComparator,
   processDetailMemoryText,
+  processMatches,
   processRowUptime,
+  PROCESS_SORT_KEYS,
+  type ProcessSortKey,
+  processStateText,
   processTableCell,
 } from "./processPresentation";
 import {
   type SourceErrorFact,
+  mergeSourceErrorFacts,
   sourceErrorFacts,
 } from "./sourceErrorPresentation";
 import type { CollectionDeltasMsg } from "@kolu/surface/define";
@@ -112,7 +119,11 @@ function foldProcessDeltas(
   for (const pid of msg.removes) delete next[pid];
   return next;
 }
-import { coreUsageColor, usageBarColor } from "./usageColors";
+import {
+  coreUsageColor,
+  processPctColor,
+  usageBarColor,
+} from "./usageColors";
 import {
   CHART_MAX_POINTS,
   DEFAULT_HISTORY_WINDOW,
@@ -156,9 +167,6 @@ import {
   rememberServerProcessId,
   surfaceAppClient,
 } from "./wire";
-
-const SORT_KEYS = ["pid", "ppid", "mem", "uptime", "ports", "command"] as const;
-type SortKey = (typeof SORT_KEYS)[number];
 
 // The human word for a raised alert id — a CLIENT-owned presentation lookup
 // (rename/localize here, no agent or wire change). Exhaustive over `AlertId`,
@@ -1173,6 +1181,12 @@ function HostView(props: {
       .filter((value) => value !== undefined)
       .sort((a, b) => a.port - b.port || a.address.localeCompare(b.address)),
   );
+  const sourceErrors = entry.collections.sourceErrors.use();
+  const partialSourceFacts = createMemo<SourceErrorFact[]>(() =>
+    [...sourceErrors.keys()]
+      .map((key) => sourceErrors.byKey(key)?.())
+      .filter((fact) => fact !== undefined),
+  );
 
   // Which PID is expanded into the detail panel (null = none). A transient focus,
   // not a per-host persisted pref — but now OWNED per-host by the host-map scope,
@@ -1227,11 +1241,11 @@ function HostView(props: {
     props.host,
     "",
   );
-  const [sortKey, setSortKey] = createPersistedSignal<SortKey>(
+  const [sortKey, setSortKey] = createPersistedSignal<ProcessSortKey>(
     "sort",
     props.host,
-    "pid",
-    (raw) => (SORT_KEYS as readonly string[]).includes(raw),
+    DEFAULT_PROCESS_SORT_KEY,
+    (raw) => (PROCESS_SORT_KEYS as readonly string[]).includes(raw),
   );
 
   const currentSystem = createMemo(() => system.value() ?? DEFAULT_SYSTEM);
@@ -1292,23 +1306,11 @@ function HostView(props: {
       for (const pid of pids) {
         const proc = procs[pid];
         if (proc === undefined) continue;
-        if (
-          String(pid).includes(q) ||
-          proc.command.toLowerCase().includes(q) ||
-          proc.listeners.some((listener) =>
-            formatListenerAddress(listener.address, listener.port)
-              .toLowerCase()
-              .includes(q),
-          ) ||
-          proc.unreadable.some(
-            ({ facet, errno }) =>
-              facet.includes(q) || errno.toLowerCase().includes(q),
-          )
-        )
+        if (processMatches(pid, proc, q))
           filtered.push(pid);
       }
     }
-    filtered.sort(pidComparator(key, procs));
+    filtered.sort(processComparator(key, procs));
     return filtered;
   });
 
@@ -1373,7 +1375,10 @@ function HostView(props: {
           raisedAt={(id) => props.raisedSince(props.host, id)}
         />
         <SourceErrorNotice
-          facts={sourceErrorFacts([system.error(), processesSub.error()])}
+          facts={mergeSourceErrorFacts(
+            partialSourceFacts(),
+            sourceErrorFacts([system.error(), processesSub.error()]),
+          )}
         />
         <HistoryChart
           points={points()}
@@ -1429,33 +1434,6 @@ function HostView(props: {
       </Show>
     </>
   );
-}
-
-// Compare two PIDs by looking process facts up directly in the store. Cells
-// the comparator touches become tracked deps of the surrounding memo, so a
-// newly-opened listener reorders a ports-sorted table immediately.
-function pidComparator(
-  key: SortKey,
-  procs: Record<Pid, Process>,
-): (a: Pid, b: Pid) => number {
-  // visiblePids() pre-filters out missing entries, so the indexed
-  // lookups in here are always defined — assert past noUncheckedIndexedAccess.
-  if (key === "ppid")
-    return (a, b) => procs[a]!.ppid - procs[b]!.ppid || a - b;
-  if (key === "ports")
-    return (a, b) =>
-      procs[b]!.listeners.length - procs[a]!.listeners.length || a - b;
-  if (key === "mem")
-    return (a, b) =>
-      (procs[b]!.rssBytes ?? -1) - (procs[a]!.rssBytes ?? -1) || a - b;
-  if (key === "uptime")
-    return (a, b) =>
-      (procs[a]!.startedAtMs ?? Number.POSITIVE_INFINITY) -
-        (procs[b]!.startedAtMs ?? Number.POSITIVE_INFINITY) || a - b;
-  if (key === "command")
-    return (a, b) =>
-      procs[a]!.command.localeCompare(procs[b]!.command) || a - b;
-  return (a, b) => a - b;
 }
 
 function Header(props: {
@@ -1755,8 +1733,8 @@ function FailedCard(props: {
   );
 }
 
-/** Named osfacts source failures. The atomic frame still rejects; this is only
- * the presentation of its structured `E` rows, never a partial-data fallback. */
+/** Named osfacts source failures. Partial frames keep their surviving facts;
+ * this notice makes the unavailable source explicit alongside them. */
 function SourceErrorNotice(props: { facts: readonly SourceErrorFact[] }) {
   return (
     <Show when={props.facts.length > 0}>
@@ -1783,8 +1761,8 @@ function ProcessTable(props: {
   pids: readonly Pid[];
   processes: Accessor<Record<Pid, Process>>;
   toLocalTime: (remoteMs: number) => number | null;
-  sortKey: SortKey;
-  onSort: (k: SortKey) => void;
+  sortKey: ProcessSortKey;
+  onSort: (k: ProcessSortKey) => void;
 }) {
   const [nowMs, setNowMs] = createSignal(Date.now());
   const clock = setInterval(() => setNowMs(Date.now()), 60_000);
@@ -1803,6 +1781,18 @@ function ProcessTable(props: {
               align="right"
               active={props.sortKey === "pid"}
               onClick={() => props.onSort("pid")}
+            />
+            <SortableTh
+              label="USER"
+              align="left"
+              active={props.sortKey === "user"}
+              onClick={() => props.onSort("user")}
+            />
+            <SortableTh
+              label="CPU%"
+              align="right"
+              active={props.sortKey === "cpu"}
+              onClick={() => props.onSort("cpu")}
             />
             <SortableTh
               label="PPID"
@@ -1877,7 +1867,14 @@ function ProcessRow(props: {
       props.toLocalTime,
     );
   const cell = (
-    facet: "proc" | "ports" | "mem" | "start_time",
+    facet:
+      | "proc"
+      | "ports"
+      | "mem"
+      | "start_time"
+      | "cpu_time"
+      | "uid"
+      | "cwd",
     readableText: string,
   ) => {
     const process = proc();
@@ -1889,9 +1886,12 @@ function ProcessRow(props: {
     const rss = proc()?.rssBytes;
     return cell("mem", rss === null || rss === undefined ? "—" : formatBytes(rss));
   };
+  const cpuCell = () => cell("cpu_time", `${(proc()?.cpuPct ?? 0).toFixed(1)}%`);
+  const userCell = () => cell("uid", proc()?.user || "—");
   const uptimeCell = () => cell("start_time", uptime());
   const portsCell = () => cell("ports", listenerPorts() || "—");
-  const commandCell = () => cell("proc", proc()?.command || "(unreadable)");
+  const commandCell = () => cell("proc", proc()?.name || "(unreadable)");
+  const cwdCell = () => cell("cwd", proc()?.cwd ?? "—");
   const isSelected = () => selection?.selectedPid() === props.pid;
   return (
     <tr
@@ -1902,12 +1902,30 @@ function ProcessRow(props: {
           : "hover:bg-gray-50 dark:hover:bg-gray-800/40"
       }`}
     >
-      {/* The three leading columns shrink to their content via `w-px` +
+      {/* The leading fact columns shrink to their content via `w-px` +
           `whitespace-nowrap`: `w-px` makes each column's preferred width
           tiny so the auto-layout table collapses it to its (nowrap) content
           width, leaving COMMAND as the sole absorber of the row's slack. */}
       <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums">
         {props.pid}
+      </td>
+      <td
+        class={`w-px max-w-32 truncate whitespace-nowrap px-3 py-0.5 text-left ${
+          userCell().warning
+            ? "text-amber-600 dark:text-amber-400"
+            : "text-gray-700 dark:text-gray-300"
+        }`}
+      >
+        {userCell().text}
+      </td>
+      <td
+        class={`w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums ${
+          cpuCell().warning
+            ? "text-amber-600 dark:text-amber-400"
+            : processPctColor(proc()?.cpuPct ?? 0)
+        }`}
+      >
+        {cpuCell().text}
       </td>
       <td class="w-px whitespace-nowrap px-3 py-0.5 text-left">
         {proc()?.ppid ?? 0}
@@ -1952,19 +1970,19 @@ function ProcessRow(props: {
             : "text-gray-700 dark:text-gray-300"
         }`}
       >
-        <span>{commandCell().text}</span>
+        <div class="truncate">{commandCell().text}</div>
+        <div
+          class={`truncate text-xs ${
+            cwdCell().warning
+              ? "text-amber-600 dark:text-amber-400"
+              : "text-gray-400"
+          }`}
+        >
+          {cwdCell().text}
+        </div>
       </td>
     </tr>
   );
-}
-
-// The short, glanceable name for a process: the basename of its first argv
-// token. `/usr/bin/node --foo` → `node`. The panel's full `command` row still
-// shows the whole string; this is just the header label.
-function commandName(command: string): string {
-  const first = command.split(" ")[0] ?? command;
-  const base = first.split("/").pop() ?? first;
-  return base || command;
 }
 
 // One label/value pair in the detail panel's grid. Returns the <dt>/<dd> as a
@@ -2028,7 +2046,7 @@ function ProcessDetail(props: {
           </span>
           <span class="text-gray-400">·</span>
           <span class="font-semibold">
-            {commandName(p().command) || "unreadable"}
+            {p().name || "unreadable"}
           </span>
         </div>
         <button
@@ -2043,7 +2061,37 @@ function ProcessDetail(props: {
       </div>
       <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-xs">
         <DetailRow label="command">
-          <span class="break-all">{p().command || "—"}</span>
+          <span
+            class={`break-all ${
+              processTableCell(p(), "argv", "").warning
+                ? "text-amber-600 dark:text-amber-400"
+                : ""
+            }`}
+          >
+            {processTableCell(p(), "argv", p().command || "—").text}
+          </span>
+        </DetailRow>
+        <DetailRow label="cwd">
+          <span
+            class={
+              processTableCell(p(), "cwd", "").warning
+                ? "text-amber-600 dark:text-amber-400"
+                : "break-all"
+            }
+          >
+            {processTableCell(p(), "cwd", p().cwd ?? "—").text}
+          </span>
+        </DetailRow>
+        <DetailRow label="cpu">
+          <span
+            class={`tabular-nums ${
+              processTableCell(p(), "cpu_time", "").warning
+                ? "text-amber-600 dark:text-amber-400"
+                : processPctColor(p().cpuPct)
+            }`}
+          >
+            {processTableCell(p(), "cpu_time", `${p().cpuPct.toFixed(1)}%`).text}
+          </span>
         </DetailRow>
         <DetailRow label="parent">
           <Show
@@ -2062,6 +2110,50 @@ function ProcessDetail(props: {
             )}
           </Show>
         </DetailRow>
+        <DetailRow label="state">
+          <span
+            class={`tabular-nums ${
+              processTableCell(p(), "status", "").warning
+                ? "text-amber-600 dark:text-amber-400"
+                : ""
+            }`}
+          >
+            {processTableCell(p(), "status", processStateText(p().state)).text}
+          </span>
+        </DetailRow>
+        <DetailRow label="nice">
+          <span
+            class={`tabular-nums ${
+              processTableCell(p(), "status", "").warning
+                ? "text-amber-600 dark:text-amber-400"
+                : ""
+            }`}
+          >
+            {processTableCell(p(), "status", p().nice?.toString() ?? "—").text}
+          </span>
+        </DetailRow>
+        <Show
+          when={
+            p().threads !== null ||
+            processTableCell(p(), "status", "").warning
+          }
+        >
+          <DetailRow label="threads">
+            <span
+              class={`tabular-nums ${
+                processTableCell(p(), "status", "").warning
+                  ? "text-amber-600 dark:text-amber-400"
+                  : ""
+              }`}
+            >
+              {processTableCell(
+                p(),
+                "status",
+                p().threads?.toString() ?? "—",
+              ).text}
+            </span>
+          </DetailRow>
+        </Show>
         <DetailRow label="memory">
           <span class="tabular-nums">{memoryText()}</span>
         </DetailRow>
@@ -2242,16 +2334,25 @@ function CpuStrip(props: {
 function CpuCoreCell(props: { id: CoreId; get: () => CpuCore | undefined }) {
   const core = createMemo(() => props.get());
   const pct = () => core()?.usagePct ?? 0;
+  const clock = () => {
+    const speed = core()?.speedMHz;
+    return speed === null || speed === undefined ? "— MHz" : `${speed} MHz`;
+  };
   return (
-    <div class="flex items-center gap-1 text-xs">
-      <span class="w-6 shrink-0 text-gray-500 tabular-nums">c{props.id}</span>
-      <Bar
-        pct={pct()}
-        colorClass={coreUsageColor(pct())}
-        trackClass="h-2 flex-1 overflow-hidden rounded bg-gray-100 dark:bg-gray-800"
-      />
-      <span class="w-10 shrink-0 text-right tabular-nums text-gray-700 dark:text-gray-300">
-        {pct().toFixed(0)}%
+    <div class="flex flex-col" title={core()?.model ?? "CPU model unavailable"}>
+      <div class="flex items-center gap-1 text-xs">
+        <span class="w-6 shrink-0 text-gray-500 tabular-nums">c{props.id}</span>
+        <Bar
+          pct={pct()}
+          colorClass={coreUsageColor(pct())}
+          trackClass="h-2 flex-1 overflow-hidden rounded bg-gray-100 dark:bg-gray-800"
+        />
+        <span class="w-10 shrink-0 text-right tabular-nums text-gray-700 dark:text-gray-300">
+          {pct().toFixed(0)}%
+        </span>
+      </div>
+      <span class="pl-7 text-[10px] tabular-nums text-gray-400">
+        {clock()}
       </span>
     </div>
   );

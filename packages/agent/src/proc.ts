@@ -10,7 +10,7 @@ import { hostname, platform } from "node:os";
 import {
   host as readOsfactsHost,
   type OsfactsReading,
-  snapshotSubtree,
+  snapshotHost,
 } from "osfacts-client";
 import type {
   CoreId,
@@ -19,11 +19,15 @@ import type {
   NetInterface,
   Pid,
   Process,
+  SourceErrorFact,
   SystemInfo,
   UnclaimedListener,
   UnclaimedListenerId,
 } from "drishti-common";
-import { OsfactsSourceError } from "drishti-common/source-errors";
+import {
+  OsfactsSourceError,
+  osfactsSourceStatus,
+} from "drishti-common/source-errors";
 
 type RawSystemInfo = Omit<
   SystemInfo,
@@ -34,11 +38,18 @@ export interface HostFrame {
   system: RawSystemInfo;
   cpuCores: Map<CoreId, CpuCore>;
   networkInterfaces: Map<IfaceName, NetInterface>;
+  sourceErrors: SourceErrorFact[];
 }
 
 export interface ProcessFrame {
   processes: Map<Pid, Process>;
   unclaimedListeners: Map<UnclaimedListenerId, UnclaimedListener>;
+  sourceErrors: SourceErrorFact[];
+}
+
+interface ProcessBaseline {
+  takenMs: number;
+  cpuTimes: Map<Pid, number>;
 }
 
 export interface ProcReader {
@@ -48,6 +59,7 @@ export interface ProcReader {
   readUnclaimedListeners: () => Promise<
     Map<UnclaimedListenerId, UnclaimedListener>
   >;
+  readSourceErrors: () => Promise<Map<string, SourceErrorFact>>;
   readCpuCores: () => Promise<Map<CoreId, CpuCore>>;
   readNetwork: () => Promise<Map<IfaceName, NetInterface>>;
 }
@@ -62,6 +74,8 @@ export interface CpuCounters {
   systemUs: number;
   idleUs: number;
   otherUs: number;
+  model: string;
+  frequencyMhz: number | null;
 }
 
 export function computeNetThroughput(
@@ -114,38 +128,52 @@ export function computeCpuUsage(
     }
     out.set(core, {
       usagePct: Math.round(Math.max(0, Math.min(100, usagePct)) * 10) / 10,
-      // V2 deliberately reports cumulative CPU time, not model/frequency.
-      speedMHz: 0,
-      model: "",
+      speedMHz: current.frequencyMhz,
+      model: current.model,
     });
   }
   return out;
 }
 
-function assertNoSourceErrors(reading: OsfactsReading, operation: string): void {
-  if (reading.errors.length === 0) return;
-  throw new OsfactsSourceError({
-    operation,
-    errors: reading.errors.map(({ source, code }) => ({ source, code })),
-  });
+function sourceErrorsFromReading(
+  reading: OsfactsReading,
+  operation: SourceErrorFact["operation"],
+): SourceErrorFact[] {
+  return reading.errors.map(({ source, code }) => ({ operation, source, code }));
 }
 
-function requireFact<T>(value: T | undefined, name: string): T {
-  if (value === undefined)
-    throw new Error(`osfacts host response omitted requested ${name} fact`);
-  return value;
-}
-
-export function processesFromOsfacts(reading: OsfactsReading): ProcessFrame {
-  assertNoSourceErrors(reading, "snapshot");
+export function processesFromOsfacts(
+  reading: OsfactsReading,
+  cpuPct: ReadonlyMap<Pid, number> = new Map(),
+): ProcessFrame {
   const processes = new Map<Pid, Process>();
   const memory = new Map(reading.memory.map((row) => [row.pid, row.rssBytes]));
   const starts = new Map(
     reading.startTimes.map((row) => [row.pid, row.startUnixUs / 1000]),
   );
+  const users = new Map(
+    reading.uids.map(({ pid, uid }) => [pid, uid === 0 ? "root" : String(uid)]),
+  );
+  const cwds = new Map(reading.cwds.map(({ pid, cwd }) => [pid, cwd]));
+  const statuses = new Map(reading.statuses.map((row) => [row.pid, row]));
+  const commands = new Map(
+    reading.argv.map(({ pid, argv }) => [pid, truncate(argv.join(" "), 200)]),
+  );
   const unreadable = new Map<
     Pid,
-    Array<{ facet: "proc" | "ports" | "mem" | "start_time"; errno: string }>
+    Array<{
+      facet:
+        | "proc"
+        | "ports"
+        | "mem"
+        | "start_time"
+        | "cpu_time"
+        | "uid"
+        | "cwd"
+        | "status"
+        | "argv";
+      errno: string;
+    }>
   >();
   for (const row of reading.unreadable) {
     const facts = unreadable.get(row.pid) ?? [];
@@ -154,8 +182,16 @@ export function processesFromOsfacts(reading: OsfactsReading): ProcessFrame {
   }
 
   for (const row of reading.procs) {
+    const status = statuses.get(row.pid);
     processes.set(row.pid, {
-      command: row.name,
+      name: row.name,
+      command: commands.get(row.pid) || row.name,
+      cpuPct: cpuPct.get(row.pid) ?? 0,
+      user: users.get(row.pid) ?? "",
+      cwd: cwds.has(row.pid) ? truncate(cwds.get(row.pid)!, 200) : null,
+      state: status?.state ?? null,
+      nice: status?.nice ?? null,
+      threads: status?.threads ?? null,
       ppid: row.ppid,
       rssBytes: memory.get(row.pid) ?? null,
       startedAtMs: starts.get(row.pid) ?? null,
@@ -166,7 +202,14 @@ export function processesFromOsfacts(reading: OsfactsReading): ProcessFrame {
   for (const row of reading.unreadable) {
     if (!processes.has(row.pid))
       processes.set(row.pid, {
+        name: "",
         command: "",
+        cpuPct: cpuPct.get(row.pid) ?? 0,
+        user: users.get(row.pid) ?? "",
+        cwd: cwds.get(row.pid) ?? null,
+        state: statuses.get(row.pid)?.state ?? null,
+        nice: statuses.get(row.pid)?.nice ?? null,
+        threads: statuses.get(row.pid)?.threads ?? null,
         ppid: 0,
         rssBytes: memory.get(row.pid) ?? null,
         startedAtMs: starts.get(row.pid) ?? null,
@@ -194,7 +237,11 @@ export function processesFromOsfacts(reading: OsfactsReading): ProcessFrame {
     const key = `${uid ?? "-"}:${row.address}:${row.port}`;
     unclaimedListeners.set(key, { uid, port: row.port, address: row.address });
   }
-  return { processes, unclaimedListeners };
+  return {
+    processes,
+    unclaimedListeners,
+    sourceErrors: sourceErrorsFromReading(reading, "snapshot"),
+  };
 }
 
 interface HostBaseline {
@@ -210,19 +257,32 @@ export function hostFromOsfacts(
   os: SystemInfo["os"],
   hostName: string,
 ): { frame: HostFrame; baseline: HostBaseline } {
-  assertNoSourceErrors(reading, "host");
-  const load = requireFact(reading.load, "load");
-  const memory = requireFact(reading.hostMemory, "memory");
-  const swap = requireFact(reading.swap, "swap");
-  const uptimeUs = requireFact(reading.uptimeUs, "uptime");
-  const disk = reading.disks.find(({ mount }) => mount === "/");
-  if (!disk) throw new Error("osfacts host response omitted root disk fact");
+  const sourceErrors = sourceErrorsFromReading(reading, "host");
+  const requireHostFact = <T>(value: T | undefined, name: string): T => {
+    if (value !== undefined) return value;
+    if (reading.errors.length > 0)
+      throw new OsfactsSourceError({
+        operation: "host",
+        errors: reading.errors.map(({ source, code }) => ({ source, code })),
+      });
+    throw new Error(`osfacts host response omitted requested ${name} fact`);
+  };
+  const load = requireHostFact(reading.load, "load");
+  const memory = requireHostFact(reading.hostMemory, "memory");
+  const swap = requireHostFact(reading.swap, "swap");
+  const uptimeUs = requireHostFact(reading.uptimeUs, "uptime");
+  const disk = requireHostFact(
+    reading.disks.find(({ mount }) => mount === "/"),
+    "root disk",
+  );
 
   const cpus = new Map<number, CpuCounters>(
-    reading.cpus.map(({ core, userUs, systemUs, idleUs, otherUs }) => [
-      core,
-      { userUs, systemUs, idleUs, otherUs },
-    ]),
+    reading.cpus.map(
+      ({ core, userUs, systemUs, idleUs, otherUs, model, frequencyMhz }) => [
+        core,
+        { userUs, systemUs, idleUs, otherUs, model, frequencyMhz },
+      ],
+    ),
   );
   const networks = new Map<string, NetCounters>(
     reading.networks.map(({ name, rxBytes, txBytes }) => [
@@ -238,7 +298,7 @@ export function hostFromOsfacts(
       memTotal: memory.totalBytes,
       swapUsed: swap.usedBytes,
       swapTotal: swap.totalBytes,
-      diskUsed: disk.totalBytes - disk.availableBytes,
+      diskUsed: disk.totalBytes - disk.freeBytes,
       diskTotal: disk.totalBytes,
       uptime: uptimeUs / 1_000_000,
       os,
@@ -250,11 +310,12 @@ export function hostFromOsfacts(
       networks,
       winSec,
     ),
+    sourceErrors,
   };
   return { frame, baseline: { takenMs, cpus, networks } };
 }
 
-export type SnapshotSubtree = typeof snapshotSubtree;
+export type SnapshotHost = typeof snapshotHost;
 export type ReadHost = typeof readOsfactsHost;
 
 /** One osfacts subprocess per fact family per cache window. The independently
@@ -264,7 +325,7 @@ export function createOsfactsReader(
   bin: string,
   os: SystemInfo["os"],
   hostName: string,
-  readSnapshot: SnapshotSubtree = snapshotSubtree,
+  readSnapshot: SnapshotHost = snapshotHost,
   readHost: ReadHost = readOsfactsHost,
   now: () => number = Date.now,
 ): ProcReader {
@@ -273,18 +334,42 @@ export function createOsfactsReader(
     | { takenMs: number; promise: Promise<ProcessFrame> }
     | undefined;
   let hostCache: { takenMs: number; promise: Promise<HostFrame> } | undefined;
+  let processBaseline: ProcessBaseline | undefined;
   let hostBaseline: HostBaseline | undefined;
 
   const processFrame = (): Promise<ProcessFrame> => {
     const takenMs = now();
     if (processCache && takenMs - processCache.takenMs < maxAgeMs)
       return processCache.promise;
-    const promise = readSnapshot(bin, [1], {
+    const promise = readSnapshot(bin, {
       procs: true,
       ports: true,
       mem: true,
       startTime: true,
-    }).then(processesFromOsfacts);
+      cpuTime: true,
+      uid: true,
+      cwd: true,
+      status: true,
+      argv: true,
+    }).then((reading) => {
+      const current = new Map<Pid, number>(
+        reading.cpuTimes.map(({ pid, cpuTimeUs }) => [pid, cpuTimeUs]),
+      );
+      const cpuPct = new Map<Pid, number>();
+      const elapsedUs = processBaseline
+        ? (takenMs - processBaseline.takenMs) * 1000
+        : 0;
+      for (const [pid, cpuTimeUs] of current) {
+        const previous = processBaseline?.cpuTimes.get(pid);
+        const pct =
+          previous === undefined || elapsedUs <= 0
+            ? 0
+            : Math.max(0, ((cpuTimeUs - previous) / elapsedUs) * 100);
+        cpuPct.set(pid, Math.round(pct * 10) / 10);
+      }
+      processBaseline = { takenMs, cpuTimes: current };
+      return processesFromOsfacts(reading, cpuPct);
+    });
     processCache = { takenMs, promise };
     return promise;
   };
@@ -314,15 +399,43 @@ export function createOsfactsReader(
     return promise;
   };
 
+  const readSourceErrors = async (): Promise<Map<string, SourceErrorFact>> => {
+    const settled = await Promise.allSettled([processFrame(), hostFrame()]);
+    const facts: SourceErrorFact[] = [];
+    for (const result of settled) {
+      if (result.status === "fulfilled") {
+        facts.push(...result.value.sourceErrors);
+        continue;
+      }
+      const status = osfactsSourceStatus(result.reason);
+      if (status === null) continue;
+      for (const error of status.errors) {
+        const operation = status.operation === "host" ? "host" : "snapshot";
+        facts.push({ operation, ...error });
+      }
+    }
+    return new Map(
+      facts.map((fact) => [
+        `${fact.operation}:${fact.source}:${fact.code}`,
+        fact,
+      ]),
+    );
+  };
+
   return {
     os,
     readSystem: async () => (await hostFrame()).system,
     readProcesses: async () => (await processFrame()).processes,
     readUnclaimedListeners: async () =>
       (await processFrame()).unclaimedListeners,
+    readSourceErrors,
     readCpuCores: async () => (await hostFrame()).cpuCores,
     readNetwork: async () => (await hostFrame()).networkInterfaces,
   };
+}
+
+function truncate(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 }
 
 export function osfactsBinPath(): string {

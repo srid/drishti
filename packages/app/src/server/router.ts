@@ -59,6 +59,7 @@ import {
   type NetInterface,
   type Pid,
   type Process,
+  type SourceErrorFact,
   type SystemInfo,
   type UnclaimedListener,
   type UnclaimedListenerId,
@@ -104,6 +105,7 @@ export function buildRouter(opts: BuildRouterOptions) {
     UnclaimedListenerId,
     UnclaimedListener
   >();
+  const sourceErrorCache = new Map<string, SourceErrorFact>();
   const coreCache = new Map<CoreId, CpuCore>();
   const netCache = new Map<IfaceName, NetInterface>();
   // No browser snapshot bus: the whole-process-set protocol is the `processes`
@@ -166,6 +168,15 @@ export function buildRouter(opts: BuildRouterOptions) {
         },
         remove: (key) => {
           unclaimedListenerCache.delete(key);
+        },
+      },
+      sourceErrors: {
+        readAll: () => sourceErrorCache,
+        upsert: (key, value) => {
+          sourceErrorCache.set(key, value);
+        },
+        remove: (key) => {
+          sourceErrorCache.delete(key);
         },
       },
       cpuCores: {
@@ -305,6 +316,12 @@ export function buildRouter(opts: BuildRouterOptions) {
               runtime.ctx.collections.unclaimedListeners.remove(key),
             initialKeys: () => new Set(unclaimedListenerCache.keys()),
           },
+          sourceErrors: {
+            upsert: (key, value) =>
+              runtime.ctx.collections.sourceErrors.upsert(key, value),
+            remove: (key) => runtime.ctx.collections.sourceErrors.remove(key),
+            initialKeys: () => new Set(sourceErrorCache.keys()),
+          },
           cpuCores: {
             upsert: (key, value) =>
               runtime.ctx.collections.cpuCores.upsert(key, value),
@@ -392,6 +409,10 @@ type FragmentCtx = {
       unclaimedListeners: {
         upsert: (k: UnclaimedListenerId, v: UnclaimedListener) => void;
         remove: (k: UnclaimedListenerId) => void;
+      };
+      sourceErrors: {
+        upsert: (k: string, v: SourceErrorFact) => void;
+        remove: (k: string) => void;
       };
       cpuCores: {
         upsert: (k: CoreId, v: CpuCore) => void;

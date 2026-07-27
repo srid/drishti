@@ -20,3 +20,13 @@ export function sourceErrorFacts(values: readonly unknown[]): SourceErrorFact[] 
   }
   return [...facts.values()];
 }
+
+export function mergeSourceErrorFacts(
+  ...groups: readonly (readonly SourceErrorFact[])[]
+): SourceErrorFact[] {
+  const facts = new Map<string, SourceErrorFact>();
+  for (const group of groups)
+    for (const fact of group)
+      facts.set(`${fact.operation}\0${fact.source}\0${fact.code}`, fact);
+  return [...facts.values()];
+}

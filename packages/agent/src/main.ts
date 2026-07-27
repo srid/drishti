@@ -227,6 +227,13 @@ export async function serveAgent(
           label: "unclaimedListeners",
         }),
       ),
+      sourceErrors: derived.collection(
+        source({
+          read: () => reader.readSourceErrors(),
+          install: pollInstall,
+          label: "sourceErrors",
+        }),
+      ),
       cpuCores: derived.collection(
         source({
           read: () => reader.readCpuCores(),

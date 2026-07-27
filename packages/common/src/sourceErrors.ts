@@ -21,9 +21,10 @@ function isStatus(value: unknown): value is OsfactsSourceStatus {
   );
 }
 
-/** A fail-loud osfacts frame rejection which retains the `E` rows as data.
- * The marker in `message` survives oRPC, process stderr, and SSH log transport;
- * direct callers can use the strongly-typed `status` field. */
+/** A fail-loud rejection for an error-only response or a fixed host aggregate
+ * missing a required fact. Usable partial process frames publish instead and
+ * carry the same facts through the surface's `sourceErrors` collection. The
+ * marker survives oRPC, stderr, and SSH log transport. */
 export class OsfactsSourceError extends Error {
   readonly status: OsfactsSourceStatus;
 

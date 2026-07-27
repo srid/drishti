@@ -82,10 +82,22 @@ export function formatListenerAddress(address: string, port: number): string {
 
 const PidSchema = z.number().int().nonnegative();
 const ProcessSchema = z.object({
-  /** Process name from osfacts' versioned `P` row. The current osfacts
-   *  contract intentionally does not expose argv. Empty only for a pid that
-   *  appears solely as a mandatory unreadable (`U`) row. */
+  /** Short process name from osfacts' versioned `P` row. */
+  name: z.string(),
+  /** Full argv joined for display/search and capped at the historic 200 chars. */
   command: z.string(),
+  /** Per-process CPU use over the last poll window. osfacts publishes a
+   *  cumulative counter; the agent derives this consumer-side rate. */
+  cpuPct: z.number().nonnegative(),
+  /** Effective uid rendered with the historic Linux policy: uid 0 is root,
+   *  every other uid is decimal. Empty only when the uid facet is unreadable. */
+  user: z.string(),
+  /** Working directory from the independent cwd facet. */
+  cwd: z.string().nullable(),
+  state: z.string().length(1).nullable(),
+  nice: z.number().int().nullable(),
+  /** Darwin does not expose a thread count through this facet. */
+  threads: z.number().int().positive().nullable(),
   /** Parent process id from the same osfacts snapshot. 0 for a root/orphan,
    *  and for a pid represented only by a `U` row (no readable `P` row). */
   ppid: PidSchema,
@@ -111,7 +123,17 @@ const ProcessSchema = z.object({
    *  separately as claimed or unclaimed facts. */
   unreadable: z.array(
     z.object({
-      facet: z.enum(["proc", "ports", "mem", "start_time"]),
+      facet: z.enum([
+        "proc",
+        "ports",
+        "mem",
+        "start_time",
+        "cpu_time",
+        "uid",
+        "cwd",
+        "status",
+        "argv",
+      ]),
       errno: z.string(),
     }),
   ),
@@ -125,6 +147,12 @@ const UnclaimedListenerSchema = z.object({
   uid: z.number().int().nonnegative().nullable(),
 });
 
+const SourceErrorFactSchema = z.object({
+  operation: z.enum(["snapshot", "host"]),
+  source: z.string(),
+  code: z.string(),
+});
+
 /** The process fields whose change re-publishes a row — the `processes`
  *  collection's per-key value `equals` gate (was the agent's `processChanged`,
  *  now declared once on the spec so the `derived.collection` reconciler dedups by
@@ -132,7 +160,14 @@ const UnclaimedListenerSchema = z.object({
  *  from every snapshot, so compare their contents rather than references. */
 type ProcessValue = z.infer<typeof ProcessSchema>;
 const processEqual = (a: ProcessValue, b: ProcessValue): boolean =>
+  a.name === b.name &&
   a.command === b.command &&
+  a.cpuPct === b.cpuPct &&
+  a.user === b.user &&
+  a.cwd === b.cwd &&
+  a.state === b.state &&
+  a.nice === b.nice &&
+  a.threads === b.threads &&
   a.ppid === b.ppid &&
   a.rssBytes === b.rssBytes &&
   a.startedAtMs === b.startedAtMs &&
@@ -153,8 +188,8 @@ const processEqual = (a: ProcessValue, b: ProcessValue): boolean =>
 const CpuCoreSchema = z.object({
   /** Busy-percentage since the previous poll tick (0-100). */
   usagePct: z.number(),
-  /** Reported clock speed in MHz (often a sticky max on Linux). */
-  speedMHz: z.number(),
+  /** Reported clock speed in MHz; honestly absent on Apple Silicon. */
+  speedMHz: z.number().positive().nullable(),
   model: z.string(),
 });
 
@@ -199,8 +234,8 @@ const SystemSchema = z.object({
   swapUsed: z.number(),
   swapTotal: z.number(),
   /** Bytes used / total on the **root filesystem** (`/`) from osfacts V2.
-   *  `diskUsed = total − available`, the bytes-occupied parity of
-   *  `memUsed = memTotal − available`.
+   *  `diskUsed = total − free`: occupied blocks, matching the native reader's
+   *  historic meaning (reserved blocks count as occupied, not user-available).
    *
    *  ⚠ **Mount-selection policy: root `/` only.** Unlike memory (one
    *  authoritative host figure), a host has many filesystems and no single
@@ -341,6 +376,12 @@ export const surface = defineSurface({
       schema: UnclaimedListenerSchema,
       verbs: ["keys", "get", "deltas"],
     },
+    /** Named `E` rows accompanying an otherwise usable partial osfacts frame. */
+    sourceErrors: {
+      keySchema: z.string(),
+      schema: SourceErrorFactSchema,
+      verbs: ["keys", "get", "deltas"],
+    },
     /** Per-core CPU usage — small-N (typical 4-32) `Collection<K,T>`.
      *  The host drill-in renders one bar per core, so per-key reactive identity
      *  is the right shape. But every core ticks every poll, so the host view
@@ -394,6 +435,7 @@ export type Pid = SF["collections"]["processes"]["Key"];
 export type Process = SF["collections"]["processes"]["Value"];
 export type UnclaimedListenerId = SF["collections"]["unclaimedListeners"]["Key"];
 export type UnclaimedListener = SF["collections"]["unclaimedListeners"]["Value"];
+export type SourceErrorFact = SF["collections"]["sourceErrors"]["Value"];
 export type CoreId = SF["collections"]["cpuCores"]["Key"];
 export type CpuCore = SF["collections"]["cpuCores"]["Value"];
 export type IfaceName = SF["collections"]["networkInterfaces"]["Key"];
