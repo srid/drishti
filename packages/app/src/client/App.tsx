@@ -43,6 +43,7 @@ import {
   type ScopedByEntry,
   watchByEntry,
 } from "@kolu/surface-map/client";
+import type { FailureEvidence } from "@kolu/surface-map";
 import { type AlertId, CLEAR_PCT, RAISE_PCT } from "drishti-common/alerts";
 import {
   type CoreId,
@@ -63,7 +64,7 @@ import {
 } from "drishti-common/browser";
 import { reconcileRaiseTimes } from "./alertTiming";
 import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
-import { connectionOf } from "./entryStatusTone";
+import { connectionOf, failureRecord } from "./entryStatusTone";
 import { HostDot } from "./HostDot";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
@@ -1238,12 +1239,20 @@ function HostView(props: {
     () => connection() ?? DEFAULT_CONNECTION,
   );
 
+  // The standing failure, read off the ENTRY (`failureRecord`) rather than off the
+  // live `connection.log` the overlay used to narrow on. Same seam the dot reads, so
+  // the page and the chip agree — and, unlike the live payload, it survives the
+  // liveness floor: a host that failed while the admin link was down still shows its
+  // reason AND its evidence instead of silently reverting to "connecting…".
+  const failure = createMemo(() => failureRecord(entryState()));
+
   // The connecting/failed overlay for the MIRROR axis (backend↔remote) —
   // the fallback the connection-cell gate below renders while not yet
   // `connected`.
   const connectingView = () => (
     <ConnectingOverlay
       connection={currentConnection()}
+      failure={failure()}
       onReconnect={onReconnect}
     />
   );
@@ -1585,16 +1594,14 @@ function FilterBar(props: {
 
 function ConnectingOverlay(props: {
   connection: ConnectionInfo;
+  /** The entry's standing failure + its evidence (`failureRecord`), `null` while the
+   *  host is merely coming up. This USED to be narrowed out of `connection` itself
+   *  (`phase === "failed"`), a second authority that also lost the failure entirely
+   *  once the liveness floor dropped the live payload — see `failureRecord`. */
+  failure: { reason: string; evidence: FailureEvidence } | null;
   onReconnect: () => void;
 }) {
   const c = () => props.connection;
-  // The terminal-failure arm, keyed once so the FailedCard reads `error`/`log`
-  // off a narrowed value instead of the raw union. `null` when the link isn't
-  // failed, which the `<Show>` below treats as "render the connecting view".
-  const failedArm = () => {
-    const conn = c();
-    return conn.phase === "failed" ? conn : null;
-  };
   // The freshest parent progress line (e.g. "reconnecting in 4000ms…
   // (attempt 2/5)"). Display only — never parsed for control flow.
   const lastProgress = () => c().log.at(-1)?.line ?? null;
@@ -1637,7 +1644,7 @@ function ConnectingOverlay(props: {
   return (
     <div class="px-4 py-12 text-center text-gray-600 dark:text-gray-400">
       <Show
-        when={failedArm()}
+        when={props.failure}
         fallback={
           <>
             <div class="mb-2 text-lg">
@@ -1659,8 +1666,8 @@ function ConnectingOverlay(props: {
       >
         {(f) => (
           <FailedCard
-            lastError={f().error}
-            progressLines={f().log.map((e) => e.line)}
+            reason={f().reason}
+            evidence={f().evidence}
             onReconnect={props.onReconnect}
           />
         )}
@@ -1669,38 +1676,50 @@ function ConnectingOverlay(props: {
   );
 }
 
-// Terminal-failure card: the real error, the captured connection log, and
-// a button to re-arm the parent's session (the only recovery short of
-// restarting drishti). Shown when `connection.state === "failed"`.
+// Terminal-failure card: the real error, its retained evidence, and a button to
+// re-arm the parent's session (the only recovery short of restarting drishti).
+// Shown when the entry carries a standing failure (`failureRecord`).
 function FailedCard(props: {
-  lastError: string | null;
-  progressLines: readonly string[];
+  // The failure's human `reason`. A `string`, not `string | null`: the framework has
+  // no fabricated fallback cause, so a failed entry ALWAYS carries a real one.
+  reason: string;
+  evidence: FailureEvidence;
   onReconnect: () => void;
 }) {
-  // The tail of the parent/agent link log — the *actual* failure output
-  // (nix-copy stderr, ssh auth errors, the give-up line). This replaces a
-  // hardcoded "maybe your user isn't in trusted-users" tip that was shown
-  // for every failure regardless of cause: a guess decoupled from the real
-  // error buries it. `lastError` is the terse headline ("exited with code
-  // 1"); the log carries the why.
-  const logTail = createMemo(() => props.progressLines.slice(-8));
+  // The tail of the failure's EVIDENCE — the *actual* failure output (nix-copy
+  // stderr, ssh auth errors, the give-up line), stapled to the failure record by
+  // `serveHostMap` at the moment it classified the reason. This replaces a
+  // hardcoded "maybe your user isn't in trusted-users" tip that was shown for
+  // every failure regardless of cause: a guess decoupled from the real error
+  // buries it. `reason` is the terse headline ("exited with code 1"); these
+  // lines carry the why. Each keeps its `source` — whether drishti's own parent
+  // said it or the far end did is often the diagnosis.
+  const logTail = createMemo(() => props.evidence.slice(-8));
   return (
     <div class="mx-auto max-w-lg rounded border border-red-500/40 bg-red-500/5 p-4 text-left">
       <div class="mb-1 text-lg text-red-500">Couldn't reach this host</div>
       <div class="mb-2 text-xs text-gray-500">
         Gave up after repeated connection failures.
       </div>
-      <Show when={props.lastError}>
-        {(err) => (
-          <pre class="mb-3 overflow-x-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
-            {err()}
-          </pre>
-        )}
-      </Show>
+      <pre class="mb-3 overflow-x-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+        {props.reason}
+      </pre>
       <Show when={logTail().length > 0}>
-        <div class="mb-1 text-xs text-gray-500">Connection log</div>
-        <pre class="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">
-          {logTail().join("\n")}
+        <div class="mb-1 text-xs text-gray-500">Evidence</div>
+        <pre
+          data-testid="failure-evidence"
+          class="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left font-mono text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400"
+        >
+          <For each={logTail()}>
+            {(e) => (
+              <div>
+                <span class="mr-2 text-gray-400 dark:text-gray-500">
+                  {e.source === "remote" ? "remote" : "local "}
+                </span>
+                {e.line}
+              </div>
+            )}
+          </For>
         </pre>
       </Show>
       <button

@@ -9,7 +9,8 @@
  * across every component that paints a dot. PR4 landed exactly such a change:
  * the `failed` arm now carries a schema-valid domain `failure` value
  * (`EntryStatus<Failure>`), read here as `status.failure.reason` — drishti's
- * `HostFailure` is just `{ reason }`, since it paints a cause-blind dot.
+ * `HostFailure` is just `{ reason }`, since it paints a cause-blind dot. kolu#2022
+ * added that reason's `evidence` on the same arm, read here by `failureRecord`.
  *
  * `EntryStatus` is the map's FACT, floored on real transport liveness by
  * `connectSurfaceMap` (see its README) — it replaces the old per-host
@@ -18,7 +19,7 @@
  * data rides the ONE admin transport instead of its own socket).
  */
 
-import type { EntryState } from "@kolu/surface-map";
+import type { EntryState, FailureEvidence } from "@kolu/surface-map";
 import type { ConnectionInfo } from "drishti-common/browser";
 
 // A pure kind→tone lookup as a `Record` keyed on the full `EntryState["kind"]`
@@ -76,6 +77,26 @@ export function statusTitle(status: EntryState<{ reason: string }>): string {
     default:
       return "not a member";
   }
+}
+
+/** The failed entry's POST-MORTEM record — the domain `reason` together with the
+ *  `evidence` the framework staples to it (kolu#2022), `null` when the entry is not
+ *  failed. Read through this seam, beside the dot, so the failure page and the dot's
+ *  tooltip can't disagree about whether a host is failed.
+ *
+ *  Evidence is the retained output tail (`{source, line}`), pinned by `serveHostMap`
+ *  at the SAME classification seam that produced the reason — it is not the live
+ *  `connection.log` this page used to read. That distinction is the whole point:
+ *  `connectSurfaceMap`'s liveness floor DROPS `connection` over a dead admin link but
+ *  KEEPS the failure record, so reading the tail off the live payload lost the actual
+ *  error output at exactly the moment a user was staring at a broken host. Off the
+ *  failure record, the reason and its evidence arrive or vanish together. */
+export function failureRecord(
+  status: EntryState<{ reason: string }>,
+): { reason: string; evidence: FailureEvidence } | null {
+  return status.kind === "failed"
+    ? { reason: status.failure.reason, evidence: status.evidence }
+    : null;
 }
 
 /** Whether this status should pulse (work in progress). A terminally-failed
