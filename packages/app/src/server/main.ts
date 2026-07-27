@@ -96,10 +96,30 @@ async function main(): Promise<void> {
     `agent drvs (${Object.keys(agentDrvBySystem).length}): ${Object.keys(agentDrvBySystem).join(", ")}`,
   );
 
+  const binaryCacheJson = process.env.DRISHTI_AGENT_BINARY_CACHE;
+  if (binaryCacheJson === undefined || binaryCacheJson.length === 0) {
+    log(
+      "DRISHTI_AGENT_BINARY_CACHE is required (no fallback). Set it to a JSON object { substituters: string[], trustedPublicKeys: string[] } naming the caches the agent closure is prefetched from — e.g. `DRISHTI_AGENT_BINARY_CACHE=$(nix eval --raw .#agentBinaryCacheJson)`. The monitor wrapper bakes this from flake.nix's nixConfig.",
+    );
+    process.exit(1);
+  }
+  const binaryCacheSchema = z.object({
+    substituters: z.array(z.string().min(1)).min(1),
+    trustedPublicKeys: z.array(z.string().min(1)).min(1),
+  });
+  let binaryCache: z.infer<typeof binaryCacheSchema>;
+  try {
+    binaryCache = binaryCacheSchema.parse(JSON.parse(binaryCacheJson));
+  } catch (err) {
+    log(`DRISHTI_AGENT_BINARY_CACHE: invalid — ${(err as Error).message}`);
+    process.exit(1);
+  }
+  log(`agent binary cache: ${binaryCache.substituters.join(", ")}`);
+
   const resolveDrvPath: Parameters<typeof buildHostPool>[0]["resolveDrvPath"] = (
     host,
     context,
-  ) => resolveDrvForHost(host, agentDrvBySystem, context);
+  ) => resolveDrvForHost(host, agentDrvBySystem, binaryCache, context);
 
   const hostsFile = resolveHostsFile();
   const cliHosts = argv._.host;

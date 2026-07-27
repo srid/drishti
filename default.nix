@@ -21,8 +21,10 @@
 #   drishti        — the monitor (default attr). Wraps bun →
 #                     packages/app/src/server/main.ts; bakes
 #                     DRISHTI_AGENT_DRVS_JSON (system→drv map, sourced
-#                     from flake.nix) and DRISHTI_DIST_DIR (drishti-
-#                     client). meta.mainProgram is "drishti" so `nix run`
+#                     from flake.nix), DRISHTI_AGENT_BINARY_CACHE (the
+#                     prefetch cache declaration, from flake.nix's
+#                     nixConfig) and DRISHTI_DIST_DIR (drishti-client).
+#                     meta.mainProgram is "drishti" so `nix run`
 #                     resolves cleanly.
 #
 # `b2n` carries the bun2nix helpers; passed in from flake.nix via
@@ -36,6 +38,11 @@
 { pkgs ? null
 , b2n ? null
 , agentDrvBySystem ? null
+  # Binary-cache declaration ({ substituters; trustedPublicKeys; } — lists,
+  # both non-empty) baked for @kolu/surface-remote's agent prefetch. flake.nix
+  # derives it from its own nixConfig block; like agentDrvBySystem, only the
+  # `drishti` monitor needs it — throws on use if missing.
+, binaryCache ? null
   # Build commit, stamped into the client bundle AND the server wrapper from
   # one source (flake.nix passes `self.rev`), so the freshness rail is
   # self-consistent. Defaults to "dev" for non-flake (`nix-build`) invocations.
@@ -85,8 +92,8 @@ let
   '';
 
   drishti =
-    if agentDrvBySystem == null
-    then throw "the `drishti` monitor wrapper requires `agentDrvBySystem` — invoke via flake.nix (which threads in the per-system agent .drv map)"
+    if agentDrvBySystem == null || binaryCache == null
+    then throw "the `drishti` monitor wrapper requires `agentDrvBySystem` and `binaryCache` — invoke via flake.nix (which threads in the per-system agent .drv map and the cache declaration)"
     else
       resolvedPkgs.runCommand "drishti"
         {
@@ -110,6 +117,12 @@ let
           `# and this wrapper compiles fine but HostSession crashes at` \
           `# 'nix copy --derivation' time.` \
           --set-default DRISHTI_AGENT_DRVS_JSON '${builtins.toJSON agentDrvBySystem}' \
+          `# DRISHTI_AGENT_BINARY_CACHE: {substituters, trustedPublicKeys}` \
+          `# JSON (surface-remote's AgentBinaryCache shape) — the caches the` \
+          `# agent closure is prefetched from before shipping to a remote` \
+          `# host. Sourced from flake.nix's nixConfig block, so the cache CI` \
+          `# pushes builds to is the cache provisioning pulls from.` \
+          --set-default DRISHTI_AGENT_BINARY_CACHE '${builtins.toJSON binaryCache}' \
           --prefix PATH : ${resolvedPkgs.lib.makeBinPath [ resolvedPkgs.openssh resolvedPkgs.nix ]}
       '';
 in
