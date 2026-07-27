@@ -8,6 +8,7 @@ import {
   processRowUptime,
   PROCESS_SORT_KEYS,
   processStateText,
+  processTableRowPresentation,
   processTableCell,
 } from "./processPresentation";
 
@@ -27,7 +28,48 @@ const process = (unreadable: Process["unreadable"]): Process => ({
   unreadable,
 });
 
+const fullyBlind = (): Process =>
+  process([
+    { facet: "proc", errno: "EPERM" },
+    { facet: "ports", errno: "EPERM" },
+    { facet: "mem", errno: "EPERM" },
+    { facet: "start_time", errno: "EPERM" },
+    { facet: "cpu_time", errno: "EPERM" },
+    { facet: "uid", errno: "EPERM" },
+    { facet: "cwd", errno: "EPERM" },
+    { facet: "status", errno: "EPERM" },
+    { facet: "argv", errno: "EPERM" },
+  ]);
+
 describe("process table qualified cells", () => {
+  it("collapses a fully-blind row to one dimmed unreadable label", () => {
+    const rendered = processTableRowPresentation(42, fullyBlind(), "—");
+
+    expect(rendered.dimmed).toBe(true);
+    expect(rendered.cells.command.text).toBe("unreadable · EPERM");
+    expect(rendered.commandSecondary).toBeNull();
+    expect(
+      Object.values(rendered.cells).filter(({ text }) => text.includes("EPERM")),
+    ).toHaveLength(1);
+    expect(
+      Object.entries(rendered.cells)
+        .filter(([name]) => name !== "command")
+        .every(([, cell]) => cell.text === "—" && !cell.warning),
+    ).toBe(true);
+  });
+
+  it("keeps per-cell errno markers for a partially-blind row", () => {
+    const rendered = processTableRowPresentation(
+      42,
+      process([{ facet: "ports", errno: "EACCES" }]),
+      "1m",
+    );
+
+    expect(rendered.dimmed).toBe(false);
+    expect(rendered.cells.ports).toEqual({ text: "EACCES", warning: true });
+    expect(rendered.cells.command).toEqual({ text: "server", warning: false });
+  });
+
   it("renders a ports-blind errno in the PORTS cell instead of the empty dash", () => {
     expect(
       processTableCell(
@@ -81,6 +123,15 @@ describe("restored process sorting and search", () => {
     expect([1, 2].sort(processComparator("user", procs))).toEqual([2, 1]);
   });
 
+  it("sorts fully-blind rows below readable zero-CPU rows", () => {
+    const procs = {
+      1: fullyBlind(),
+      2: process([]),
+    };
+
+    expect([1, 2].sort(processComparator("cpu", procs))).toEqual([2, 1]);
+  });
+
   it("searches uid presentation, cwd, and full argv", () => {
     const restored = {
       ...process([]),
@@ -91,5 +142,9 @@ describe("restored process sorting and search", () => {
     expect(processMatches(42, restored, "1000")).toBe(true);
     expect(processMatches(42, restored, "drishti")).toBe(true);
     expect(processMatches(42, restored, "inspect=9229")).toBe(true);
+  });
+
+  it("finds fully-blind rows by errno", () => {
+    expect(processMatches(42, fullyBlind(), "eperm")).toBe(true);
   });
 });

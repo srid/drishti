@@ -84,9 +84,11 @@ import {
 import { isActiveNic } from "./nic";
 import {
   DEFAULT_PROCESS_SORT_KEY,
+  fullyBlindErrno,
   processComparator,
   processDetailMemoryText,
   processMatches,
+  processRowCell,
   processRowUptime,
   PROCESS_SORT_KEYS,
   type ProcessSortKey,
@@ -1880,7 +1882,11 @@ function ProcessRow(props: {
     const process = proc();
     return process === undefined
       ? { text: readableText, warning: false }
-      : processTableCell(process, facet, readableText);
+      : processRowCell(process, facet, readableText);
+  };
+  const fullyBlind = () => {
+    const process = proc();
+    return process !== undefined && fullyBlindErrno(process) !== null;
   };
   const memoryCell = () => {
     const rss = proc()?.rssBytes;
@@ -1900,14 +1906,14 @@ function ProcessRow(props: {
         isSelected()
           ? "bg-emerald-50 dark:bg-emerald-900/30"
           : "hover:bg-gray-50 dark:hover:bg-gray-800/40"
-      }`}
+      } ${fullyBlind() ? "opacity-50" : ""}`}
     >
       {/* The leading fact columns shrink to their content via `w-px` +
           `whitespace-nowrap`: `w-px` makes each column's preferred width
           tiny so the auto-layout table collapses it to its (nowrap) content
           width, leaving COMMAND as the sole absorber of the row's slack. */}
       <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums">
-        {props.pid}
+        {fullyBlind() ? "—" : props.pid}
       </td>
       <td
         class={`w-px max-w-32 truncate whitespace-nowrap px-3 py-0.5 text-left ${
@@ -1928,7 +1934,7 @@ function ProcessRow(props: {
         {cpuCell().text}
       </td>
       <td class="w-px whitespace-nowrap px-3 py-0.5 text-left">
-        {proc()?.ppid ?? 0}
+        {fullyBlind() ? "—" : (proc()?.ppid ?? 0)}
       </td>
       <td
         class={`w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums ${
@@ -1971,15 +1977,17 @@ function ProcessRow(props: {
         }`}
       >
         <div class="truncate">{commandCell().text}</div>
-        <div
-          class={`truncate text-xs ${
-            cwdCell().warning
-              ? "text-amber-600 dark:text-amber-400"
-              : "text-gray-400"
-          }`}
-        >
-          {cwdCell().text}
-        </div>
+        <Show when={!fullyBlind()}>
+          <div
+            class={`truncate text-xs ${
+              cwdCell().warning
+                ? "text-amber-600 dark:text-amber-400"
+                : "text-gray-400"
+            }`}
+          >
+            {cwdCell().text}
+          </div>
+        </Show>
       </td>
     </tr>
   );
