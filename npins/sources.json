@@ -9,9 +9,9 @@
       },
       "branch": "feat/provision-cache-prefetch",
       "submodules": false,
-      "revision": "480496c67d8a982336b20a4decc09be9d2ad3211",
-      "url": "https://github.com/juspay/kolu/archive/480496c67d8a982336b20a4decc09be9d2ad3211.tar.gz",
-      "hash": "sha256-iDMNmwqmKmba0fSaMCBvvYJJKpIWiXKSKx8U/NWHp1I="
+      "revision": "e7fd1aec1f9b29cab08ae77a09b07e22dc5b9c76",
+      "url": "https://github.com/juspay/kolu/archive/e7fd1aec1f9b29cab08ae77a09b07e22dc5b9c76.tar.gz",
+      "hash": "sha256-VQQONdztLGXpQu+LLijltf5Yi7IrppHSfUiJAe4qibA="
     },
     "nixpkgs": {
       "type": "Git",
