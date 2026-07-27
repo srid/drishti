@@ -73,7 +73,6 @@ import {
   diskGb,
   diskPct,
   formatBytes,
-  formatProcessUptime,
   formatThroughput,
   formatUptime,
   memGb,
@@ -83,7 +82,15 @@ import {
   swapPct,
 } from "./metrics";
 import { isActiveNic } from "./nic";
-import { processTableCell } from "./processPresentation";
+import {
+  processDetailMemoryText,
+  processRowUptime,
+  processTableCell,
+} from "./processPresentation";
+import {
+  type SourceErrorFact,
+  sourceErrorFacts,
+} from "./sourceErrorPresentation";
 import type { CollectionDeltasMsg } from "@kolu/surface/define";
 
 /** Fold one `processes` collection `deltas` frame into the accumulated process map
@@ -1365,6 +1372,9 @@ function HostView(props: {
           system={currentSystem()}
           raisedAt={(id) => props.raisedSince(props.host, id)}
         />
+        <SourceErrorNotice
+          facts={sourceErrorFacts([system.error(), processesSub.error()])}
+        />
         <HistoryChart
           points={points()}
           latest={latestSample()}
@@ -1389,6 +1399,7 @@ function HostView(props: {
             <ProcessDetail
               pid={s().pid}
               process={s().proc}
+              memTotal={currentSystem().memTotal}
               onClose={() => setSelectedPid(null)}
               onSelectParent={
                 processes()[s().proc.ppid] !== undefined
@@ -1410,6 +1421,7 @@ function HostView(props: {
           <ProcessTable
             pids={visiblePids()}
             processes={processes}
+            toLocalTime={(remoteMs) => entry.clock.toLocal(remoteMs)}
             sortKey={sortKey()}
             onSort={setSortKey}
           />
@@ -1709,13 +1721,17 @@ function FailedCard(props: {
   // error buries it. `lastError` is the terse headline ("exited with code
   // 1"); the log carries the why.
   const logTail = createMemo(() => props.progressLines.slice(-8));
+  const sourceFacts = createMemo(() =>
+    sourceErrorFacts([props.lastError, ...props.progressLines]),
+  );
   return (
     <div class="mx-auto max-w-lg rounded border border-red-500/40 bg-red-500/5 p-4 text-left">
       <div class="mb-1 text-lg text-red-500">Couldn't reach this host</div>
       <div class="mb-2 text-xs text-gray-500">
         Gave up after repeated connection failures.
       </div>
-      <Show when={props.lastError}>
+      <SourceErrorNotice facts={sourceFacts()} />
+      <Show when={sourceFacts().length === 0 && props.lastError}>
         {(err) => (
           <pre class="mb-3 overflow-x-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
             {err()}
@@ -1739,9 +1755,34 @@ function FailedCard(props: {
   );
 }
 
+/** Named osfacts source failures. The atomic frame still rejects; this is only
+ * the presentation of its structured `E` rows, never a partial-data fallback. */
+function SourceErrorNotice(props: { facts: readonly SourceErrorFact[] }) {
+  return (
+    <Show when={props.facts.length > 0}>
+      <section class="mb-3 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs">
+        <div class="mb-1 font-semibold text-amber-700 dark:text-amber-400">
+          Observation source failure
+        </div>
+        <div class="flex flex-wrap gap-x-3 gap-y-1 text-gray-700 dark:text-gray-300">
+          <For each={props.facts}>
+            {(fact) => (
+              <span class="tabular-nums">
+                <span class="font-semibold">{fact.source}</span> · {fact.code}
+                <span class="ml-1 text-gray-400">({fact.operation})</span>
+              </span>
+            )}
+          </For>
+        </div>
+      </section>
+    </Show>
+  );
+}
+
 function ProcessTable(props: {
   pids: readonly Pid[];
   processes: Accessor<Record<Pid, Process>>;
+  toLocalTime: (remoteMs: number) => number | null;
   sortKey: SortKey;
   onSort: (k: SortKey) => void;
 }) {
@@ -1802,6 +1843,7 @@ function ProcessTable(props: {
                 pid={pid}
                 processes={props.processes}
                 nowMs={nowMs()}
+                toLocalTime={props.toLocalTime}
               />
             )}
           </For>
@@ -1822,13 +1864,18 @@ function ProcessRow(props: {
   pid: Pid;
   processes: Accessor<Record<Pid, Process>>;
   nowMs: number;
+  toLocalTime: (remoteMs: number) => number | null;
 }) {
   const selection = useContext(SelectionContext);
   const proc = () => props.processes()[props.pid];
   const listenerPorts = () =>
     (proc()?.listeners ?? []).map((listener) => listener.port).join(", ");
   const uptime = () =>
-    formatProcessUptime(proc()?.startedAtMs ?? null, props.nowMs, (ms) => ms);
+    processRowUptime(
+      proc()?.startedAtMs ?? null,
+      props.nowMs,
+      props.toLocalTime,
+    );
   const cell = (
     facet: "proc" | "ports" | "mem" | "start_time",
     readableText: string,
@@ -1936,6 +1983,7 @@ function DetailRow(props: { label: string; children: JSX.Element }) {
 function ProcessDetail(props: {
   pid: Pid;
   process: Process;
+  memTotal: number;
   onClose: () => void;
   // Non-null when the parent process is still in the live set. Clicking the
   // ppid calls this to re-point the selection to the parent (highlighting its
@@ -1952,10 +2000,8 @@ function ProcessDetail(props: {
   onKill: (signal: "TERM" | "KILL") => Promise<{ ok: boolean; error?: string }>;
 }) {
   const p = () => props.process;
-  const memoryText = () => {
-    const rss = p().rssBytes;
-    return rss === null ? "—" : formatBytes(rss);
-  };
+  const memoryText = () =>
+    processDetailMemoryText(p().rssBytes, props.memTotal);
   const startedText = () => {
     const started = p().startedAtMs;
     return started === null ? "—" : new Date(started).toLocaleString();
@@ -2032,6 +2078,7 @@ function ProcessDetail(props: {
                 {(listener) => (
                   <span title={`raw network-order address: ${listener.address}`}>
                     {formatListenerAddress(listener.address, listener.port)}
+                    <Show when={listener.uid !== null}> uid {listener.uid}</Show>
                   </span>
                 )}
               </For>

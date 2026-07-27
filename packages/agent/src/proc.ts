@@ -23,6 +23,7 @@ import type {
   UnclaimedListener,
   UnclaimedListenerId,
 } from "drishti-common";
+import { OsfactsSourceError } from "drishti-common/source-errors";
 
 type RawSystemInfo = Omit<
   SystemInfo,
@@ -123,11 +124,10 @@ export function computeCpuUsage(
 
 function assertNoSourceErrors(reading: OsfactsReading, operation: string): void {
   if (reading.errors.length === 0) return;
-  throw new Error(
-    `osfacts ${operation} source error: ${reading.errors
-      .map(({ source, code }) => `${source}:${code}`)
-      .join(", ")}`,
-  );
+  throw new OsfactsSourceError({
+    operation,
+    errors: reading.errors.map(({ source, code }) => ({ source, code })),
+  });
 }
 
 function requireFact<T>(value: T | undefined, name: string): T {
@@ -182,7 +182,12 @@ export function processesFromOsfacts(reading: OsfactsReading): ProcessFrame {
   for (const row of reading.ports) {
     if (row.status === "claimed") {
       const process = processes.get(row.pid);
-      if (process) process.listeners.push({ port: row.port, address: row.address });
+      if (process)
+        process.listeners.push({
+          uid: row.uid ?? null,
+          port: row.port,
+          address: row.address,
+        });
       continue;
     }
     const uid = row.uid ?? null;

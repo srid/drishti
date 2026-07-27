@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { osfactsSourceStatus } from "drishti-common/source-errors";
 import { parseOsfactsOutput } from "osfacts-client";
 import {
   computeCpuUsage,
@@ -44,7 +45,7 @@ describe("osfacts V2 process observation", () => {
       ppid: 1,
       rssBytes: 8192,
       startedAtMs: 1700000000123.456,
-      listeners: [{ port: 8080, address: "00000000" }],
+      listeners: [{ uid: 1000, port: 8080, address: "00000000" }],
       unreadable: [{ facet: "ports", errno: "EACCES" }],
     });
     expect(frame.processes.get(99)).toEqual({
@@ -114,6 +115,25 @@ describe("osfacts V2 process observation", () => {
 });
 
 describe("osfacts V2 host observation", () => {
+  it("preserves a source-error row as structured failure status", () => {
+    let rejection: unknown;
+    try {
+      hostFromOsfacts(
+        parseOsfactsOutput("V\t2\nE\tdisk\tBLIND_OR_EMPTY\n"),
+        undefined,
+        1_000,
+        "linux",
+        "zest",
+      );
+    } catch (error) {
+      rejection = error;
+    }
+    expect(osfactsSourceStatus(rejection)).toEqual({
+      operation: "host",
+      errors: [{ source: "disk", code: "BLIND_OR_EMPTY" }],
+    });
+  });
+
   it("maps all OSF7 host facts without native platform readers", () => {
     const mapped = hostFromOsfacts(
       parseOsfactsOutput(hostFixture),

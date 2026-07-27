@@ -101,6 +101,9 @@ const ProcessSchema = z.object({
     z.object({
       port: z.number().int().positive().max(65535),
       address: z.string(),
+      /** Socket-owner uid from osfacts' `L` row when the platform can report
+       *  it. This qualifies the listener, not the process's credentials. */
+      uid: z.number().int().nonnegative().nullable(),
     }),
   ),
   /** Facet-specific mandatory osfacts `U` rows. A blind `ports` facet no
@@ -143,7 +146,8 @@ const processEqual = (a: ProcessValue, b: ProcessValue): boolean =>
   a.listeners.every(
     (listener, i) =>
       listener.port === b.listeners[i]?.port &&
-      listener.address === b.listeners[i]?.address,
+      listener.address === b.listeners[i]?.address &&
+      listener.uid === b.listeners[i]?.uid,
   );
 
 const CpuCoreSchema = z.object({
