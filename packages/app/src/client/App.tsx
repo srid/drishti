@@ -769,7 +769,7 @@ function MultiHostApp() {
     // StatusFooter (plus the phone home-indicator inset it absorbs), so the
     // last table rows / fleet cards are never hidden under the bar. The
     // baseline is the shared --status-footer-height constant from styles.css.
-    <div class="flex h-dvh flex-col bg-gray-50 p-4 pb-[calc(var(--status-footer-height)+env(safe-area-inset-bottom))] font-mono text-sm dark:bg-gray-950">
+    <div class="flex h-dvh flex-col bg-gray-50 p-2 pb-[calc(var(--status-footer-height)+env(safe-area-inset-bottom))] font-mono text-sm dark:bg-gray-950">
       {/* Reactive head, kolu's app-shell pattern over `@solidjs/meta`: the tab
           title is the server's own `drishti@<host>` identity (read from the
           served manifest), and the PWA `theme-color` tracks the *chosen* theme
@@ -1383,18 +1383,24 @@ function HostView(props: {
             sourceErrorFacts([system.error(), processesSub.error()]),
           )}
         />
-        <HistoryChart
-          points={points()}
-          latest={latestSample()}
-          streamError={streamError()}
-          windowKey={historyWindow()}
-          onWindow={setHistoryWindow}
-        />
-        <CpuStrip coreIds={coreIds()} getCore={(id) => cores.byKey(id)?.()} />
-        <NetStrip
-          ifaceNames={ifaceNames()}
-          getNic={(name) => nics.byKey(name)?.()}
-        />
+        <div class="grid xl:grid-cols-[minmax(24rem,2fr)_minmax(0,3fr)]">
+          <div class="min-w-0 xl:border-r xl:border-gray-200 dark:xl:border-gray-800">
+            <HistoryChart
+              points={points()}
+              latest={latestSample()}
+              streamError={streamError()}
+              windowKey={historyWindow()}
+              onWindow={setHistoryWindow}
+            />
+          </div>
+          <div class="min-w-0">
+            <CpuStrip coreIds={coreIds()} getCore={(id) => cores.byKey(id)?.()} />
+            <NetStrip
+              ifaceNames={ifaceNames()}
+              getNic={(name) => nics.byKey(name)?.()}
+            />
+          </div>
+        </div>
         <UnclaimedListeners listeners={unclaimedListenerValues()} />
         <FilterBar
           filter={filter()}
@@ -1458,8 +1464,8 @@ function Header(props: {
   return (
     <div class="border-b border-gray-200 dark:border-gray-800">
       <UsageBar pct={pct()} />
-      <div class="flex items-center justify-between px-4 py-2">
-        <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300">
+        <div class="flex items-center gap-2 text-sm">
           <span class="font-semibold">drishti</span>
           <span class="text-gray-400">·</span>
           <span>
@@ -1472,16 +1478,10 @@ function Header(props: {
             <HostDot state={props.entryState} />
             {props.connection.phase}
           </span>
-          <span class="text-gray-500">·</span>
           <span class="text-gray-500">
             {props.count} {props.count === 1 ? "process" : "processes"}
           </span>
         </div>
-        <span class="text-xs text-gray-500">
-          poll: every {(props.system.pollIntervalMs / 1000).toFixed(1)}s
-        </span>
-      </div>
-      <div class="flex flex-wrap gap-4 border-t border-gray-100 px-4 py-1.5 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-300">
         <span>
           load{" "}
           <span class="font-semibold">
@@ -1517,6 +1517,9 @@ function Header(props: {
         </span>
         <span>
           os <span class="font-semibold">{props.system.os}</span>
+        </span>
+        <span class="ml-auto text-gray-500">
+          poll {(props.system.pollIntervalMs / 1000).toFixed(1)}s
         </span>
       </div>
     </div>
@@ -1562,7 +1565,7 @@ function FilterBar(props: {
       <input
         type="text"
         placeholder="filter pid / command / port / errno"
-        class="w-64 rounded border border-gray-300 bg-gray-50 px-2 py-0.5 text-xs focus:border-emerald-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800"
+        class="w-56 rounded border border-gray-300 bg-gray-50 px-2 py-0.5 text-xs focus:border-emerald-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800"
         value={props.filter}
         onInput={(e) => props.onFilter(e.currentTarget.value)}
       />
@@ -1576,25 +1579,41 @@ function FilterBar(props: {
 function UnclaimedListeners(props: {
   listeners: readonly UnclaimedListener[];
 }) {
+  const [expanded, setExpanded] = createSignal(false);
   return (
     <Show when={props.listeners.length > 0}>
       <MetricSection class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
-        <span class="font-semibold text-amber-700 dark:text-amber-400">
+        <button
+          type="button"
+          class="cursor-pointer font-semibold text-amber-700 hover:underline dark:text-amber-400"
+          aria-expanded={expanded()}
+          onClick={() => setExpanded((value) => !value)}
+        >
           {props.listeners.length} unclaimed {props.listeners.length === 1 ? "listener" : "listeners"}
-        </span>
-        <For each={props.listeners.slice(0, 12)}>
-          {(listener) => (
-            <span
-              class="tabular-nums text-gray-600 dark:text-gray-400"
-              title="Socket observed; owning pid could not be attributed"
-            >
-              {formatListenerAddress(listener.address, listener.port)}
-              <Show when={listener.uid !== null}> uid {listener.uid}</Show>
-            </span>
-          )}
-        </For>
-        <Show when={props.listeners.length > 12}>
-          <span class="text-gray-400">+{props.listeners.length - 12} more</span>
+        </button>
+        <button
+          type="button"
+          class="cursor-pointer text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+          aria-label={expanded() ? "Hide unclaimed listeners" : "Show unclaimed listeners"}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded() ? "− hide" : "+ show"}
+        </button>
+        <Show when={expanded()}>
+          <For each={props.listeners.slice(0, 12)}>
+            {(listener) => (
+              <span
+                class="tabular-nums text-gray-600 dark:text-gray-400"
+                title="Socket observed; owning pid could not be attributed"
+              >
+                {formatListenerAddress(listener.address, listener.port)}
+                <Show when={listener.uid !== null}> uid {listener.uid}</Show>
+              </span>
+            )}
+          </For>
+          <Show when={props.listeners.length > 12}>
+            <span class="text-gray-400">+{props.listeners.length - 12} more</span>
+          </Show>
         </Show>
       </MetricSection>
     </Show>
@@ -1741,8 +1760,8 @@ function FailedCard(props: {
 function SourceErrorNotice(props: { facts: readonly SourceErrorFact[] }) {
   return (
     <Show when={props.facts.length > 0}>
-      <section class="mb-3 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs">
-        <div class="mb-1 font-semibold text-amber-700 dark:text-amber-400">
+      <section class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1 text-xs">
+        <div class="shrink-0 font-semibold text-amber-700 dark:text-amber-400">
           Observation source failure
         </div>
         <div class="flex flex-wrap gap-x-3 gap-y-1 text-gray-700 dark:text-gray-300">
@@ -1776,8 +1795,8 @@ function ProcessTable(props: {
     // below its (612-row) content so it — and only it — scrolls. The sibling
     // vitals keep their intrinsic `min-height: auto`, so they stay pinned.
     <div class="min-h-0 flex-1 overflow-y-auto">
-      <table class="w-full">
-        <thead class="sticky top-0 bg-gray-50 text-xs uppercase text-gray-500 dark:bg-gray-900 dark:text-gray-400">
+      <table class="w-full text-[13px] leading-5">
+        <thead class="sticky top-0 bg-gray-50 text-[10px] uppercase leading-4 text-gray-500 dark:bg-gray-900 dark:text-gray-400">
           <tr class="border-b border-gray-200 dark:border-gray-800">
             <SortableTh
               label="PID"
@@ -1913,11 +1932,11 @@ function ProcessRow(props: {
           `whitespace-nowrap`: `w-px` makes each column's preferred width
           tiny so the auto-layout table collapses it to its (nowrap) content
           width, leaving COMMAND as the sole absorber of the row's slack. */}
-      <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums">
+      <td class="w-px whitespace-nowrap px-2 py-0 text-right tabular-nums">
         {fullyBlind() ? "—" : props.pid}
       </td>
       <td
-        class={`w-px max-w-32 truncate whitespace-nowrap px-3 py-0.5 text-left ${
+        class={`w-px max-w-32 truncate whitespace-nowrap px-2 py-0 text-left ${
           userCell().warning
             ? "text-amber-600 dark:text-amber-400"
             : "text-gray-700 dark:text-gray-300"
@@ -1926,7 +1945,7 @@ function ProcessRow(props: {
         {userCell().text}
       </td>
       <td
-        class={`w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums ${
+        class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
           cpuCell().warning
             ? "text-amber-600 dark:text-amber-400"
             : processPctColor(proc()?.cpuPct ?? 0)
@@ -1934,11 +1953,11 @@ function ProcessRow(props: {
       >
         {cpuCell().text}
       </td>
-      <td class="w-px whitespace-nowrap px-3 py-0.5 text-left">
+      <td class="w-px whitespace-nowrap px-2 py-0 text-left">
         {fullyBlind() ? "—" : (proc()?.ppid ?? 0)}
       </td>
       <td
-        class={`w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums ${
+        class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
           memoryCell().warning
             ? "text-amber-600 dark:text-amber-400"
             : "text-gray-700 dark:text-gray-300"
@@ -1947,7 +1966,7 @@ function ProcessRow(props: {
         {memoryCell().text}
       </td>
       <td
-        class={`w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums ${
+        class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
           uptimeCell().warning
             ? "text-amber-600 dark:text-amber-400"
             : "text-gray-700 dark:text-gray-300"
@@ -1956,7 +1975,7 @@ function ProcessRow(props: {
         {uptimeCell().text}
       </td>
       <td
-        class={`w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums ${
+        class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
           portsCell().warning
             ? "text-amber-600 dark:text-amber-400"
             : "text-gray-700 dark:text-gray-300"
@@ -1971,24 +1990,29 @@ function ProcessRow(props: {
           past the card (the card clips horizontally, so an un-capped cell would
           run off-screen with no ellipsis). Dropping either one breaks it. */}
       <td
-        class={`w-full max-w-0 truncate px-3 py-0.5 text-left ${
+        class={`w-full max-w-0 px-2 py-0 text-left ${
           commandCell().warning
             ? "text-amber-600 dark:text-amber-400"
             : "text-gray-700 dark:text-gray-300"
         }`}
       >
-        <div class="truncate">{commandCell().text}</div>
-        <Show when={!fullyBlind()}>
-          <div
-            class={`truncate text-xs ${
-              cwdCell().warning
-                ? "text-amber-600 dark:text-amber-400"
-                : "text-gray-400"
-            }`}
-          >
-            {cwdCell().text}
-          </div>
-        </Show>
+        <div class="flex min-w-0 items-baseline gap-2">
+          <span class="min-w-0 max-w-[70%] truncate">
+            {commandCell().text}
+          </span>
+          <Show when={!fullyBlind()}>
+            <span class="text-gray-500">·</span>
+            <span
+              class={`min-w-0 truncate text-xs ${
+                cwdCell().warning
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-gray-400"
+              }`}
+            >
+              {cwdCell().text}
+            </span>
+          </Show>
+        </div>
       </td>
     </tr>
   );
@@ -2241,7 +2265,7 @@ function SortableTh(props: {
   const alignClass = () =>
     props.align === "right" ? "text-right" : "text-left";
   return (
-    <th class={`px-3 py-1.5 ${alignClass()}`}>
+    <th class={`px-2 py-1 ${alignClass()}`}>
       <button
         type="button"
         class={`cursor-pointer ${props.active ? "text-emerald-600 dark:text-emerald-400" : ""}`}
@@ -2263,7 +2287,7 @@ function SortableTh(props: {
 function MetricSection(props: { class?: string; children: JSX.Element }) {
   return (
     <div
-      class={`border-b border-gray-200 px-4 py-2 dark:border-gray-800${props.class ? ` ${props.class}` : ""}`}
+      class={`border-b border-gray-200 px-3 py-1 dark:border-gray-800${props.class ? ` ${props.class}` : ""}`}
     >
       {props.children}
     </div>
@@ -2333,7 +2357,7 @@ function CpuStrip(props: {
     <MetricStrip
       label="CPU cores"
       items={props.coreIds}
-      gridClass="grid-cols-4 gap-2 md:grid-cols-8"
+      gridClass="grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] gap-x-3 gap-y-1"
     >
       {(id) => <CpuCoreCell id={id} get={() => props.getCore(id)} />}
     </MetricStrip>
@@ -2353,17 +2377,15 @@ function CpuCoreCell(props: { id: CoreId; get: () => CpuCore | undefined }) {
           colorClass={coreUsageColor(pct())}
           trackClass="h-2 flex-1 overflow-hidden rounded bg-gray-100 dark:bg-gray-800"
         />
-        <span class="w-10 shrink-0 text-right tabular-nums text-gray-700 dark:text-gray-300">
+        <span class="shrink-0 text-right tabular-nums text-gray-700 dark:text-gray-300">
           {pct().toFixed(0)}%
+          <Show when={clock()}>
+            {(text) => (
+              <span class="ml-1 text-[9px] text-gray-400">{text()}</span>
+            )}
+          </Show>
         </span>
       </div>
-      <Show when={clock()}>
-        {(text) => (
-          <span class="pl-7 text-[10px] tabular-nums text-gray-400">
-            {text()}
-          </span>
-        )}
-      </Show>
     </div>
   );
 }
@@ -2382,7 +2404,7 @@ function NetStrip(props: {
     <MetricStrip
       label="network"
       items={props.ifaceNames}
-      gridClass="grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3"
+      gridClass="grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] gap-x-4 gap-y-0.5"
       primary={(name) => isActiveNic(props.getNic(name))}
     >
       {(name) => <NetCell name={name} get={() => props.getNic(name)} />}
@@ -2453,7 +2475,7 @@ function HistoryChart(props: {
       <Sparkline
         points={props.points}
         placeholder={sparklinePlaceholder(props.latest, props.streamError)}
-        class="h-24"
+        class="h-14"
       />
     </MetricSection>
   );

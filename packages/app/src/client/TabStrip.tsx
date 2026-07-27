@@ -25,7 +25,7 @@ import { hostMap } from "./wire";
 // visual control, so the class strings live in one place rather than
 // being copied into each component.
 const TAB_BASE =
-  "flex items-center gap-2 border-r border-gray-200 px-3 py-1.5 text-xs dark:border-gray-800";
+  "flex shrink-0 items-center gap-1.5 border-r border-gray-200 px-2 py-1 text-xs dark:border-gray-800";
 const TAB_INACTIVE =
   "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60";
 const TAB_ACTIVE =
@@ -42,7 +42,7 @@ export function TabStrip(props: {
   onToggleTheme: () => void;
 }) {
   return (
-    <div class="flex flex-wrap items-stretch border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/60">
+    <div class="flex flex-nowrap items-stretch overflow-x-auto border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/60">
       <FleetTab
         active={props.activeTab.kind === "fleet"}
         count={props.hosts.length}
@@ -131,7 +131,7 @@ function ThemeToggle(props: { theme: Theme; onToggle: () => void }) {
   return (
     <button
       type="button"
-      class="ml-auto flex items-center px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60"
+      class="ml-auto flex shrink-0 items-center px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60"
       title={`Switch to ${otherTheme(props.theme)} theme`}
       aria-label={`Switch to ${otherTheme(props.theme)} theme`}
       onClick={props.onToggle}
@@ -243,7 +243,7 @@ function AddHostForm(props: {
   };
 
   return (
-    <div class="flex items-center px-2 py-1.5 text-xs">
+    <div class="flex shrink-0 items-center px-2 py-1 text-xs">
       <Show
         when={open()}
         fallback={

@@ -17,7 +17,7 @@
    * footer's rendered height (StatusFooter.tsx, intrinsic: it must stay
    * free to grow with env(safe-area-inset-bottom)) and the page's bottom
    * padding (App.tsx, which adds the same inset on top of this). */
-  --status-footer-height: 2.5rem;
+  --status-footer-height: 1.5rem;
 }
 
 html[data-theme="dark"] {
