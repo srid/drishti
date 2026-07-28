@@ -5,12 +5,14 @@
  *
  * The probe table and ssh-argv shape now live upstream (juspay/kolu's
  * `surface-remote` package); the only drishti-specific piece left
- * here is the composition — given a host and a map, produce the
- * matching drvPath, with a clear error if no entry was baked for the
- * resolved system.
+ * here is the composition — given a host, a map, and the baked
+ * binary-cache declaration (`DRISHTI_AGENT_BINARY_CACHE`, from the
+ * flake's nixConfig), produce the matching derivation, with a clear
+ * error if no entry was baked for the resolved system.
  */
 
 import {
+  type AgentBinaryCache,
   type AgentDerivation,
   directAgentDerivation,
   type ResolveDrvPathContext,
@@ -25,6 +27,7 @@ type HostProbeContext = Pick<
 export async function resolveDrvForHost(
   host: string,
   drvBySystem: Readonly<Record<string, string>>,
+  binaryCache: AgentBinaryCache,
   context: HostProbeContext,
 ): Promise<AgentDerivation> {
   const sys = await resolveSystem(host, {
@@ -37,5 +40,5 @@ export async function resolveDrvForHost(
       `${host}: no agent .drv baked for system=${sys} (known: ${Object.keys(drvBySystem).join(", ")})`,
     );
   }
-  return directAgentDerivation(drv);
+  return directAgentDerivation(drv, binaryCache);
 }

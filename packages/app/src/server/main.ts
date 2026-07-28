@@ -36,6 +36,10 @@ import { WebSocketServer } from "ws";
 import { z } from "zod";
 import { gateWsOrigin, parseAllowedOrigins } from "@kolu/surface/ws-origin";
 import {
+  type AgentBinaryCache,
+  agentBinaryCache,
+} from "@kolu/surface-remote";
+import {
   gateStaleSocket,
   installSurfaceApp,
   startWsHeartbeat,
@@ -96,10 +100,30 @@ async function main(): Promise<void> {
     `agent drvs (${Object.keys(agentDrvBySystem).length}): ${Object.keys(agentDrvBySystem).join(", ")}`,
   );
 
+  const binaryCacheJson = process.env.DRISHTI_AGENT_BINARY_CACHE;
+  if (binaryCacheJson === undefined || binaryCacheJson.length === 0) {
+    log(
+      "DRISHTI_AGENT_BINARY_CACHE is required (no fallback). Set it to a JSON object { substituters: string[], trustedPublicKeys: string[] } naming the caches the agent closure is prefetched from — e.g. `DRISHTI_AGENT_BINARY_CACHE=$(nix eval --raw .#agentBinaryCacheJson)`. The monitor wrapper bakes this from flake.nix's nixConfig.",
+    );
+    process.exit(1);
+  }
+  // `agentBinaryCache` is surface-remote's own smart constructor: it owns the
+  // "could this declaration act?" gate (non-empty, non-blank, trimmed) and is
+  // the ONLY way to produce the nominal AgentBinaryCache. Validating here
+  // instead would be a second, drifting copy of that gate.
+  let binaryCache: AgentBinaryCache;
+  try {
+    binaryCache = agentBinaryCache(JSON.parse(binaryCacheJson));
+  } catch (err) {
+    log(`DRISHTI_AGENT_BINARY_CACHE: invalid — ${(err as Error).message}`);
+    process.exit(1);
+  }
+  log(`agent binary cache: ${binaryCache.substituters.join(", ")}`);
+
   const resolveDrvPath: Parameters<typeof buildHostPool>[0]["resolveDrvPath"] = (
     host,
     context,
-  ) => resolveDrvForHost(host, agentDrvBySystem, context);
+  ) => resolveDrvForHost(host, agentDrvBySystem, binaryCache, context);
 
   const hostsFile = resolveHostsFile();
   const cliHosts = argv._.host;

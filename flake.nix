@@ -66,11 +66,24 @@
           builtins.unsafeDiscardStringContext
             (import ./default.nix { inherit pkgs b2n; }).drishti-agent.drvPath)
         perSystemAttrs;
+
+      # The caches provisioning prefetches the agent closure from before
+      # shipping it to a remote host (@kolu/surface-remote's AgentBinaryCache
+      # shape — both lists must be non-empty, the constructor throws
+      # otherwise). Sourced from THIS flake's own nixConfig block (flake.nix
+      # is a plain attrset, so importing it reads the same strings nix itself
+      # uses) — the cache CI pushes agent builds to is, by construction, the
+      # cache provisioning pulls from.
+      flakeNixConfig = (import ./flake.nix).nixConfig;
+      binaryCache = {
+        substituters = [ flakeNixConfig.extra-substituters ];
+        trustedPublicKeys = [ flakeNixConfig.extra-trusted-public-keys ];
+      };
     in
     {
       packages = eachSystem ({ pkgs, b2n }:
         let
-          drvs = import ./default.nix { inherit pkgs b2n agentDrvBySystem rev; };
+          drvs = import ./default.nix { inherit pkgs b2n agentDrvBySystem binaryCache rev; };
 
         in
         {
@@ -92,6 +105,10 @@
       # DRISHTI_AGENT_DRVS_JSON without having to know about the per-
       # system attr structure.
       agentDrvsJson = builtins.toJSON agentDrvBySystem;
+
+      # Twin of agentDrvsJson for the cache declaration — `just dev` exports
+      # this verbatim as DRISHTI_AGENT_BINARY_CACHE.
+      agentBinaryCacheJson = builtins.toJSON binaryCache;
 
       # home-manager module — runs the monitor as a systemd user service on
       # Linux and a launchd LaunchAgent on macOS. System-independent; the

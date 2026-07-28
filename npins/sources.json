@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "surface-failure-evidence",
+      "branch": "master",
       "submodules": false,
-      "revision": "928d9bced1002c4f77c8986e05ce508a3f50e8cc",
-      "url": "https://github.com/juspay/kolu/archive/928d9bced1002c4f77c8986e05ce508a3f50e8cc.tar.gz",
-      "hash": "sha256-k6HC2Y1ny2gjBC8Tkuqn4kQG1sA+7Boc+8uYuLoqT6g="
+      "revision": "810f8c4ab081b7c47e7dd30bb4980aae57f35701",
+      "url": "https://github.com/juspay/kolu/archive/810f8c4ab081b7c47e7dd30bb4980aae57f35701.tar.gz",
+      "hash": "sha256-C/cp6r6GthhIdsXuQmNrJWpEzseGgFP7B2IS4uL4bN0="
     },
     "nixpkgs": {
       "type": "Git",
