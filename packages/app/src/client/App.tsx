@@ -43,6 +43,7 @@ import {
   type ScopedByEntry,
   watchByEntry,
 } from "@kolu/surface-map/client";
+import type { FailureEvidence } from "@kolu/surface-map";
 import { type AlertId, CLEAR_PCT, RAISE_PCT } from "drishti-common/alerts";
 import {
   type CoreId,
@@ -65,7 +66,11 @@ import {
 } from "drishti-common/browser";
 import { reconcileRaiseTimes } from "./alertTiming";
 import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
-import { connectionOf } from "./entryStatusTone";
+import {
+  connectionOf,
+  connectionPhaseOf,
+  failureRecord,
+} from "./entryStatusTone";
 import { HostDot } from "./HostDot";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
@@ -864,10 +869,6 @@ function FleetView(props: {
 function HostCard(props: { host: string; onSelect: () => void }) {
   const entry = hostMap.entry(props.host);
   const system = entry.cells.system.use({});
-  // SR9 — the fine connection (the word) rides the SAME entry as the dot; read it
-  // through `connectionOf` (the sole entry.state() seam) instead of a second
-  // `cells.connection` subscription (the drishti#102 split). Presentation unchanged.
-  const connection = () => connectionOf(entry.state());
   // The host's raised-alert set (kolu W5 `alerts` cell). A minimal pip on the
   // card surfaces "this host is in trouble" at a glance, alongside the OS
   // notification the app-scope `watchByEntry` fires — same source of truth. The
@@ -878,17 +879,18 @@ function HostCard(props: { host: string; onSelect: () => void }) {
   const alertCount = createMemo(() => alerts.value()?.items.length ?? 0);
 
   const sys = createMemo<SystemInfo>(() => system.value() ?? DEFAULT_SYSTEM);
-  const state = createMemo<ConnectionState>(
-    () => (connection() ?? DEFAULT_CONNECTION).phase,
-  );
   // The dot + readiness gate read the host MAP's `EntryStatus` fact
   // (floored on real transport liveness by `connectSurfaceMap`) — the
   // per-host `SurfaceHealth`/`app.health()` this used to gate on no longer
-  // exists now that every host rides the ONE admin transport. The status
-  // WORD stays driven by the richer `ConnectionState` cell (copying vs
-  // connecting vs the failure detail) — see `HostDot.tsx`'s docstring for
-  // why the dot and the word now read two different facts.
-  const entryState = createMemo<EntryState<{ reason: string }>>(() => entry.state());
+  // exists now that every host rides the ONE admin transport.
+  const entryState = createMemo<EntryState<{ reason: string }, ConnectionInfo>>(
+    () => entry.state(),
+  );
+  // SR9 — the WORD rides the SAME entry frame as the dot (never a second
+  // `cells.connection` subscription: the drishti#102 split). `connectionPhaseOf` is
+  // total over every arm, so a failed host reads "failed" in red rather than falling
+  // through the gate-closed `DEFAULT_CONNECTION` to an amber "connecting…".
+  const state = createMemo<ConnectionState>(() => connectionPhaseOf(entryState()));
   // CPU% and the core count are read straight off the `system` cell — the agent
   // folds them in (`system.cpuPct` / `system.coreCount`). The card used to open
   // the per-key `cpuCores` collection (one value stream PER core PER host) just
@@ -1117,9 +1119,14 @@ function HostView(props: {
   // `browser.ts`), routed through the ONE `interpretClientError` — no per-use-site
   // `onError` — in case a future dependency drift reintroduces this class of bug.
   const system = entry.cells.system.use();
+  const entryState = createMemo<EntryState<{ reason: string }, ConnectionInfo>>(
+    () => entry.state(),
+  );
   // SR9 — the word derives from the same entry the dot reads (no second subscription).
-  const connection = () => connectionOf(entry.state());
-  const entryState = createMemo<EntryState<{ reason: string }>>(() => entry.state());
+  // `connection()` is the LIVE payload, absent on a failed entry (kolu#2022); `phase()`
+  // is the word, total over every arm.
+  const connection = () => connectionOf(entryState());
+  const phase = createMemo<ConnectionState>(() => connectionPhaseOf(entryState()));
 
   // The host's raised-alert set (kolu W5 `alerts` cell). The fleet card shows a
   // count pip and the app fires an OS notification; the DETAIL view must EXPLAIN
@@ -1254,16 +1261,21 @@ function HostView(props: {
   );
 
   const currentSystem = createMemo(() => system.value() ?? DEFAULT_SYSTEM);
-  const currentConnection = createMemo(
-    () => connection() ?? DEFAULT_CONNECTION,
-  );
+
+  // The standing failure, read off the ENTRY (`failureRecord`) rather than off the
+  // live `connection.log` the overlay used to narrow on. Same seam the dot reads, so
+  // the page and the chip agree — and, unlike the live payload, it survives the
+  // liveness floor: a host that failed while the admin link was down still shows its
+  // reason AND its evidence instead of silently reverting to "connecting…".
+  const failure = createMemo(() => failureRecord(entryState()));
 
   // The connecting/failed overlay for the MIRROR axis (backend↔remote) —
   // the fallback the connection-cell gate below renders while not yet
   // `connected`.
   const connectingView = () => (
     <ConnectingOverlay
-      connection={currentConnection()}
+      connection={connection()}
+      failure={failure()}
       onReconnect={onReconnect}
     />
   );
@@ -1356,24 +1368,21 @@ function HostView(props: {
     <>
       <Header
         system={currentSystem()}
-        connection={currentConnection()}
+        phase={phase()}
         entryState={entryState}
         count={allPids().length}
       />
-      {/* The readiness gate is now just the connection CELL's own state — the
-          per-host `SurfaceHealth` `<SurfaceGate>` used to fold (transport ∧
-          every sub's pending/error) no longer exists as a per-host fact now
-          that every host's data rides the ONE admin transport instead of its
-          own socket. `connectingView` covers both the cold-connect and the
-          not-yet-`connected` mirror cases the old fallback did; there is no
-          separate "degraded" amber notice left to distinguish a live-but-
+      {/* The readiness gate is the entry's own connection PHASE (`connectionPhaseOf`,
+          the same word the header paints) — the per-host `SurfaceHealth`
+          `<SurfaceGate>` used to fold (transport ∧ every sub's pending/error) no
+          longer exists as a per-host fact now that every host's data rides the ONE
+          admin transport instead of its own socket. `connectingView` covers both the
+          cold-connect and the not-yet-`connected` mirror cases the old fallback did;
+          there is no separate "degraded" amber notice left to distinguish a live-but-
           erroring sub from a still-warming one — each subscription below
           already surfaces its OWN error via its member's declared `client.onError`
           policy (SR11), routed through the ONE `interpretClientError`. */}
-      <Show
-        when={currentConnection().phase === "connected"}
-        fallback={connectingView()}
-      >
+      <Show when={phase() === "connected"} fallback={connectingView()}>
         <AlertsPanel
           ids={raisedIds()}
           system={currentSystem()}
@@ -1449,8 +1458,10 @@ function HostView(props: {
 
 function Header(props: {
   system: ReturnType<() => typeof DEFAULT_SYSTEM>;
-  connection: ReturnType<() => typeof DEFAULT_CONNECTION>;
-  entryState: Accessor<EntryState<{ reason: string }>>;
+  /** The status WORD beside the dot — `connectionPhaseOf(entryState)`, not a phase
+   *  dug out of the live payload: a failed entry has no live payload to dig in. */
+  phase: ConnectionState;
+  entryState: Accessor<EntryState<{ reason: string }, ConnectionInfo>>;
   count: number;
 }) {
   // The component body runs ONCE at mount — when props.system is still
@@ -1474,11 +1485,9 @@ function Header(props: {
             <span class="text-gray-500">host:</span>{" "}
             <span class="font-semibold">{props.system.hostname || "—"}</span>
           </span>
-          <span
-            class={`flex items-center gap-1.5 ${STATE[props.connection.phase].text}`}
-          >
+          <span class={`flex items-center gap-1.5 ${STATE[props.phase].text}`}>
             <HostDot state={props.entryState} />
-            {props.connection.phase}
+            {props.phase}
           </span>
           <span class="text-gray-500">
             {props.count} {props.count === 1 ? "process" : "processes"}
@@ -1623,26 +1632,29 @@ function UnclaimedListeners(props: {
 }
 
 function ConnectingOverlay(props: {
-  connection: ConnectionInfo;
+  /** The LIVE connection payload — `undefined` before the first frame lands, and on a
+   *  failed entry, which carries none at all (kolu#2022). Only the coming-up branch
+   *  below reads it; the failed branch renders off `failure` instead, so a missing
+   *  payload is never defaulted into a fabricated "connecting…". */
+  connection: ConnectionInfo | undefined;
+  /** The entry's standing failure + its evidence (`failureRecord`), `null` while the
+   *  host is merely coming up. This USED to be narrowed out of `connection` itself
+   *  (`phase === "failed"`), a second authority that also lost the failure entirely
+   *  once the liveness floor dropped the live payload — see `failureRecord`. */
+  failure: { reason: string; evidence: FailureEvidence } | null;
   onReconnect: () => void;
 }) {
   const c = () => props.connection;
-  // The terminal-failure arm, keyed once so the FailedCard reads `error`/`log`
-  // off a narrowed value instead of the raw union. `null` when the link isn't
-  // failed, which the `<Show>` below treats as "render the connecting view".
-  const failedArm = () => {
-    const conn = c();
-    return conn.phase === "failed" ? conn : null;
-  };
   // The freshest parent progress line (e.g. "reconnecting in 4000ms…
   // (attempt 2/5)"). Display only — never parsed for control flow.
-  const lastProgress = () => c().log.at(-1)?.line ?? null;
+  const lastProgress = () => c()?.log.at(-1)?.line ?? null;
   // The pending-state headline. `disconnected` refines by cause
   // ("Host unreachable — retrying…" for a network fault); every other
   // state takes its static message. `cause` lives only on the `disconnected`
-  // arm, so narrow on `.phase` before reading it.
+  // arm, so narrow on `.phase` before reading it. No frame yet reads as the
+  // gate-closed default, which is exactly what that value means.
   const statusMessage = () => {
-    const conn = c();
+    const conn = c() ?? DEFAULT_CONNECTION;
     return conn.phase === "disconnected"
       ? disconnectedMessage(conn.cause)
       : STATE[conn.phase].message;
@@ -1655,14 +1667,15 @@ function ConnectingOverlay(props: {
   const [elapsedSec, setElapsedSec] = createSignal(0);
   createEffect(
     on(
-      () => c().phase,
+      () => c()?.phase,
       (state) => {
         setElapsedSec(0);
         // Only the in-progress states render the counter — `pending` is
         // the canonical "is this state in-flight" flag, so consult it
         // rather than leave the interval running in `connected`/`failed`
-        // where `elapsedSec()` is never read.
-        if (!STATE[state].pending) return;
+        // where `elapsedSec()` is never read. No payload = nothing in flight
+        // to count (a failed entry), so the interval never starts.
+        if (state === undefined || !STATE[state].pending) return;
         const startedAt = performance.now();
         const id = setInterval(
           () =>
@@ -1676,7 +1689,7 @@ function ConnectingOverlay(props: {
   return (
     <div class="px-4 py-12 text-center text-gray-600 dark:text-gray-400">
       <Show
-        when={failedArm()}
+        when={props.failure}
         fallback={
           <>
             <div class="mb-2 text-lg">
@@ -1698,8 +1711,8 @@ function ConnectingOverlay(props: {
       >
         {(f) => (
           <FailedCard
-            lastError={f().error}
-            progressLines={f().log.map((e) => e.line)}
+            reason={f().reason}
+            evidence={f().evidence}
             onReconnect={props.onReconnect}
           />
         )}
@@ -1708,23 +1721,30 @@ function ConnectingOverlay(props: {
   );
 }
 
-// Terminal-failure card: the real error, the captured connection log, and
-// a button to re-arm the parent's session (the only recovery short of
-// restarting drishti). Shown when `connection.state === "failed"`.
+// Terminal-failure card: the real error, its retained evidence, and a button to
+// re-arm the parent's session (the only recovery short of restarting drishti).
+// Shown when the entry carries a standing failure (`failureRecord`).
 function FailedCard(props: {
-  lastError: string | null;
-  progressLines: readonly string[];
+  // The failure's human `reason`. A `string`, not `string | null`: the framework has
+  // no fabricated fallback cause, so a failed entry ALWAYS carries a real one.
+  reason: string;
+  evidence: FailureEvidence;
   onReconnect: () => void;
 }) {
-  // The tail of the parent/agent link log — the *actual* failure output
-  // (nix-copy stderr, ssh auth errors, the give-up line). This replaces a
-  // hardcoded "maybe your user isn't in trusted-users" tip that was shown
-  // for every failure regardless of cause: a guess decoupled from the real
-  // error buries it. `lastError` is the terse headline ("exited with code
-  // 1"); the log carries the why.
-  const logTail = createMemo(() => props.progressLines.slice(-8));
+  // The tail of the failure's EVIDENCE — the *actual* failure output (nix-copy
+  // stderr, ssh auth errors, the give-up line), stapled to the failure record by
+  // `serveHostMap` at the moment it classified the reason. This replaces a
+  // hardcoded "maybe your user isn't in trusted-users" tip that was shown for
+  // every failure regardless of cause: a guess decoupled from the real error
+  // buries it. `reason` is the terse headline ("exited with code 1"); these
+  // lines carry the why. Each keeps its `source` — whether drishti's own parent
+  // said it or the far end did is often the diagnosis.
+  const logTail = createMemo(() => props.evidence.slice(-8));
   const sourceFacts = createMemo(() =>
-    sourceErrorFacts([props.lastError, ...props.progressLines]),
+    sourceErrorFacts([
+      props.reason,
+      ...props.evidence.map(({ line }) => line),
+    ]),
   );
   return (
     <div class="mx-auto max-w-lg rounded border border-red-500/40 bg-red-500/5 p-4 text-left">
@@ -1733,17 +1753,27 @@ function FailedCard(props: {
         Gave up after repeated connection failures.
       </div>
       <SourceErrorNotice facts={sourceFacts()} />
-      <Show when={sourceFacts().length === 0 && props.lastError}>
-        {(err) => (
-          <pre class="mb-3 overflow-x-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
-            {err()}
-          </pre>
-        )}
+      <Show when={sourceFacts().length === 0}>
+        <pre class="mb-3 overflow-x-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+          {props.reason}
+        </pre>
       </Show>
       <Show when={logTail().length > 0}>
-        <div class="mb-1 text-xs text-gray-500">Connection log</div>
-        <pre class="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">
-          {logTail().join("\n")}
+        <div class="mb-1 text-xs text-gray-500">Evidence</div>
+        <pre
+          data-testid="failure-evidence"
+          class="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left font-mono text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400"
+        >
+          <For each={logTail()}>
+            {(e) => (
+              <div>
+                <span class="mr-2 text-gray-400 dark:text-gray-500">
+                  {e.source === "remote" ? "remote" : "local "}
+                </span>
+                {e.line}
+              </div>
+            )}
+          </For>
         </pre>
       </Show>
       <button

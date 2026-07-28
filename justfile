@@ -41,8 +41,11 @@ dev host='localhost' *args: install
     #!/usr/bin/env bash
     set -euo pipefail
     drvs_json=$(nix eval --raw "{{ justfile_directory() }}#agentDrvsJson")
+    cache_json=$(nix eval --raw "{{ justfile_directory() }}#agentBinaryCacheJson")
     echo "» agent drvs: $drvs_json"
+    echo "» agent binary cache: $cache_json"
     DRISHTI_AGENT_DRVS_JSON="$drvs_json" \
+    DRISHTI_AGENT_BINARY_CACHE="$cache_json" \
     {{ nix_shell }} bun --cwd packages/app dev {{ host }} {{ args }}
 
 # TypeScript type checking (every workspace member: common, agent, app)
