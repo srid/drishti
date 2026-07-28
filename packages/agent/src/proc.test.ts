@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { osfactsSourceStatus } from "drishti-common/source-errors";
-import { parseOsfactsOutput } from "osfacts-client";
+import { parseHostOutput, parseSnapshotOutput } from "osfacts-client";
 import {
   computeCpuUsage,
   computeNetThroughput,
@@ -47,7 +47,7 @@ const hostFixture = [
 
 describe("osfacts V2 process observation", () => {
   it("maps RSS, start identity, facet errors and claimed/unclaimed listeners", () => {
-    const frame = processesFromOsfacts(parseOsfactsOutput(snapshotFixture));
+    const frame = processesFromOsfacts(parseSnapshotOutput(snapshotFixture));
     expect(frame.processes.get(42)).toEqual({
       name: "server",
       command: "/usr/bin/server --listen 8080",
@@ -90,8 +90,8 @@ describe("osfacts V2 process observation", () => {
 
   it("derives process CPU percent by diffing cumulative CPU time between polls", async () => {
     const readings = [
-      parseOsfactsOutput("V\t2\nP\t42\t1\tserver\nC\t42\t1000000\n"),
-      parseOsfactsOutput("V\t2\nP\t42\t1\tserver\nC\t42\t1500000\n"),
+      parseSnapshotOutput("V\t2\nP\t42\t1\tserver\nC\t42\t1000000\n"),
+      parseSnapshotOutput("V\t2\nP\t42\t1\tserver\nC\t42\t1500000\n"),
     ];
     let index = 0;
     let clock = 1_000;
@@ -100,7 +100,7 @@ describe("osfacts V2 process observation", () => {
       "linux",
       "test",
       async () => readings[index++]!,
-      async () => parseOsfactsOutput(hostFixture),
+      async () => parseHostOutput(hostFixture),
       () => clock,
     );
     expect((await reader.readProcesses()).get(42)?.cpuPct).toBe(0);
@@ -110,7 +110,7 @@ describe("osfacts V2 process observation", () => {
 
   it("keeps the compact name while restoring argv with the historic 200-char cap", () => {
     const argument = "x".repeat(220);
-    const reading = parseOsfactsOutput(
+    const reading = parseSnapshotOutput(
       `V\t2\nP\t42\t1\tserver\nARGV\t42\t${JSON.stringify(["/usr/bin/server", argument])}\n`,
     );
     const process = processesFromOsfacts(reading).processes.get(42)!;
@@ -121,8 +121,8 @@ describe("osfacts V2 process observation", () => {
 
   it("requests every OSF3/OSF6 facet and shares one atomic snapshot", async () => {
     const calls: unknown[] = [];
-    const reading = parseOsfactsOutput(snapshotFixture);
-    const hostReading = parseOsfactsOutput(hostFixture);
+    const reading = parseSnapshotOutput(snapshotFixture);
+    const hostReading = parseHostOutput(hostFixture);
     const reader = createOsfactsReader(
       "/nix/store/osfacts/bin/osfacts",
       "linux",
@@ -182,31 +182,41 @@ describe("osfacts V2 process observation", () => {
   });
 
   it("publishes surviving facts and carries partial-source status", () => {
-    const reading = parseOsfactsOutput(
-      "V\t2\nP\t42\t1\tserver\nE\tports\tBLIND_OR_EMPTY\n",
+    const reading = parseSnapshotOutput(
+      "V\t2\nP\t42\t1\tserver\nE\tdarwin_tcp_pcblist\tports_unclaimed\tBLIND_OR_EMPTY\n",
     );
     const frame = processesFromOsfacts(reading);
     expect(frame.processes.get(42)?.command).toBe("server");
     expect(frame.sourceErrors).toEqual([
-      { operation: "snapshot", source: "ports", code: "BLIND_OR_EMPTY" },
+      {
+        operation: "snapshot",
+        source: "darwin_tcp_pcblist",
+        facet: "ports_unclaimed",
+        code: "BLIND_OR_EMPTY",
+      },
     ]);
   });
 
   it("exposes partial errors on the status collection without rejecting facts", async () => {
-    const reading = parseOsfactsOutput(
-      "V\t2\nP\t42\t1\tserver\nE\tports\tBLIND_OR_EMPTY\n",
+    const reading = parseSnapshotOutput(
+      "V\t2\nP\t42\t1\tserver\nE\tdarwin_tcp_pcblist\tports_unclaimed\tBLIND_OR_EMPTY\n",
     );
     const reader = createOsfactsReader(
       "/nix/store/osfacts/bin/osfacts",
       "linux",
       "test",
       async () => reading,
-      async () => parseOsfactsOutput(hostFixture),
+      async () => parseHostOutput(hostFixture),
       () => 10,
     );
     expect((await reader.readProcesses()).has(42)).toBe(true);
     expect([...(await reader.readSourceErrors()).values()]).toEqual([
-      { operation: "snapshot", source: "ports", code: "BLIND_OR_EMPTY" },
+      {
+        operation: "snapshot",
+        source: "darwin_tcp_pcblist",
+        facet: "ports_unclaimed",
+        code: "BLIND_OR_EMPTY",
+      },
     ]);
   });
 });
@@ -216,7 +226,7 @@ describe("osfacts V2 host observation", () => {
     let rejection: unknown;
     try {
       hostFromOsfacts(
-        parseOsfactsOutput("V\t2\nE\tdisk\tBLIND_OR_EMPTY\n"),
+        parseHostOutput("V\t2\nE\tstatfs\tdisk\tBLIND_OR_EMPTY\n"),
         undefined,
         1_000,
         "linux",
@@ -227,13 +237,15 @@ describe("osfacts V2 host observation", () => {
     }
     expect(osfactsSourceStatus(rejection)).toEqual({
       operation: "host",
-      errors: [{ source: "disk", code: "BLIND_OR_EMPTY" }],
+      errors: [
+        { source: "statfs", facet: "disk", code: "BLIND_OR_EMPTY" },
+      ],
     });
   });
 
   it("publishes a complete host aggregate with an accompanying source error", () => {
-    const reading = parseOsfactsOutput(
-      `${hostFixture}E\tthermal\tUNSUPPORTED\n`,
+    const reading = parseHostOutput(
+      `${hostFixture}E\tthermal\tcpu\tUNSUPPORTED\n`,
     );
     const mapped = hostFromOsfacts(
       reading,
@@ -244,13 +256,18 @@ describe("osfacts V2 host observation", () => {
     );
     expect(mapped.frame.system.hostname).toBe("zest");
     expect(mapped.frame.sourceErrors).toEqual([
-      { operation: "host", source: "thermal", code: "UNSUPPORTED" },
+      {
+        operation: "host",
+        source: "thermal",
+        facet: "cpu",
+        code: "UNSUPPORTED",
+      },
     ]);
   });
 
   it("maps all OSF7 host facts without native platform readers", () => {
     const mapped = hostFromOsfacts(
-      parseOsfactsOutput(hostFixture),
+      parseHostOutput(hostFixture),
       undefined,
       1_000,
       "linux",
@@ -283,7 +300,7 @@ describe("osfacts V2 host observation", () => {
   });
 
   it("keeps an honestly absent Apple Silicon clock nullable", () => {
-    const reading = parseOsfactsOutput(
+    const reading = parseHostOutput(
       hostFixture.replaceAll("\t2400", "\t-"),
     );
     expect(
@@ -298,7 +315,7 @@ describe("osfacts V2 host observation", () => {
       "/nix/store/osfacts/bin/osfacts",
       "linux",
       "test",
-      async () => parseOsfactsOutput(snapshotFixture),
+      async () => parseSnapshotOutput(snapshotFixture),
       async (_bin, facets) => {
         calls++;
         expect(facets).toEqual({
@@ -308,7 +325,7 @@ describe("osfacts V2 host observation", () => {
           net: true,
           disk: true,
         });
-        return parseOsfactsOutput(hostFixture);
+        return parseHostOutput(hostFixture);
       },
       () => 10,
     );

@@ -96,7 +96,7 @@ Per-host primitives:
 | **Cell** | `system` | Load averages, cache-aware used/total memory, swap, root-disk (`/`) capacity, uptime, OS, and hostname. All numeric observations come from one cached osfacts V2 `host --load --mem --cpu --net --disk` frame. |
 | **Collection** | `processes` | Host-wide, keyed by PID — short name plus capped full argv, derived CPU%, rendered UID, cwd, state/nice/nullable threads, PPID, RSS, start identity, listeners, and facet-specific `unreadable[]`. A `U`-only pid remains represented. Snapshot-then-delta. |
 | **Collection** | `unclaimedListeners` | Readable listening sockets whose owning pid could not be attributed — `{ port, address, uid }`. This is OSF6's honest permission boundary: the host listener table remains complete even when process fd inspection is blind. |
-| **Collection** | `sourceErrors` | Named osfacts `E` rows (`operation`, `source`, `code`) accompanying otherwise usable partial frames. |
+| **Collection** | `sourceErrors` | Named osfacts `E` rows (`operation`, `source`, `facet`, `code`) accompanying otherwise usable partial frames. |
 | **Stream** | `processesSnapshot` | Bulk-snapshot variant for ~600-PID htop refresh in one frame. |
 | **Collection** | `cpuCores` | Per-core CPU usage (`Collection<K,T>` showcase). |
 | **Collection** | `networkInterfaces` | Per-NIC network I/O from osfacts V2, keyed by interface name — `{ rxBytes, txBytes, rxRate, txRate }` (cumulative bytes since boot + bytes/sec throughput); loopback filtered out. The UI strip collapses idle interfaces behind a `+N idle` toggle. |

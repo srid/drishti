@@ -1,6 +1,47 @@
+export type OsfactsSourceFacet =
+  | "proc"
+  | "ports"
+  | "ports_unclaimed"
+  | "ports_uid"
+  | "mem"
+  | "start_time"
+  | "cpu_time"
+  | "uid"
+  | "cwd"
+  | "status"
+  | "argv"
+  | "uptime"
+  | "load"
+  | "cpu"
+  | "net"
+  | "disk";
+
 export interface OsfactsSourceStatus {
   operation: string;
-  errors: Array<{ source: string; code: string }>;
+  errors: Array<{ source: string; facet: OsfactsSourceFacet; code: string }>;
+}
+
+const OSFACTS_SOURCE_FACETS: readonly string[] = [
+  "proc",
+  "ports",
+  "ports_unclaimed",
+  "ports_uid",
+  "mem",
+  "start_time",
+  "cpu_time",
+  "uid",
+  "cwd",
+  "status",
+  "argv",
+  "uptime",
+  "load",
+  "cpu",
+  "net",
+  "disk",
+];
+
+function isSourceFacet(value: unknown): value is OsfactsSourceFacet {
+  return typeof value === "string" && OSFACTS_SOURCE_FACETS.includes(value);
 }
 
 const STATUS_MARKER = "drishti-osfacts-source-status:";
@@ -16,6 +57,7 @@ function isStatus(value: unknown): value is OsfactsSourceStatus {
         typeof error === "object" &&
         error !== null &&
         typeof (error as { source?: unknown }).source === "string" &&
+        isSourceFacet((error as { facet?: unknown }).facet) &&
         typeof (error as { code?: unknown }).code === "string",
     )
   );
@@ -30,7 +72,7 @@ export class OsfactsSourceError extends Error {
 
   constructor(status: OsfactsSourceStatus) {
     const facts = status.errors
-      .map(({ source, code }) => `${source}:${code}`)
+      .map(({ source, facet, code }) => `${source}:${facet}:${code}`)
       .join(", ");
     super(
       `osfacts ${status.operation} source error: ${facts}\n` +

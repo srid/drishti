@@ -132,6 +132,7 @@ const ProcessSchema = z.object({
         "uid",
         "cwd",
         "status",
+        "status_threads",
         "argv",
       ]),
       errno: z.string(),
@@ -150,6 +151,24 @@ const UnclaimedListenerSchema = z.object({
 const SourceErrorFactSchema = z.object({
   operation: z.enum(["snapshot", "host"]),
   source: z.string(),
+  facet: z.enum([
+    "proc",
+    "ports",
+    "ports_unclaimed",
+    "ports_uid",
+    "mem",
+    "start_time",
+    "cpu_time",
+    "uid",
+    "cwd",
+    "status",
+    "argv",
+    "uptime",
+    "load",
+    "cpu",
+    "net",
+    "disk",
+  ]),
   code: z.string(),
 });
 

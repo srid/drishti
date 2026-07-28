@@ -3,6 +3,7 @@ import { osfactsSourceStatus } from "drishti-common/source-errors";
 export interface SourceErrorFact {
   operation: string;
   source: string;
+  facet: string;
   code: string;
 }
 
@@ -15,7 +16,10 @@ export function sourceErrorFacts(values: readonly unknown[]): SourceErrorFact[] 
     if (status === null) continue;
     for (const error of status.errors) {
       const fact = { operation: status.operation, ...error };
-      facts.set(`${fact.operation}\0${fact.source}\0${fact.code}`, fact);
+      facts.set(
+        `${fact.operation}\0${fact.source}\0${fact.facet}\0${fact.code}`,
+        fact,
+      );
     }
   }
   return [...facts.values()];
@@ -27,6 +31,9 @@ export function mergeSourceErrorFacts(
   const facts = new Map<string, SourceErrorFact>();
   for (const group of groups)
     for (const fact of group)
-      facts.set(`${fact.operation}\0${fact.source}\0${fact.code}`, fact);
+      facts.set(
+        `${fact.operation}\0${fact.source}\0${fact.facet}\0${fact.code}`,
+        fact,
+      );
   return [...facts.values()];
 }

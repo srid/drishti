@@ -9,7 +9,9 @@
 import { hostname, platform } from "node:os";
 import {
   host as readOsfactsHost,
-  type OsfactsReading,
+  type HostReading,
+  type SnapshotReading,
+  type UnreadableFacet,
   snapshotHost,
 } from "osfacts-client";
 import type {
@@ -136,14 +138,19 @@ export function computeCpuUsage(
 }
 
 function sourceErrorsFromReading(
-  reading: OsfactsReading,
+  reading: SnapshotReading | HostReading,
   operation: SourceErrorFact["operation"],
 ): SourceErrorFact[] {
-  return reading.errors.map(({ source, code }) => ({ operation, source, code }));
+  return reading.errors.map(({ source, facet, code }) => ({
+    operation,
+    source,
+    facet,
+    code,
+  }));
 }
 
 export function processesFromOsfacts(
-  reading: OsfactsReading,
+  reading: SnapshotReading,
   cpuPct: ReadonlyMap<Pid, number> = new Map(),
 ): ProcessFrame {
   const processes = new Map<Pid, Process>();
@@ -162,16 +169,7 @@ export function processesFromOsfacts(
   const unreadable = new Map<
     Pid,
     Array<{
-      facet:
-        | "proc"
-        | "ports"
-        | "mem"
-        | "start_time"
-        | "cpu_time"
-        | "uid"
-        | "cwd"
-        | "status"
-        | "argv";
+      facet: UnreadableFacet;
       errno: string;
     }>
   >();
@@ -251,7 +249,7 @@ interface HostBaseline {
 }
 
 export function hostFromOsfacts(
-  reading: OsfactsReading,
+  reading: HostReading,
   previous: HostBaseline | undefined,
   takenMs: number,
   os: SystemInfo["os"],
@@ -263,12 +261,16 @@ export function hostFromOsfacts(
     if (reading.errors.length > 0)
       throw new OsfactsSourceError({
         operation: "host",
-        errors: reading.errors.map(({ source, code }) => ({ source, code })),
+        errors: reading.errors.map(({ source, facet, code }) => ({
+          source,
+          facet,
+          code,
+        })),
       });
     throw new Error(`osfacts host response omitted requested ${name} fact`);
   };
   const load = requireHostFact(reading.load, "load");
-  const memory = requireHostFact(reading.hostMemory, "memory");
+  const memory = requireHostFact(reading.memory, "memory");
   const swap = requireHostFact(reading.swap, "swap");
   const uptimeUs = requireHostFact(reading.uptimeUs, "uptime");
   const disk = requireHostFact(
@@ -416,7 +418,7 @@ export function createOsfactsReader(
     }
     return new Map(
       facts.map((fact) => [
-        `${fact.operation}:${fact.source}:${fact.code}`,
+        `${fact.operation}:${fact.source}:${fact.facet}:${fact.code}`,
         fact,
       ]),
     );

@@ -10,6 +10,7 @@ import {
   processStateText,
   processTableRowPresentation,
   processTableCell,
+  processThreadCell,
   unreadableTableMarker,
 } from "./processPresentation";
 
@@ -86,6 +87,21 @@ describe("process table qualified cells", () => {
       text: "—",
       warning: false,
     });
+  });
+
+  it("qualifies threads with either broad or thread-specific status blindness", () => {
+    expect(
+      processThreadCell(
+        process([{ facet: "status", errno: "EACCES" }]),
+        "8",
+      ),
+    ).toEqual({ text: "EACCES", warning: true });
+    expect(
+      processThreadCell(
+        process([{ facet: "status_threads", errno: "ENOTSUP" }]),
+        "—",
+      ),
+    ).toEqual({ text: "ENOTSUP", warning: true });
   });
 
   it("reduces an errno to a subtle marker without losing hover or accessible text", () => {

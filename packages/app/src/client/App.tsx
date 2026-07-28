@@ -101,6 +101,7 @@ import {
   type ProcessSortKey,
   processStateText,
   processTableCell,
+  processThreadCell,
   unreadableTableMarker,
 } from "./processPresentation";
 import {
@@ -1800,7 +1801,8 @@ function SourceErrorNotice(props: { facts: readonly SourceErrorFact[] }) {
           <For each={props.facts}>
             {(fact) => (
               <span class="tabular-nums">
-                <span class="font-semibold">{fact.source}</span> · {fact.code}
+                <span class="font-semibold">{fact.source}</span> · {fact.facet} ·{" "}
+                {fact.code}
                 <span class="ml-1 text-gray-400">({fact.operation})</span>
               </span>
             )}
@@ -2219,22 +2221,18 @@ function ProcessDetail(props: {
         <Show
           when={
             p().threads !== null ||
-            processTableCell(p(), "status", "").warning
+            processThreadCell(p(), "").warning
           }
         >
           <DetailRow label="threads">
             <span
               class={`tabular-nums ${
-                processTableCell(p(), "status", "").warning
+                processThreadCell(p(), "").warning
                   ? "text-amber-600 dark:text-amber-400"
                   : ""
               }`}
             >
-              {processTableCell(
-                p(),
-                "status",
-                p().threads?.toString() ?? "—",
-              ).text}
+              {processThreadCell(p(), p().threads?.toString() ?? "—").text}
             </span>
           </DetailRow>
         </Show>

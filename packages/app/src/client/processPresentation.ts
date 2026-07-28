@@ -10,6 +10,7 @@ export type ProcessTableFacet =
   | "uid"
   | "cwd"
   | "status"
+  | "status_threads"
   | "argv";
 
 const PUBLISHED_PROCESS_FACETS: readonly ProcessTableFacet[] = [
@@ -157,6 +158,21 @@ export function processTableCell(
   return blind === undefined
     ? { text: readableText, warning: false }
     : { text: blind.errno, warning: true };
+}
+
+/** Thread count can be blind independently of state/nice. A broad status
+ * failure still qualifies all three fields, while the narrower facet only
+ * qualifies threads. */
+export function processThreadCell(
+  process: Process,
+  readableText: string,
+): ProcessTableCellPresentation {
+  const facet = process.unreadable.some(
+    (fact) => fact.facet === "status_threads",
+  )
+    ? "status_threads"
+    : "status";
+  return processTableCell(process, facet, readableText);
 }
 
 /** Cell presentation for the compact process row. A fully blind row has one
