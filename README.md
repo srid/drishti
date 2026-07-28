@@ -20,7 +20,7 @@ Screenshots:
 - **Zero install on the remote.** The agent closure is shipped over SSH (`nix copy --derivation` then realise) on first connect and reused after. The agent is built from its own minimal derivation, so editing the UI or parent server doesn't change its hash — a drishti upgrade doesn't force a fresh closure copy on the next reconnect. The remote needs only passwordless `ssh` + a `nix-daemon` that trusts your user — no agent binary to install, no inbound port, no config file to drop.
 - **Zero config locally.** No database, no persisted metrics, no setup. History lives in memory for the life of the process. `nix run` and you're watching.
 - **One pane, many hosts, mixed arch.** A macOS laptop can drive Linux *and* macOS remotes from a single `nix run` — drishti probes each host's Nix system and ships the matching build.
-- **Cross-OS, same numbers.** Linux (`/proc`) and macOS (`sysctl` / `vm_stat` / `netstat`) report the same metrics the same way — memory "used" is cache-aware on both.
+- **Cross-OS, same facts.** Linux and macOS are observed through the same versioned [`osfacts`](https://github.com/juspay/kolu/tree/master/osfacts) contract — including cache-aware available memory — with no platform-command fallback in drishti.
 
 ## Quick start
 
@@ -40,12 +40,19 @@ Open <http://localhost:7720>. The UI opens on the **fleet** tab — a single ove
 - **Live time-series charts** (CPU% / memory% / swap% / disk%) over a rolling 1m / 5m / 15m / 30m window, switched by a segmented control. The parent server samples every host on each poll tick — whether or not a tab is open — so the chart survives page reloads and tab switches and is already populated the first time you open a host. The **fleet overview** carries the same trend at a glance: each host card shows a compact **30m** CPU/memory/swap/disk sparkline drawn from the same ring (pinned to the widest window, no per-card picker). History is in-memory only; restarting the parent starts fresh. Disk is root-filesystem (`/`) fullness — a slow-moving capacity gauge, not disk I/O. A tab left in the **background** pauses its live views after ~20s and shows a "Paused" placeholder — a hidden tab can't display telemetry, so it stops decoding the 2s frames for it; because the *parent* keeps sampling regardless, the full history is intact the instant the tab is back in view.
 - **Runtime host management** — the `+ add host` button adds hosts, the `×` on each tab removes one. Added/removed hosts persist to `$XDG_STATE_HOME/drishti/hosts.json` (override with `DRISHTI_HOSTS_FILE`), so `nix run github:srid/drishti` with no args restores the last session.
 - **Per-host view memory** — the chart window, process sort column, and process filter stick across reloads via `localStorage`, remembered per host. A **light/dark toggle** (top-right of the tab strip) overrides the OS theme and is remembered globally; until you touch it, the theme follows your system preference. The address-bar / installed-app tint (the PWA `theme-color`) tracks the *chosen* theme — driven reactively from the in-app toggle rather than the OS media query — so it stays in step even when the toggle overrides the system preference.
-- **Process uptime at a glance** — the sortable **UPTIME** column shows how long each process has been running (oldest first when selected). It reprojects the host-stamped start time through the connection's measured clock offset, then advances from one shared client clock; platforms without a cheap start-time source (or a connection whose clock probe has not landed yet) show `—` rather than a fabricated value.
-- **Click a process for details** — selecting a row opens an inline panel above the table with the full (untruncated) command and working directory, exact CPU% and resident memory (plus its share of host RAM), and per-process metadata: parent PID, kernel state, nice value, thread count, and start time. The parent PID is a link when that process is still in the live set — click it to jump the panel to the parent (selecting its row). Click the row again, the `✕`, or press `Esc` to close. Thread count and start time are linux-only (darwin's `ps` has no cheap source — they're omitted there), so process uptime is unavailable there too.
+- **One host-observation boundary on both OSes** — the agent invokes the Nix-baked [`osfacts` V2](https://github.com/juspay/kolu/tree/master/osfacts) binary through its version-gated TypeScript client. One atomic host-wide snapshot supplies process identity, CPU time, UID, RSS, start time, cwd, state/nice/threads, argv, claimed listeners, and host-wide unclaimed listeners where the OS permits; one `host` reading supplies load, memory, swap, uptime, cumulative per-core CPU plus model/clock metadata, network counters, and root-disk capacity. Usable facts survive a partial source error and the named `source · facet · code` status is shown alongside them. Drishti does not search `PATH` or fall back to `lsof`, `ps`, `/proc`, `sysctl`, `vm_stat`, `netstat`, or `statfs`.
+- **Click a process for details** — selecting a row opens an inline panel with CPU and memory shares, full argv, cwd, state, nice value, nullable thread count, linked parent PID, start time, and attributed listeners. Listener addresses are decoded to ordinary IPv4/IPv6 text at the render edge. The compact table has no dedicated ports column; listener addresses remain available in details and filtering. Permission-blind sockets stay visible in a separate unclaimed-listener strip (with UID on Linux when available), collapsed to its count by default rather than becoming a falsely empty process port list. Click the row again, the `✕`, or press `Esc` to close.
+- **Dense host drill-down** — host identity and headline metrics share a compact header, CPU frequency sits inline with utilization only when osfacts reports it, idle NICs and unclaimed listeners start collapsed, and command plus cwd share one process row. CPU%, USER, memory, and clock-corrected UPTIME remain sortable. A partially unreadable fact gets one subtle hoverable marker at the cell it qualifies; a fully blind process collapses to one dimmed unreadable row instead of repeating an errno across the table.
 - **Idle NICs collapse** behind a `+N idle` toggle by default, so the few interfaces moving traffic aren't buried under the dozens of always-zero virtual ones (utunN, anpiN, …).
-- **Strictly read-only** — drishti only ever *observes* a host. The per-host surface exposes no procedures, so there is no way to signal, kill, or otherwise mutate a monitored process through the UI or the wire.
-- **Installable PWA, one per host** — drishti ships a web app manifest and an emerald aperture icon, so you can install it as a standalone app (desktop, or a phone's home screen). The manifest's name and identity are the server's own `drishti@<hostname>`, so installing drishti from two different hosts gives you **two distinct, separately-labelled apps** in the OS app list — not one ambiguous `drishti` that collides. The shell and its assets are served by [`@kolu/surface-app`](https://github.com/juspay/kolu/tree/master/packages/surface-app) under a strict freshness contract (see below); drishti ships **no caching service worker** of its own. A **Pin app** button in the tab strip surfaces the install prompt directly — it appears only on a secure origin (`https://…`, e.g. a `tailscale serve` FQDN) and hides once drishti is already installed, gated on the `canInstallPwa` / `isInstalled` signals from `@kolu/surface-app`'s `useSurfaceApp()` and rendered via [`@kolu/solid-pwa-install`](https://github.com/juspay/kolu/tree/master/packages/solid-pwa-install) (which owns the cross-browser install volatility). <sub>The button is gated behind `TODO(pin)` until the kolu pin tracks the in-flight `welcome` revision that ships those signals + that package — see the draft-PR note below.</sub>
+- **Read-mostly, with explicit process control** — telemetry is read-only. The sole per-host mutation is `process.kill`: the process detail panel can send SIGTERM or SIGKILL, and reports permission/race failures instead of swallowing them.
+- **Installable PWA, one per host** — drishti ships a web app manifest and an emerald aperture icon, so you can install it as a standalone app (desktop, or a phone's home screen). The manifest's name and identity are the server's own `drishti@<hostname>`, so installing drishti from two different hosts gives you **two distinct, separately-labelled apps** in the OS app list — not one ambiguous `drishti` that collides. The shell and its assets are served by [`@kolu/surface-app`](https://github.com/juspay/kolu/tree/master/packages/surface-app) under a strict freshness contract (see below); drishti ships **no caching service worker** of its own. A **Pin app** button in the tab strip surfaces the install prompt directly — it appears only on a secure origin (`https://…`, e.g. a `tailscale serve` FQDN) and hides once drishti is already installed, gated on the `canInstallPwa` / `isInstalled` signals from `@kolu/surface-app`'s `useSurfaceApp()` and rendered via [`@kolu/solid-pwa-install`](https://github.com/juspay/kolu/tree/master/packages/solid-pwa-install) (which owns the cross-browser install volatility).
 - **Always the deployed build** — drishti adopts `@kolu/surface-app`, which owns the *freshness contract* on the wire: the HTML shell is served `no-store`, the content-hashed `/assets/*` bundle and stylesheet are pinned `immutable` for a year, an asset miss 404s (never the HTML shell under a `.js` URL), and the server serves a self-destructing `/sw.js` that unregisters any legacy caching worker an earlier drishti build left behind. The client's build commit (carried on the `no-store` HTML shell as `window.__SURFACE_APP_COMMIT__`, read via `shellCommit()` — never baked into an `immutable` bundle, which a stamp-only deploy would leave stale; kolu#1319) rides a `buildInfo` cell on the admin surface alongside the server's resolved commit; both commits — plus a server-connection liveness dot — are always visible in a slim status footer pinned to the bottom of the viewport, and when a tab is provably behind the deployed build the footer grows a `≠ srv` one-tap reload affordance. A returning installed client thus always re-fetches the shell and converges to the deployed build — the stale-client class of bug, gone structurally.
+
+## Known limitations
+
+On macOS, other users' processes report memory and CPU as unreadable: Apple gates task info behind a private entitlement. Apple's `ps` is setuid-root and carries it; drishti's agent is deliberately an ordinary, unprivileged binary. Linux hosts are unaffected.
+
+On macOS 27+, Apple platform signing gates the host-wide unclaimed-listener table, so osfacts reports a named `ports_unclaimed` source failure there. Claimed listeners for the agent's own processes still work.
 
 Requirements:
 
@@ -68,40 +75,43 @@ Mixed-architecture host sets are supported: the monitor wrapper bakes a `{system
 
 ```
 Browser (SolidJS UI, tab strip)
-   │  one WebSocket per host  ─────────┐
-   ▼                                   ▼
-Parent server (Bun, drishti)    Admin surface (host set)
+   │  one WebSocket (admin + keyed host map)
+   ▼
+Parent server (Bun, drishti)
    │  ssh stdio (oRPC) ×N
    ▼
 Host 1: drishti-agent     Host 2: drishti-agent     …
-   │  /proc on linux; sysctl + vm_stat / netstat / ps / lsof on darwin
+   │  osfacts V2 on linux + darwin (all host/process/socket observations)
    ▼
 Kernel
 ```
 
-Host identity lives only at the transport layer: each browser tab opens its own WebSocket to `/rpc/ws?host=<id>`; the parent dispatches to a per-host `RPCHandler` (built once per host from the same surface schema). The per-host `surface` schema (system / processes / cpuCores / networkInterfaces / connection cells) is scalar — no host dimension anywhere in the primitives.
-
-A separate **admin surface** at `/rpc/ws?host=__admin__` exposes the *set* of hosts as a `Collection<string, HostEntry>` plus `addHost` / `removeHost` procedures. The tab strip subscribes to the collection; the `+` / `×` buttons call the procedures.
+The browser opens one WebSocket at `/rpc/ws?host=__admin__`. That transport multiplexes the admin procedures, surface-app build identity, and a keyed `@kolu/surface-map` entry for every monitored host. Host identity is the map key rather than a dedicated socket; each entry carries its own fine-grained connection state while sharing the one transport-liveness floor.
 
 Per-host primitives:
 
 | Primitive | Path | Purpose |
 |---|---|---|
-| **Cell** | `system` | Load averages, memory, swap, disk, uptime, OS, hostname. Memory *used* means the same thing on every OS — total minus a cache-aware *available* (reclaimable file cache / inactive / purgeable pages don't count as used): `MemAvailable` from `/proc/meminfo` on linux, derived from `vm_stat` on darwin (since macOS `os.freemem()` counts only truly-free pages and would over-report a healthy Mac at 80-95%). Swap is **bytes used/total** (`SwapTotal − SwapFree` from `/proc/meminfo` on linux, `sysctl vm.swapusage` on darwin), 0/0 on a host with swap disabled. Disk is **root-filesystem (`/`) bytes used/total** via the `statfs` syscall — the one capacity source universal across linux and darwin (no `/proc` file exposes free space). It reports `/` only by design; a host that splits `/var` or `/data` onto separate disks won't see those here (a per-mount view would be a future `diskDevices` collection, mirroring `networkInterfaces`). |
-| **Collection** | `processes` | Keyed by PID — `{ user, cpuPct, rssBytes, command, cwd, ppid, state, nice, threads, startedAtMs }`. The table shows absolute resident memory (`rssBytes`, auto-scaled to MB/GB) and derives the sortable uptime column from `startedAtMs`; the exact start timestamp and other metadata surface in the click-to-open detail panel. Snapshot-then-delta. `cwd` is from `/proc/<pid>/cwd` on linux and a single batched `lsof -d cwd` on darwin (empty for kernel threads, and for other-user pids without root — `readlink` EACCES on linux, no `lsof` cwd line on darwin). The darwin `lsof` child is disciplined (single-flight, 20s kill budget, a 3×-duration gap after each success, and an exponential failure backoff capped at 5min — one child at ~25% of one core worst-case on a slow host, instead of the unbounded pileup of srid/drishti#111; a host without `lsof` serves blank `cwd`, retried every 5min): the table refreshes at `ps` speed regardless, with `cwd` merged from the last landed `lsof` run — so `cwd` fills on the first landed run (one poll tick on a healthy host) and can go stale on a host whose `lsof` is slow or failing, by design. `ppid` / `state` / `nice` come from `/proc/<pid>/stat` on linux and `ps -o ppid=,nice=,state=` on darwin; `threads` and `startedAtMs` are linux-only (`/proc/<pid>/stat` thread count + boot-time-derived start), `null` on darwin (no cheap source). |
-| **Stream** | `processesSnapshot` | Bulk-snapshot variant for ~600-PID htop refresh in one frame. |
-| **Collection** | `cpuCores` | Per-core CPU usage (`Collection<K,T>` showcase). |
-| **Collection** | `networkInterfaces` | Per-NIC network I/O, keyed by interface name — `{ rxBytes, txBytes, rxRate, txRate }` (cumulative bytes since boot + bytes/sec throughput). `/proc/net/dev` on linux, `netstat -ib` on darwin; loopback filtered out. The UI strip collapses idle interfaces (both rates 0) behind a `+N idle` toggle by default, so the few NICs moving traffic aren't buried under the dozens of always-zero virtual ones (utunN, anpiN, …). |
+| **Cell** | `system` | Load averages, cache-aware used/total memory, swap, root-disk (`/`) capacity, uptime, OS, and hostname. All numeric observations come from one cached osfacts V2 `host --load --mem --cpu --net --disk` frame. |
+| **Collection** | `processes` | Host-wide, keyed by PID — short name plus capped full argv, derived CPU%, rendered UID, cwd, state/nice/nullable threads, PPID, RSS, start identity, listeners, and facet-specific `unreadable[]`. A `U`-only pid remains represented. Snapshot-then-delta. |
+| **Collection** | `unclaimedListeners` | Readable listening sockets whose owning pid could not be attributed — `{ port, address, uid }`. This preserves every unclaimed listener osfacts can observe even when per-process descriptor inspection is blind. |
+| **Collection** | `sourceErrors` | Named osfacts `E` rows (`operation`, `source`, `facet`, `code`) accompanying otherwise usable partial frames. |
+| **Collection** | `cpuCores` | Per-core CPU usage, model, and nullable MHz. The whole grid rides the collection's batched deltas. |
+| **Collection** | `networkInterfaces` | Per-NIC network I/O from osfacts V2, keyed by interface name — `{ rxBytes, txBytes, rxRate, txRate }` (cumulative bytes since boot + bytes/sec throughput); loopback filtered out. The UI strip collapses idle interfaces behind a `+N idle` toggle. |
+| **Stream** | `metricHistory` | Parent-owned in-memory CPU/memory/swap/disk history: full retained snapshot on subscribe, then one delta per poll. |
+| **Procedure** | `process.kill` | Send an allowed signal to a PID on the host that owns it. The UI exposes TERM and KILL. |
 
-The per-host surface is **read-only** — cells, collections, and streams only, no procedures. The only procedures anywhere live on the separate admin surface below (host-set management), never on a monitored host.
+The process, listener, source-error, CPU, and network collections are observation-only. `process.kill` is the one explicit per-host mutation.
 
 Admin surface primitives:
 
 | Primitive | Path | Purpose |
 |---|---|---|
-| **Collection** | `hosts` | Configured hosts; key = host string. |
+| **Host map** | `hosts.entries` | Configured hosts, keyed by host string, with entry status and per-host connection state. |
 | **Procedure** | `hosts.add` | Spin up a new host session; persists to the hosts file. |
 | **Procedure** | `hosts.remove` | Tear down a host session; persists removal. |
+| **Procedure** | `hosts.reconnect` | Re-arm a configured host whose session reached a terminal failure. |
+| **Procedure** | `hosts.recheck` | Ask every host session to probe again after browser focus/network recovery. |
 
 ## Development
 
@@ -184,17 +194,13 @@ drishti/
          │  └─ build.ts                         #   client bundler
          └─ client/                             # SolidJS UI
             ├─ App.tsx                          #   MultiHostApp + TabStrip + HostView
-            ├─ wire.ts                          #   surfaceForHost(host) + adminClient()
+            ├─ wire.ts                          #   one admin socket + keyed host surface map
             └─ {main.tsx, index.html, styles.css}
 ```
 
 ### How `@kolu/surface` is wired
 
 `@kolu/surface`, `@kolu/surface-nix-host`, `@kolu/surface-app`, and `@kolu/solid-pwa-install` aren't on npm. They're vendored from the `juspay/kolu` repo via npins, exposed as Nix-store paths through `nix/overlay.nix`, and hydrated into `node_modules/@kolu/*` by `scripts/hydrate-kolu-packages.sh`. The hydrate script takes `(src, dest)` pairs so adding another `@kolu/*` package is a one-line addition to the overlay + env — as `@kolu/solid-pwa-install` demonstrates.
-
-> **Draft-PR note (this branch):** the **Pin app** install affordance depends on in-flight kolu work on branch `welcome`: the `canInstallPwa` / `isInstalled` signals on `useSurfaceApp()`, and the `@kolu/solid-pwa-install` package's source. Until the kolu pin in `npins/sources.json` tracks the merged `welcome` revision, the button stays off behind the `PWA_INSTALL_WIRED` guard in `src/client/TabStrip.tsx` and the `@kolu/solid-pwa-install` import stays commented. The nix wiring to hydrate the package is already in place; landing it is a pin bump + flipping the guard + uncommenting the import.
-
-> **Draft-PR note:** `@kolu/surface-app` is not yet pinned via npins. While this lands, `just install` hydrates it from a **local kolu worktree** (`DRISHTI_KOLU_SURFACE_APP`, defaulted in the `install` recipe). For the merge: add surface-app to `npins/sources.json` (the existing kolu source already carries it) + `nix/env.nix` exactly like the other two `@kolu/*` packages, drop the local default, and regenerate `bun.nix`.
 
 To bump the kolu pin:
 

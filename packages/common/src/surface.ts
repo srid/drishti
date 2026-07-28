@@ -21,6 +21,57 @@ import { defineSurface, type SurfaceTypes } from "@kolu/surface/define";
 import { z } from "zod";
 import { alertsEqual, AlertsSchema, NO_ALERTS } from "./alerts";
 
+/** Present osfacts' network-order listener bytes at the consumer edge.
+ *
+ * The wire deliberately stays raw and versioned. This formatter owns the one
+ * UI policy: dotted IPv4, RFC 5952-compressed/bracketed IPv6, and plain dotted
+ * IPv4 for v4-mapped v6 addresses. Unknown input is left visible rather than
+ * throwing during rendering. */
+export function formatListenerAddress(address: string, port: number): string {
+  if (/^[0-9a-f]{8}$/i.test(address)) {
+    const octets = address.match(/../g)?.map((byte) => Number.parseInt(byte, 16));
+    return `${octets?.join(".") ?? address}:${port}`;
+  }
+  if (!/^[0-9a-f]{32}$/i.test(address)) return `${address}:${port}`;
+
+  const bytes = address.match(/../g)?.map((byte) => Number.parseInt(byte, 16));
+  if (bytes === undefined) return `${address}:${port}`;
+  const isV4Mapped =
+    bytes.slice(0, 10).every((byte) => byte === 0) &&
+    bytes[10] === 0xff &&
+    bytes[11] === 0xff;
+  if (isV4Mapped) return `${bytes.slice(12).join(".")}:${port}`;
+
+  const groups = Array.from(
+    { length: 8 },
+    (_, i) => ((bytes[i * 2] ?? 0) << 8) | (bytes[i * 2 + 1] ?? 0),
+  );
+  let bestStart = -1;
+  let bestLength = 0;
+  for (let start = 0; start < groups.length; ) {
+    if (groups[start] !== 0) {
+      start++;
+      continue;
+    }
+    let end = start;
+    while (end < groups.length && groups[end] === 0) end++;
+    const length = end - start;
+    if (length > bestLength && length >= 2) {
+      bestStart = start;
+      bestLength = length;
+    }
+    start = end;
+  }
+  const rendered = groups.map((group) => group.toString(16));
+  const ipv6 =
+    bestStart < 0
+      ? rendered.join(":")
+      : `${rendered.slice(0, bestStart).join(":")}::${rendered
+          .slice(bestStart + bestLength)
+          .join(":")}`;
+  return `[${ipv6}]:${port}`;
+}
+
 // IMPORTANT: this module is AGENT-shared (drishti-common's `.` export — the
 // agent serves the base surface from it). It must NOT import
 // `@kolu/surface-remote`: the agent's scoped build hydrates only `@kolu/surface`,
@@ -31,77 +82,133 @@ import { alertsEqual, AlertsSchema, NO_ALERTS } from "./alerts";
 
 const PidSchema = z.number().int().nonnegative();
 const ProcessSchema = z.object({
-  user: z.string(),
-  cpuPct: z.number(),
-  /** Resident set size in bytes — the absolute physical memory the
-   *  process occupies. The headline memory number the UI shows; a ratio
-   *  view can derive `rssBytes / system.memTotal` at the call site. */
-  rssBytes: z.number(),
+  /** Short process name from osfacts' versioned `P` row. */
+  name: z.string(),
+  /** Full argv joined for display/search and capped at the historic 200 chars. */
   command: z.string(),
-  /** Current working directory. From `/proc/<pid>/cwd` on linux and a single
-   *  batched `lsof -d cwd` on darwin. Empty string when unknown — kernel
-   *  threads have no cwd, and other-user pids without root can't be resolved
-   *  (EACCES on `/proc/<pid>/cwd` on linux; no `lsof` cwd line on darwin).
-   *  On darwin the value is the LAST-LANDED enrichment run's observation
-   *  (the lsof child is never awaited by the poll), so it fills on the
-   *  first landed lsof run — one poll tick on a healthy host — and may be
-   *  stale on a host whose lsof is slow. Observable staleness contract: a
-   *  pid observed dead by any poll tick blanks within one tick; a pid
-   *  recycled within a single poll window (never observed dead) can inherit
-   *  the previous process's cwd until the next landed enrichment run — and
-   *  on a host whose enrichment fails persistently that landing may never
-   *  come, so such a stale value can persist indefinitely. The mechanism
-   *  lives with createCwdEnricher in the agent package
-   *  (packages/agent/src/proc.ts). */
-  cwd: z.string(),
-  /** Parent process id — `/proc/<pid>/stat` field 4 on linux, `ps -o
-   *  ppid=` on darwin. 0 for pid 1 / the rare orphan whose parent has
-   *  already reaped. */
-  ppid: PidSchema,
-  /** Single-char kernel state code: `R` running, `S` sleeping, `D`
-   *  uninterruptible, `Z` zombie, `T` stopped, `I` idle, … `/proc/<pid>/stat`
-   *  field 3 on linux; the first char of `ps -o state=` on darwin (its
-   *  trailing flags like `+`/`s` are dropped). Empty when unknown. */
-  state: z.string(),
-  /** Nice value (scheduling priority, -20..19). `/proc/<pid>/stat` field 19
-   *  on linux, `ps -o nice=` on darwin. */
-  nice: z.number().int(),
-  /** Thread count (`/proc/<pid>/stat` field 20), or null when the platform
-   *  can't cheaply source it — darwin's `ps` has no per-process thread count.
-   *  Null (not 0) so "unavailable" is distinct from a real count at the type
-   *  level; a live linux process always has >= 1. */
+  /** Per-process CPU use over the last poll window. osfacts publishes a
+   *  cumulative counter; the agent derives this consumer-side rate. */
+  cpuPct: z.number().nonnegative(),
+  /** Effective uid rendered with the historic Linux policy: uid 0 is root,
+   *  every other uid is decimal. Empty only when the uid facet is unreadable. */
+  user: z.string(),
+  /** Working directory from the independent cwd facet. */
+  cwd: z.string().nullable(),
+  state: z.string().length(1).nullable(),
+  nice: z.number().int().nullable(),
+  /** Darwin does not expose a thread count through this facet. */
   threads: z.number().int().positive().nullable(),
-  /** Process start time as epoch milliseconds, or null when unknown. Derived
-   *  on linux from the host boot time plus `/proc/<pid>/stat` field 22
-   *  (start-ticks-since-boot); null on darwin, which has no cheap per-pid start
-   *  source in the `ps` columns we read. Immutable per pid, so the poll loop
-   *  excludes it from change detection. */
-  startedAtMs: z.number().nullable(),
+  /** Parent process id from the same osfacts snapshot. 0 for a root/orphan,
+   *  and for a pid represented only by a `U` row (no readable `P` row). */
+  ppid: PidSchema,
+  /** Resident set size reported by osfacts' `M` facet. Null when that facet
+   *  is explicitly unreadable for this pid. */
+  rssBytes: z.number().int().nonnegative().nullable(),
+  /** Process start identity as epoch milliseconds, derived from osfacts' `S`
+   *  microsecond timestamp. Null when that facet is explicitly unreadable. */
+  startedAtMs: z.number().nonnegative().nullable(),
+  /** Listening TCP sockets attributed to this pid in the same snapshot.
+   *  Address remains network-order hex: classification is consumer policy. */
+  listeners: z.array(
+    z.object({
+      port: z.number().int().positive().max(65535),
+      address: z.string(),
+      /** Socket-owner uid from osfacts' `L` row when the platform can report
+       *  it. This qualifies the listener, not the process's credentials. */
+      uid: z.number().int().nonnegative().nullable(),
+    }),
+  ),
+  /** Facet-specific mandatory osfacts `U` rows. A blind `ports` facet no
+   *  longer makes the host listener table empty: OSF6 emits those listeners
+   *  separately as claimed or unclaimed facts. */
+  unreadable: z.array(
+    z.object({
+      facet: z.enum([
+        "proc",
+        "ports",
+        "mem",
+        "start_time",
+        "cpu_time",
+        "uid",
+        "cwd",
+        "status",
+        "status_threads",
+        "argv",
+      ]),
+      errno: z.string(),
+    }),
+  ),
+});
+
+const UnclaimedListenerSchema = z.object({
+  port: z.number().int().positive().max(65535),
+  address: z.string(),
+  /** Linux can identify the socket owner without identifying a pid. Darwin
+   *  legitimately leaves this null. */
+  uid: z.number().int().nonnegative().nullable(),
+});
+
+const SourceErrorFactSchema = z.object({
+  operation: z.enum(["snapshot", "host"]),
+  source: z.string(),
+  facet: z.enum([
+    "proc",
+    "ports",
+    "ports_unclaimed",
+    "ports_uid",
+    "mem",
+    "start_time",
+    "cpu_time",
+    "uid",
+    "cwd",
+    "status",
+    "argv",
+    "uptime",
+    "load",
+    "cpu",
+    "net",
+    "disk",
+  ]),
+  code: z.string(),
 });
 
 /** The process fields whose change re-publishes a row — the `processes`
  *  collection's per-key value `equals` gate (was the agent's `processChanged`,
  *  now declared once on the spec so the `derived.collection` reconciler dedups by
- *  it instead of the write site hand-holding it). `startedAtMs` is immutable per
- *  pid, so it is deliberately absent; `satisfies` ties each entry to a real schema
- *  field so a typo or renamed field fails to compile. */
-const MUTABLE_PROCESS_FIELDS = [
-  "user",
-  "cpuPct",
-  "rssBytes",
-  "command",
-  "cwd",
-  "ppid",
-  "state",
-  "nice",
-  "threads",
-] as const satisfies readonly (keyof z.infer<typeof ProcessSchema>)[];
+ *  it instead of the write site hand-holding it). Listener arrays are rebuilt
+ *  from every snapshot, so compare their contents rather than references. */
+type ProcessValue = z.infer<typeof ProcessSchema>;
+const processEqual = (a: ProcessValue, b: ProcessValue): boolean =>
+  a.name === b.name &&
+  a.command === b.command &&
+  a.cpuPct === b.cpuPct &&
+  a.user === b.user &&
+  a.cwd === b.cwd &&
+  a.state === b.state &&
+  a.nice === b.nice &&
+  a.threads === b.threads &&
+  a.ppid === b.ppid &&
+  a.rssBytes === b.rssBytes &&
+  a.startedAtMs === b.startedAtMs &&
+  a.unreadable.length === b.unreadable.length &&
+  a.unreadable.every(
+    (fact, i) =>
+      fact.facet === b.unreadable[i]?.facet &&
+      fact.errno === b.unreadable[i]?.errno,
+  ) &&
+  a.listeners.length === b.listeners.length &&
+  a.listeners.every(
+    (listener, i) =>
+      listener.port === b.listeners[i]?.port &&
+      listener.address === b.listeners[i]?.address &&
+      listener.uid === b.listeners[i]?.uid,
+  );
 
 const CpuCoreSchema = z.object({
   /** Busy-percentage since the previous poll tick (0-100). */
   usagePct: z.number(),
-  /** Reported clock speed in MHz (often a sticky max on Linux). */
-  speedMHz: z.number(),
+  /** Reported clock speed in MHz; honestly absent on Apple Silicon. */
+  speedMHz: z.number().positive().nullable(),
   model: z.string(),
 });
 
@@ -141,17 +248,13 @@ const SystemSchema = z.object({
   /** Bytes used / total — UI converts to GB. */
   memUsed: z.number(),
   memTotal: z.number(),
-  /** Swap bytes used / total. `swapUsed = SwapTotal − SwapFree` on linux
-   *  (`/proc/meminfo`); `total`/`used` from `sysctl vm.swapusage` on darwin.
-   *  Both 0 on a host with swap disabled (no swap device, or an unknown
-   *  platform) — `swapPct` guards the divide, so it reads as 0% rather than
-   *  NaN, the same "unavailable → 0" convention memory and disk use. */
+  /** Swap bytes used / total from osfacts V2. Both are 0 on a host with swap
+   *  disabled; `swapPct` guards the divide. */
   swapUsed: z.number(),
   swapTotal: z.number(),
-  /** Bytes used / total on the **root filesystem** (`/`), via `statfs("/")`
-   *  in the agent. `diskUsed = (blocks − bfree) × bsize`, the bytes-occupied
-   *  parity of `memUsed = memTotal − available` — so `diskPct` reuses the
-   *  same `pctOf` "share of total" formula memory does.
+  /** Bytes used / total on the **root filesystem** (`/`) from osfacts V2.
+   *  `diskUsed = total − free`: occupied blocks, matching the native reader's
+   *  historic meaning (reserved blocks count as occupied, not user-available).
    *
    *  ⚠ **Mount-selection policy: root `/` only.** Unlike memory (one
    *  authoritative host figure), a host has many filesystems and no single
@@ -159,13 +262,12 @@ const SystemSchema = z.object({
    *  that splits `/var`, `/nix`, or `/data` onto separate disks will not see
    *  those here — a per-mount view is a future `diskDevices` collection
    *  (mirroring `networkInterfaces`), not a reinterpretation of this field.
-   *  Both 0 when the agent can't `statfs` (unknown platform) — `pctOf`
-   *  guards the divide. */
+   *  `pctOf` guards the divide. */
   diskUsed: z.number(),
   diskTotal: z.number(),
   /** Seconds since boot. */
   uptime: z.number(),
-  /** OS family — `linux` reads /proc/*, `darwin` reads sysctl. */
+  /** OS family observed through osfacts. */
   os: z.enum(["linux", "darwin", "unknown"]),
   /** Resolved hostname inside the agent (parent shows this in the
    *  header chip — useful when the parent ssh'd by an alias). */
@@ -282,7 +384,22 @@ export const surface = defineSurface({
       // is the reconciler's per-key diff — republish a row only when a mutable field
       // moved (the old agent-side `processChanged`, declared once here).
       verbs: ["keys", "get", "deltas"],
-      equals: (a, b) => MUTABLE_PROCESS_FIELDS.every((f) => a[f] === b[f]),
+      equals: processEqual,
+    },
+    /** Host listeners whose socket fact is readable but whose owning pid is
+     *  not attributable. This is the OSF6 distinction that lets drishti show
+     *  a complete listener table without pretending permission-blind sockets
+     *  do not exist. */
+    unclaimedListeners: {
+      keySchema: z.string(),
+      schema: UnclaimedListenerSchema,
+      verbs: ["keys", "get", "deltas"],
+    },
+    /** Named `E` rows accompanying an otherwise usable partial osfacts frame. */
+    sourceErrors: {
+      keySchema: z.string(),
+      schema: SourceErrorFactSchema,
+      verbs: ["keys", "get", "deltas"],
     },
     /** Per-core CPU usage — small-N (typical 4-32) `Collection<K,T>`.
      *  The host drill-in renders one bar per core, so per-key reactive identity
@@ -335,6 +452,9 @@ type SF = SurfaceTypes<typeof surface.spec>;
 
 export type Pid = SF["collections"]["processes"]["Key"];
 export type Process = SF["collections"]["processes"]["Value"];
+export type UnclaimedListenerId = SF["collections"]["unclaimedListeners"]["Key"];
+export type UnclaimedListener = SF["collections"]["unclaimedListeners"]["Value"];
+export type SourceErrorFact = SF["collections"]["sourceErrors"]["Value"];
 export type CoreId = SF["collections"]["cpuCores"]["Key"];
 export type CpuCore = SF["collections"]["cpuCores"]["Value"];
 export type IfaceName = SF["collections"]["networkInterfaces"]["Key"];

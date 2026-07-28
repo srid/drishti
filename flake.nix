@@ -95,6 +95,10 @@
           kolu-surface = pkgs.kolu-surface;
           kolu-surface-remote = pkgs.kolu-surface-remote;
           kolu-surface-map = pkgs.kolu-surface-map;
+          # Process/socket fact sampler + its zero-dependency TypeScript face,
+          # pinned together from kolu's unmerged osfacts-plan branch.
+          osfacts = pkgs.osfacts;
+          osfacts-client = pkgs.osfacts-client;
           # bun2nix CLI — `nix run .#bun2nix -- -l bun.lock -o bun.nix`
           # regenerates the lockfile-derived nix expression.
           bun2nix = b2n.bun2nix;

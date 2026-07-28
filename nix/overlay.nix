@@ -8,6 +8,14 @@
 final: _prev:
 let
   mkKoluPackage = import ./packages/kolu-package.nix { pkgs = final; };
+  kolu = (import ../npins).kolu;
+  # osfacts owns a Rust MSRV/toolchain axis that drishti's TypeScript packages
+  # do not. Build it with the exact nixpkgs pin Kolu tests it against; importing
+  # its default.nix with drishti's older package set paired sysinfo 0.39.6
+  # (MSRV 1.95) with rustc 1.93 on Darwin.
+  koluPkgs = import (kolu + "/nix/nixpkgs.nix") {
+    system = final.stdenv.hostPlatform.system;
+  };
 in
 {
   kolu-surface = mkKoluPackage "surface";
@@ -29,4 +37,19 @@ in
   # The zero-dep logging leaf surface-remote imports (the `log:Logger` seam,
   # juspay/kolu#1876) — hydrated so its `@kolu/log` import resolves.
   kolu-log = mkKoluPackage "log";
+  # osfacts incubates at the kolu repo root (juspay/kolu#2011), outside the
+  # `packages/` workspace. Keep its binary and dependency-free TypeScript
+  # client on the same npins revision so the client's `V 2` gate can never be
+  # paired with a binary from another source.
+  osfacts = import (kolu + "/osfacts") { pkgs = koluPkgs; };
+  osfacts-client = final.runCommand "osfacts-client"
+    {
+      meta = {
+        description = "TypeScript client source for osfacts";
+        homepage = "https://github.com/juspay/kolu/tree/osfacts-improve/osfacts/client-ts";
+      };
+    }
+    ''
+      cp -r ${kolu}/osfacts/client-ts $out
+    '';
 }

@@ -10,7 +10,8 @@
     ".": "./src/surface.ts",
     "./alerts": "./src/alerts.ts",
     "./browser": "./src/browser.ts",
-    "./metrics": "./src/metrics.ts"
+    "./metrics": "./src/metrics.ts",
+    "./source-errors": "./src/sourceErrors.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

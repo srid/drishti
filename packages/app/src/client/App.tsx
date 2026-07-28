@@ -49,6 +49,7 @@ import {
   type CoreId,
   type CpuCore,
   DEFAULT_SYSTEM,
+  formatListenerAddress,
   type IfaceName,
   type MetricHistoryMsg,
   type MetricSample,
@@ -56,6 +57,7 @@ import {
   type Pid,
   type Process,
   type SystemInfo,
+  type UnclaimedListener,
 } from "drishti-common";
 import {
   type ConnectionInfo,
@@ -73,20 +75,40 @@ import { HostDot } from "./HostDot";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
 import {
+  cpuCoreFrequencyText,
   diskGb,
   diskPct,
   formatBytes,
-  formatProcessUptime,
   formatThroughput,
   formatUptime,
   memGb,
   memPct,
   metricPercents,
-  pctOf,
   swapGb,
   swapPct,
 } from "./metrics";
 import { isActiveNic } from "./nic";
+import {
+  DEFAULT_PROCESS_SORT_KEY,
+  fullyBlindErrno,
+  processComparator,
+  processDetailMemoryText,
+  processMatches,
+  processRowCell,
+  processRowUptime,
+  PROCESS_SORT_KEYS,
+  type ProcessTableCellPresentation,
+  type ProcessSortKey,
+  processStateText,
+  processTableCell,
+  processThreadCell,
+  unreadableTableMarker,
+} from "./processPresentation";
+import {
+  type SourceErrorFact,
+  mergeSourceErrorFacts,
+  sourceErrorFacts,
+} from "./sourceErrorPresentation";
 import type { CollectionDeltasMsg } from "@kolu/surface/define";
 
 /** Fold one `processes` collection `deltas` frame into the accumulated process map
@@ -108,7 +130,11 @@ function foldProcessDeltas(
   for (const pid of msg.removes) delete next[pid];
   return next;
 }
-import { coreUsageColor, processPctColor, usageBarColor } from "./usageColors";
+import {
+  coreUsageColor,
+  processPctColor,
+  usageBarColor,
+} from "./usageColors";
 import {
   CHART_MAX_POINTS,
   DEFAULT_HISTORY_WINDOW,
@@ -153,9 +179,6 @@ import {
   surfaceAppClient,
 } from "./wire";
 
-const SORT_KEYS = ["cpu", "mem", "uptime", "pid", "user"] as const;
-type SortKey = (typeof SORT_KEYS)[number];
-
 // The human word for a raised alert id — a CLIENT-owned presentation lookup
 // (rename/localize here, no agent or wire change). Exhaustive over `AlertId`,
 // so `LABELS[id]` always resolves; the word never rides the wire.
@@ -172,21 +195,6 @@ const LABELS: Record<AlertId, string> = {
 type BadgingNavigator = Navigator & {
   setAppBadge?: (count?: number) => Promise<void>;
   clearAppBadge?: () => Promise<void>;
-};
-
-// Human labels for the kernel single-char process state codes (linux
-// `/proc/<pid>/stat` field 3; the leading char of darwin `ps -o state=`).
-// Codes outside this map (rare/transitional) render verbatim.
-const PROCESS_STATE_LABELS: Record<string, string> = {
-  R: "running",
-  S: "sleeping",
-  D: "uninterruptible",
-  Z: "zombie",
-  T: "stopped",
-  t: "tracing stop",
-  I: "idle",
-  X: "dead",
-  W: "paging",
 };
 
 // Which process row (if any) is expanded into the detail panel. Selection is
@@ -769,7 +777,7 @@ function MultiHostApp() {
     // StatusFooter (plus the phone home-indicator inset it absorbs), so the
     // last table rows / fleet cards are never hidden under the bar. The
     // baseline is the shared --status-footer-height constant from styles.css.
-    <div class="flex h-dvh flex-col bg-gray-50 p-4 pb-[calc(var(--status-footer-height)+env(safe-area-inset-bottom))] font-mono text-sm dark:bg-gray-950">
+    <div class="flex h-dvh flex-col bg-gray-50 p-2 pb-[calc(var(--status-footer-height)+env(safe-area-inset-bottom))] font-mono text-sm dark:bg-gray-950">
       {/* Reactive head, kolu's app-shell pattern over `@solidjs/meta`: the tab
           title is the server's own `drishti@<host>` identity (read from the
           served manifest), and the PWA `theme-color` tracks the *chosen* theme
@@ -1179,6 +1187,19 @@ function HostView(props: {
     },
   );
   const processes = (): Record<Pid, Process> => processesSub() ?? {};
+  const unclaimedListeners = entry.collections.unclaimedListeners.use();
+  const unclaimedListenerValues = createMemo(() =>
+    [...unclaimedListeners.keys()]
+      .map((key) => unclaimedListeners.byKey(key)?.())
+      .filter((value) => value !== undefined)
+      .sort((a, b) => a.port - b.port || a.address.localeCompare(b.address)),
+  );
+  const sourceErrors = entry.collections.sourceErrors.use();
+  const partialSourceFacts = createMemo<SourceErrorFact[]>(() =>
+    [...sourceErrors.keys()]
+      .map((key) => sourceErrors.byKey(key)?.())
+      .filter((fact) => fact !== undefined),
+  );
 
   // Which PID is expanded into the detail panel (null = none). A transient focus,
   // not a per-host persisted pref — but now OWNED per-host by the host-map scope,
@@ -1233,11 +1254,11 @@ function HostView(props: {
     props.host,
     "",
   );
-  const [sortKey, setSortKey] = createPersistedSignal<SortKey>(
+  const [sortKey, setSortKey] = createPersistedSignal<ProcessSortKey>(
     "sort",
     props.host,
-    "cpu",
-    (raw) => (SORT_KEYS as readonly string[]).includes(raw),
+    DEFAULT_PROCESS_SORT_KEY,
+    (raw) => (PROCESS_SORT_KEYS as readonly string[]).includes(raw),
   );
 
   const currentSystem = createMemo(() => system.value() ?? DEFAULT_SYSTEM);
@@ -1303,16 +1324,11 @@ function HostView(props: {
       for (const pid of pids) {
         const proc = procs[pid];
         if (proc === undefined) continue;
-        if (
-          String(pid).includes(q) ||
-          proc.user.toLowerCase().includes(q) ||
-          proc.command.toLowerCase().includes(q) ||
-          proc.cwd.toLowerCase().includes(q)
-        )
+        if (processMatches(pid, proc, q))
           filtered.push(pid);
       }
     }
-    filtered.sort(pidComparator(key, procs));
+    filtered.sort(processComparator(key, procs));
     return filtered;
   });
 
@@ -1373,18 +1389,31 @@ function HostView(props: {
           system={currentSystem()}
           raisedAt={(id) => props.raisedSince(props.host, id)}
         />
-        <HistoryChart
-          points={points()}
-          latest={latestSample()}
-          streamError={streamError()}
-          windowKey={historyWindow()}
-          onWindow={setHistoryWindow}
+        <SourceErrorNotice
+          facts={mergeSourceErrorFacts(
+            partialSourceFacts(),
+            sourceErrorFacts([system.error(), processesSub.error()]),
+          )}
         />
-        <CpuStrip coreIds={coreIds()} getCore={(id) => cores.byKey(id)?.()} />
-        <NetStrip
-          ifaceNames={ifaceNames()}
-          getNic={(name) => nics.byKey(name)?.()}
-        />
+        <div class="grid xl:grid-cols-[minmax(24rem,2fr)_minmax(0,3fr)]">
+          <div class="min-w-0 xl:border-r xl:border-gray-200 dark:xl:border-gray-800">
+            <HistoryChart
+              points={points()}
+              latest={latestSample()}
+              streamError={streamError()}
+              windowKey={historyWindow()}
+              onWindow={setHistoryWindow}
+            />
+          </div>
+          <div class="min-w-0">
+            <CpuStrip coreIds={coreIds()} getCore={(id) => cores.byKey(id)?.()} />
+            <NetStrip
+              ifaceNames={ifaceNames()}
+              getNic={(name) => nics.byKey(name)?.()}
+            />
+          </div>
+        </div>
+        <UnclaimedListeners listeners={unclaimedListenerValues()} />
         <FilterBar
           filter={filter()}
           onFilter={setFilter}
@@ -1428,36 +1457,6 @@ function HostView(props: {
   );
 }
 
-// Compare two PIDs by looking the procs up directly in the store. Cells
-// the comparator touches become tracked deps of the surrounding memo —
-// that's intentional: when cpuPct changes, the sort order must change
-// with it. Sorting ~500 numbers is microseconds; the prior bottleneck
-// was the DOM rebuild, not the sort.
-function pidComparator(
-  key: SortKey,
-  procs: Record<Pid, Process>,
-): (a: Pid, b: Pid) => number {
-  // visiblePids() pre-filters out missing entries, so the indexed
-  // lookups in here are always defined — assert past noUncheckedIndexedAccess.
-  if (key === "cpu")
-    return (a, b) => procs[b]!.cpuPct - procs[a]!.cpuPct || a - b;
-  if (key === "mem")
-    return (a, b) => procs[b]!.rssBytes - procs[a]!.rssBytes || a - b;
-  if (key === "uptime")
-    return (a, b) => {
-      const aStarted = procs[a]!.startedAtMs;
-      const bStarted = procs[b]!.startedAtMs;
-      // Earlier start means longer uptime. Keep unavailable timestamps after
-      // known ones, then use pid as the stable tie-breaker.
-      if (aStarted === null) return bStarted === null ? a - b : 1;
-      if (bStarted === null) return -1;
-      return aStarted - bStarted || a - b;
-    };
-  if (key === "user")
-    return (a, b) => procs[a]!.user.localeCompare(procs[b]!.user) || a - b;
-  return (a, b) => a - b;
-}
-
 function Header(props: {
   system: ReturnType<() => typeof DEFAULT_SYSTEM>;
   /** The status WORD beside the dot — `connectionPhaseOf(entryState)`, not a phase
@@ -1479,8 +1478,8 @@ function Header(props: {
   return (
     <div class="border-b border-gray-200 dark:border-gray-800">
       <UsageBar pct={pct()} />
-      <div class="flex items-center justify-between px-4 py-2">
-        <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300">
+        <div class="flex items-center gap-2 text-sm">
           <span class="font-semibold">drishti</span>
           <span class="text-gray-400">·</span>
           <span>
@@ -1491,16 +1490,10 @@ function Header(props: {
             <HostDot state={props.entryState} />
             {props.phase}
           </span>
-          <span class="text-gray-500">·</span>
           <span class="text-gray-500">
             {props.count} {props.count === 1 ? "process" : "processes"}
           </span>
         </div>
-        <span class="text-xs text-gray-500">
-          poll: every {(props.system.pollIntervalMs / 1000).toFixed(1)}s
-        </span>
-      </div>
-      <div class="flex flex-wrap gap-4 border-t border-gray-100 px-4 py-1.5 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-300">
         <span>
           load{" "}
           <span class="font-semibold">
@@ -1536,6 +1529,9 @@ function Header(props: {
         </span>
         <span>
           os <span class="font-semibold">{props.system.os}</span>
+        </span>
+        <span class="ml-auto text-gray-500">
+          poll {(props.system.pollIntervalMs / 1000).toFixed(1)}s
         </span>
       </div>
     </div>
@@ -1580,8 +1576,8 @@ function FilterBar(props: {
     <MetricSection class="flex items-center gap-2">
       <input
         type="text"
-        placeholder="filter pid / user / command / cwd"
-        class="w-64 rounded border border-gray-300 bg-gray-50 px-2 py-0.5 text-xs focus:border-emerald-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800"
+        placeholder="filter pid / command / port / errno"
+        class="w-56 rounded border border-gray-300 bg-gray-50 px-2 py-0.5 text-xs focus:border-emerald-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800"
         value={props.filter}
         onInput={(e) => props.onFilter(e.currentTarget.value)}
       />
@@ -1589,6 +1585,50 @@ function FilterBar(props: {
         showing {props.visible} of {props.total}
       </span>
     </MetricSection>
+  );
+}
+
+function UnclaimedListeners(props: {
+  listeners: readonly UnclaimedListener[];
+}) {
+  const [expanded, setExpanded] = createSignal(false);
+  return (
+    <Show when={props.listeners.length > 0}>
+      <MetricSection class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
+        <button
+          type="button"
+          class="cursor-pointer font-semibold text-amber-700 hover:underline dark:text-amber-400"
+          aria-expanded={expanded()}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {props.listeners.length} unclaimed {props.listeners.length === 1 ? "listener" : "listeners"}
+        </button>
+        <button
+          type="button"
+          class="cursor-pointer text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+          aria-label={expanded() ? "Hide unclaimed listeners" : "Show unclaimed listeners"}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded() ? "− hide" : "+ show"}
+        </button>
+        <Show when={expanded()}>
+          <For each={props.listeners.slice(0, 12)}>
+            {(listener) => (
+              <span
+                class="tabular-nums text-gray-600 dark:text-gray-400"
+                title="Socket observed; owning pid could not be attributed"
+              >
+                {formatListenerAddress(listener.address, listener.port)}
+                <Show when={listener.uid !== null}> uid {listener.uid}</Show>
+              </span>
+            )}
+          </For>
+          <Show when={props.listeners.length > 12}>
+            <span class="text-gray-400">+{props.listeners.length - 12} more</span>
+          </Show>
+        </Show>
+      </MetricSection>
+    </Show>
   );
 }
 
@@ -1701,15 +1741,24 @@ function FailedCard(props: {
   // lines carry the why. Each keeps its `source` — whether drishti's own parent
   // said it or the far end did is often the diagnosis.
   const logTail = createMemo(() => props.evidence.slice(-8));
+  const sourceFacts = createMemo(() =>
+    sourceErrorFacts([
+      props.reason,
+      ...props.evidence.map(({ line }) => line),
+    ]),
+  );
   return (
     <div class="mx-auto max-w-lg rounded border border-red-500/40 bg-red-500/5 p-4 text-left">
       <div class="mb-1 text-lg text-red-500">Couldn't reach this host</div>
       <div class="mb-2 text-xs text-gray-500">
         Gave up after repeated connection failures.
       </div>
-      <pre class="mb-3 overflow-x-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
-        {props.reason}
-      </pre>
+      <SourceErrorNotice facts={sourceFacts()} />
+      <Show when={sourceFacts().length === 0}>
+        <pre class="mb-3 overflow-x-auto whitespace-pre-wrap rounded bg-gray-100 p-2 text-left text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+          {props.reason}
+        </pre>
+      </Show>
       <Show when={logTail().length > 0}>
         <div class="mb-1 text-xs text-gray-500">Evidence</div>
         <pre
@@ -1739,18 +1788,38 @@ function FailedCard(props: {
   );
 }
 
+/** Named osfacts source failures. Partial frames keep their surviving facts;
+ * this notice makes the unavailable source explicit alongside them. */
+function SourceErrorNotice(props: { facts: readonly SourceErrorFact[] }) {
+  return (
+    <Show when={props.facts.length > 0}>
+      <section class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1 text-xs">
+        <div class="shrink-0 font-semibold text-amber-700 dark:text-amber-400">
+          Observation source failure
+        </div>
+        <div class="flex flex-wrap gap-x-3 gap-y-1 text-gray-700 dark:text-gray-300">
+          <For each={props.facts}>
+            {(fact) => (
+              <span class="tabular-nums">
+                <span class="font-semibold">{fact.source}</span> · {fact.facet} ·{" "}
+                {fact.code}
+                <span class="ml-1 text-gray-400">({fact.operation})</span>
+              </span>
+            )}
+          </For>
+        </div>
+      </section>
+    </Show>
+  );
+}
+
 function ProcessTable(props: {
   pids: readonly Pid[];
   processes: Accessor<Record<Pid, Process>>;
   toLocalTime: (remoteMs: number) => number | null;
-  sortKey: SortKey;
-  onSort: (k: SortKey) => void;
+  sortKey: ProcessSortKey;
+  onSort: (k: ProcessSortKey) => void;
 }) {
-  // One coarse clock for the whole table — process start timestamps are
-  // immutable, but their elapsed labels must still advance while a row stays
-  // mounted. `formatUptime` only displays minute-or-coarser precision, so one
-  // shared minute tick avoids an interval per process and needless per-second
-  // work across a large table.
   const [nowMs, setNowMs] = createSignal(Date.now());
   const clock = setInterval(() => setNowMs(Date.now()), 60_000);
   onCleanup(() => clearInterval(clock));
@@ -1760,8 +1829,8 @@ function ProcessTable(props: {
     // below its (612-row) content so it — and only it — scrolls. The sibling
     // vitals keep their intrinsic `min-height: auto`, so they stay pinned.
     <div class="min-h-0 flex-1 overflow-y-auto">
-      <table class="w-full">
-        <thead class="sticky top-0 bg-gray-50 text-xs uppercase text-gray-500 dark:bg-gray-900 dark:text-gray-400">
+      <table class="w-full text-[13px] leading-5">
+        <thead class="sticky top-0 bg-gray-50 text-[10px] uppercase leading-4 text-gray-500 dark:bg-gray-900 dark:text-gray-400">
           <tr class="border-b border-gray-200 dark:border-gray-800">
             <SortableTh
               label="PID"
@@ -1782,6 +1851,12 @@ function ProcessTable(props: {
               onClick={() => props.onSort("cpu")}
             />
             <SortableTh
+              label="PPID"
+              align="right"
+              active={props.sortKey === "ppid"}
+              onClick={() => props.onSort("ppid")}
+            />
+            <SortableTh
               label="MEM"
               align="right"
               active={props.sortKey === "mem"}
@@ -1793,7 +1868,12 @@ function ProcessTable(props: {
               active={props.sortKey === "uptime"}
               onClick={() => props.onSort("uptime")}
             />
-            <th class="px-3 py-1.5 text-left">COMMAND</th>
+            <SortableTh
+              label="COMMAND"
+              align="left"
+              active={props.sortKey === "command"}
+              onClick={() => props.onSort("command")}
+            />
           </tr>
         </thead>
         <tbody>
@@ -1802,8 +1882,8 @@ function ProcessTable(props: {
               <ProcessRow
                 pid={pid}
                 processes={props.processes}
-                toLocalTime={props.toLocalTime}
                 nowMs={nowMs()}
+                toLocalTime={props.toLocalTime}
               />
             )}
           </For>
@@ -1823,22 +1903,47 @@ function ProcessTable(props: {
 function ProcessRow(props: {
   pid: Pid;
   processes: Accessor<Record<Pid, Process>>;
-  toLocalTime: (remoteMs: number) => number | null;
   nowMs: number;
+  toLocalTime: (remoteMs: number) => number | null;
 }) {
   const selection = useContext(SelectionContext);
   const proc = () => props.processes()[props.pid];
-  const cpu = () => proc()?.cpuPct ?? 0;
-  const rssBytes = () => proc()?.rssBytes ?? 0;
-  // The timestamp was minted on the monitored host. The pure formatter
-  // reprojects it through the map entry's measured clock offset before
-  // comparing it with the browser clock.
   const uptime = () =>
-    formatProcessUptime(
-      proc()?.startedAtMs,
+    processRowUptime(
+      proc()?.startedAtMs ?? null,
       props.nowMs,
       props.toLocalTime,
     );
+  const cell = (
+    facet:
+      | "proc"
+      | "ports"
+      | "mem"
+      | "start_time"
+      | "cpu_time"
+      | "uid"
+      | "cwd",
+    readableText: string,
+  ) => {
+    const process = proc();
+    return process === undefined
+      ? { text: readableText, warning: false }
+      : processRowCell(process, facet, readableText);
+  };
+  const blindErrno = () => {
+    const process = proc();
+    return process === undefined ? null : fullyBlindErrno(process);
+  };
+  const fullyBlind = () => blindErrno() !== null;
+  const memoryCell = () => {
+    const rss = proc()?.rssBytes;
+    return cell("mem", rss === null || rss === undefined ? "—" : formatBytes(rss));
+  };
+  const cpuCell = () => cell("cpu_time", `${(proc()?.cpuPct ?? 0).toFixed(1)}%`);
+  const userCell = () => cell("uid", proc()?.user || "—");
+  const uptimeCell = () => cell("start_time", uptime());
+  const commandCell = () => cell("proc", proc()?.name || "(unreadable)");
+  const cwdCell = () => cell("cwd", proc()?.cwd ?? "—");
   const isSelected = () => selection?.selectedPid() === props.pid;
   return (
     <tr
@@ -1847,31 +1952,53 @@ function ProcessRow(props: {
         isSelected()
           ? "bg-emerald-50 dark:bg-emerald-900/30"
           : "hover:bg-gray-50 dark:hover:bg-gray-800/40"
-      }`}
+      } ${fullyBlind() ? "opacity-50" : ""}`}
     >
-      {/* The five leading columns shrink to their content via `w-px` +
+      {/* The leading fact columns shrink to their content via `w-px` +
           `whitespace-nowrap`: `w-px` makes each column's preferred width
           tiny so the auto-layout table collapses it to its (nowrap) content
-          width, leaving COMMAND's `w-full` as the sole absorber of the row's
-          slack. Without this, COMMAND's `max-w-0` caps its growth and the
-          leftover width inflates USER instead; and an un-nowrapped MEM cell
-          wraps "817.5 MB" onto two lines in the narrowed column. */}
-      <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums">
-        {props.pid}
-      </td>
-      <td class="w-px whitespace-nowrap px-3 py-0.5 text-left">
-        {proc()?.user ?? ""}
+          width, leaving COMMAND as the sole absorber of the row's slack. */}
+      <td class="w-px whitespace-nowrap px-2 py-0 text-right tabular-nums">
+        {fullyBlind() ? "—" : props.pid}
       </td>
       <td
-        class={`w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums ${processPctColor(cpu())}`}
+        class={`w-px max-w-32 truncate whitespace-nowrap px-2 py-0 text-left ${
+          userCell().warning
+            ? "text-amber-600 dark:text-amber-400"
+            : "text-gray-700 dark:text-gray-300"
+        }`}
       >
-        {cpu().toFixed(1)}
+        <CompactCellValue cell={userCell()} />
       </td>
-      <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
-        {formatBytes(rssBytes())}
+      <td
+        class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
+          cpuCell().warning
+            ? "text-amber-600 dark:text-amber-400"
+            : processPctColor(proc()?.cpuPct ?? 0)
+        }`}
+      >
+        <CompactCellValue cell={cpuCell()} />
       </td>
-      <td class="w-px whitespace-nowrap px-3 py-0.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
-        {uptime()}
+      <td class="w-px whitespace-nowrap px-2 py-0 text-left">
+        {fullyBlind() ? "—" : (proc()?.ppid ?? 0)}
+      </td>
+      <td
+        class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
+          memoryCell().warning
+            ? "text-amber-600 dark:text-amber-400"
+            : "text-gray-700 dark:text-gray-300"
+        }`}
+      >
+        <CompactCellValue cell={memoryCell()} />
+      </td>
+      <td
+        class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
+          uptimeCell().warning
+            ? "text-amber-600 dark:text-amber-400"
+            : "text-gray-700 dark:text-gray-300"
+        }`}
+      >
+        <CompactCellValue cell={uptimeCell()} />
       </td>
       {/* COMMAND absorbs the row's residual width and ellipsizes at the cell
           edge. Both classes are load-bearing in `table-layout: auto`: `w-full`
@@ -1879,27 +2006,69 @@ function ProcessRow(props: {
           `max-w-0` stops the `truncate` nowrap content from ballooning the cell
           past the card (the card clips horizontally, so an un-capped cell would
           run off-screen with no ellipsis). Dropping either one breaks it. */}
-      <td class="w-full max-w-0 truncate px-3 py-0.5 text-left text-gray-700 dark:text-gray-300">
-        <span>{proc()?.command ?? ""}</span>
-        <Show when={proc()?.cwd}>
-          {(cwd) => (
-            <span class="ml-2 text-gray-400 dark:text-gray-500" title="cwd">
-              @ {cwd()}
+      <td
+        class={`w-full max-w-0 px-2 py-0 text-left ${
+          commandCell().warning
+            ? "text-amber-600 dark:text-amber-400"
+            : "text-gray-700 dark:text-gray-300"
+        }`}
+      >
+        <div class="flex min-w-0 items-baseline gap-2">
+          <Show
+            when={blindErrno()}
+            fallback={
+              <span class="min-w-0 max-w-[70%] truncate">
+                <CompactCellValue cell={commandCell()} />
+              </span>
+            }
+          >
+            {(errno) => (
+              <span class="flex items-center gap-1">
+                unreadable
+                <UnreadableMark errno={errno()} />
+              </span>
+            )}
+          </Show>
+          <Show when={!fullyBlind()}>
+            <span class="text-gray-500">·</span>
+            <span
+              class={`min-w-0 truncate text-xs ${
+                cwdCell().warning
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-gray-400"
+              }`}
+            >
+              <CompactCellValue cell={cwdCell()} />
             </span>
-          )}
-        </Show>
+          </Show>
+        </div>
       </td>
     </tr>
   );
 }
 
-// The short, glanceable name for a process: the basename of its first argv
-// token. `/usr/bin/node --foo` → `node`. The panel's full `command` row still
-// shows the whole string; this is just the header label.
-function commandName(command: string): string {
-  const first = command.split(" ")[0] ?? command;
-  const base = first.split("/").pop() ?? first;
-  return base || command;
+function UnreadableMark(props: { errno: string }) {
+  const marker = () => unreadableTableMarker(props.errno);
+  return (
+    <span
+      class="cursor-help text-amber-500/60 hover:text-amber-500 dark:text-amber-400/60 dark:hover:text-amber-400"
+      title={marker().title}
+      aria-label={marker().ariaLabel}
+    >
+      <span aria-hidden="true">{marker().glyph}</span>
+    </span>
+  );
+}
+
+function CompactCellValue(props: { cell: ProcessTableCellPresentation }) {
+  return (
+    <Show
+      when={props.cell.warning}
+      fallback={props.cell.text}
+    >
+      <UnreadableMark errno={props.cell.text} />
+    </Show>
+  );
 }
 
 // One label/value pair in the detail panel's grid. Returns the <dt>/<dd> as a
@@ -1913,13 +2082,8 @@ function DetailRow(props: { label: string; children: JSX.Element }) {
   );
 }
 
-// Expanded view of one selected process — a sibling of the table (not an
-// overlay), rendered by `HostView` only while a row is selected. Pure
-// renderer fed the resolved `Process`, so the phase-2 surface fields
-// (ppid / state / nice / threads / startedAtMs) flow in through `props.process`
-// with no signature change. The table truncates `command` with CSS and tucks
-// `cwd` inline after an `@`; here both get a full untruncated line, alongside
-// the exact cpu/memory numbers and a memory share of the host total.
+// Expanded view of one selected process — one atomic osfacts reading's
+// process identity, listeners, and honest inspection status.
 function ProcessDetail(props: {
   pid: Pid;
   process: Process;
@@ -1940,6 +2104,12 @@ function ProcessDetail(props: {
   onKill: (signal: "TERM" | "KILL") => Promise<{ ok: boolean; error?: string }>;
 }) {
   const p = () => props.process;
+  const memoryText = () =>
+    processDetailMemoryText(p().rssBytes, props.memTotal);
+  const startedText = () => {
+    const started = p().startedAtMs;
+    return started === null ? "—" : new Date(started).toLocaleString();
+  };
   // Kill-action state: "idle" | "killing" | <error message to show inline>.
   const [killState, setKillState] = createSignal<string>("idle");
   const runKill = async (signal: "TERM" | "KILL"): Promise<void> => {
@@ -1953,15 +2123,6 @@ function ProcessDetail(props: {
       setKillState((err as Error).message);
     }
   };
-  // Resident memory as a share of host RAM — the same guarded "part of a
-  // total" formula `memPct` uses for the host header.
-  const memShare = () => pctOf(p().rssBytes, props.memTotal);
-  const stateLabel = () => {
-    const s = p().state;
-    if (s === "") return "—";
-    const label = PROCESS_STATE_LABELS[s];
-    return label ? `${label} (${s})` : s;
-  };
   return (
     <div class="border-b border-gray-200 bg-emerald-50/50 px-4 py-3 dark:border-gray-800 dark:bg-emerald-900/10">
       <div class="mb-2 flex items-baseline justify-between gap-2">
@@ -1970,7 +2131,9 @@ function ProcessDetail(props: {
             {props.pid}
           </span>
           <span class="text-gray-400">·</span>
-          <span class="font-semibold">{commandName(p().command)}</span>
+          <span class="font-semibold">
+            {p().name || "unreadable"}
+          </span>
         </div>
         <button
           type="button"
@@ -1984,22 +2147,38 @@ function ProcessDetail(props: {
       </div>
       <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-xs">
         <DetailRow label="command">
-          <span class="break-all">{p().command}</span>
-        </DetailRow>
-        <Show when={p().cwd}>
-          <DetailRow label="cwd">
-            <span class="break-all">{p().cwd}</span>
-          </DetailRow>
-        </Show>
-        <DetailRow label="cpu">
-          <span class="tabular-nums">{p().cpuPct.toFixed(1)}%</span>
-        </DetailRow>
-        <DetailRow label="memory">
-          <span class="tabular-nums">
-            {formatBytes(p().rssBytes)} · {memShare().toFixed(1)}%
+          <span
+            class={`break-all ${
+              processTableCell(p(), "argv", "").warning
+                ? "text-amber-600 dark:text-amber-400"
+                : ""
+            }`}
+          >
+            {processTableCell(p(), "argv", p().command || "—").text}
           </span>
         </DetailRow>
-        <DetailRow label="state">{stateLabel()}</DetailRow>
+        <DetailRow label="cwd">
+          <span
+            class={
+              processTableCell(p(), "cwd", "").warning
+                ? "text-amber-600 dark:text-amber-400"
+                : "break-all"
+            }
+          >
+            {processTableCell(p(), "cwd", p().cwd ?? "—").text}
+          </span>
+        </DetailRow>
+        <DetailRow label="cpu">
+          <span
+            class={`tabular-nums ${
+              processTableCell(p(), "cpu_time", "").warning
+                ? "text-amber-600 dark:text-amber-400"
+                : processPctColor(p().cpuPct)
+            }`}
+          >
+            {processTableCell(p(), "cpu_time", `${p().cpuPct.toFixed(1)}%`).text}
+          </span>
+        </DetailRow>
         <DetailRow label="parent">
           <Show
             when={props.onSelectParent}
@@ -2017,23 +2196,85 @@ function ProcessDetail(props: {
             )}
           </Show>
         </DetailRow>
-        <DetailRow label="nice">
-          <span class="tabular-nums">{p().nice}</span>
+        <DetailRow label="state">
+          <span
+            class={`tabular-nums ${
+              processTableCell(p(), "status", "").warning
+                ? "text-amber-600 dark:text-amber-400"
+                : ""
+            }`}
+          >
+            {processTableCell(p(), "status", processStateText(p().state)).text}
+          </span>
         </DetailRow>
-        <Show when={p().threads}>
-          {(threads) => (
-            <DetailRow label="threads">
-              <span class="tabular-nums">{threads()}</span>
-            </DetailRow>
-          )}
+        <DetailRow label="nice">
+          <span
+            class={`tabular-nums ${
+              processTableCell(p(), "status", "").warning
+                ? "text-amber-600 dark:text-amber-400"
+                : ""
+            }`}
+          >
+            {processTableCell(p(), "status", p().nice?.toString() ?? "—").text}
+          </span>
+        </DetailRow>
+        <Show
+          when={
+            p().threads !== null ||
+            processThreadCell(p(), "").warning
+          }
+        >
+          <DetailRow label="threads">
+            <span
+              class={`tabular-nums ${
+                processThreadCell(p(), "").warning
+                  ? "text-amber-600 dark:text-amber-400"
+                  : ""
+              }`}
+            >
+              {processThreadCell(p(), p().threads?.toString() ?? "—").text}
+            </span>
+          </DetailRow>
         </Show>
-        <Show when={p().startedAtMs}>
-          {(ms) => (
-            <DetailRow label="started">
-              {new Date(ms()).toLocaleString()}
-            </DetailRow>
-          )}
-        </Show>
+        <DetailRow label="memory">
+          <span class="tabular-nums">{memoryText()}</span>
+        </DetailRow>
+        <DetailRow label="started">
+          <span class="tabular-nums">{startedText()}</span>
+        </DetailRow>
+        <DetailRow label="listeners">
+          <Show
+            when={p().listeners.length > 0}
+            fallback={<span class="text-gray-400">none observed</span>}
+          >
+            <span class="flex flex-wrap gap-x-3 gap-y-1 tabular-nums">
+              <For each={p().listeners}>
+                {(listener) => (
+                  <span title={`raw network-order address: ${listener.address}`}>
+                    {formatListenerAddress(listener.address, listener.port)}
+                    <Show when={listener.uid !== null}> uid {listener.uid}</Show>
+                  </span>
+                )}
+              </For>
+            </span>
+          </Show>
+        </DetailRow>
+        <DetailRow label="inspection">
+          <Show
+            when={p().unreadable.length > 0}
+            fallback={<span>all requested facets readable</span>}
+          >
+            <span class="flex flex-wrap gap-x-3 text-amber-600 dark:text-amber-400">
+              <For each={p().unreadable}>
+                {({ facet, errno }) => (
+                  <span>
+                    {facet} blind ({errno})
+                  </span>
+                )}
+              </For>
+            </span>
+          </Show>
+        </DetailRow>
       </dl>
       <div class="mt-2 flex items-center gap-2">
         <button
@@ -2073,7 +2314,7 @@ function SortableTh(props: {
   const alignClass = () =>
     props.align === "right" ? "text-right" : "text-left";
   return (
-    <th class={`px-3 py-1.5 ${alignClass()}`}>
+    <th class={`px-2 py-1 ${alignClass()}`}>
       <button
         type="button"
         class={`cursor-pointer ${props.active ? "text-emerald-600 dark:text-emerald-400" : ""}`}
@@ -2095,7 +2336,7 @@ function SortableTh(props: {
 function MetricSection(props: { class?: string; children: JSX.Element }) {
   return (
     <div
-      class={`border-b border-gray-200 px-4 py-2 dark:border-gray-800${props.class ? ` ${props.class}` : ""}`}
+      class={`border-b border-gray-200 px-3 py-1 dark:border-gray-800${props.class ? ` ${props.class}` : ""}`}
     >
       {props.children}
     </div>
@@ -2165,7 +2406,7 @@ function CpuStrip(props: {
     <MetricStrip
       label="CPU cores"
       items={props.coreIds}
-      gridClass="grid-cols-4 gap-2 md:grid-cols-8"
+      gridClass="grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] gap-x-3 gap-y-1"
     >
       {(id) => <CpuCoreCell id={id} get={() => props.getCore(id)} />}
     </MetricStrip>
@@ -2175,17 +2416,25 @@ function CpuStrip(props: {
 function CpuCoreCell(props: { id: CoreId; get: () => CpuCore | undefined }) {
   const core = createMemo(() => props.get());
   const pct = () => core()?.usagePct ?? 0;
+  const clock = () => cpuCoreFrequencyText(core()?.speedMHz);
   return (
-    <div class="flex items-center gap-1 text-xs">
-      <span class="w-6 shrink-0 text-gray-500 tabular-nums">c{props.id}</span>
-      <Bar
-        pct={pct()}
-        colorClass={coreUsageColor(pct())}
-        trackClass="h-2 flex-1 overflow-hidden rounded bg-gray-100 dark:bg-gray-800"
-      />
-      <span class="w-10 shrink-0 text-right tabular-nums text-gray-700 dark:text-gray-300">
-        {pct().toFixed(0)}%
-      </span>
+    <div class="flex flex-col" title={core()?.model ?? "CPU model unavailable"}>
+      <div class="flex items-center gap-1 text-xs">
+        <span class="w-6 shrink-0 text-gray-500 tabular-nums">c{props.id}</span>
+        <Bar
+          pct={pct()}
+          colorClass={coreUsageColor(pct())}
+          trackClass="h-2 flex-1 overflow-hidden rounded bg-gray-100 dark:bg-gray-800"
+        />
+        <span class="shrink-0 text-right tabular-nums text-gray-700 dark:text-gray-300">
+          {pct().toFixed(0)}%
+          <Show when={clock()}>
+            {(text) => (
+              <span class="ml-1 text-[9px] text-gray-400">{text()}</span>
+            )}
+          </Show>
+        </span>
+      </div>
     </div>
   );
 }
@@ -2204,7 +2453,7 @@ function NetStrip(props: {
     <MetricStrip
       label="network"
       items={props.ifaceNames}
-      gridClass="grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3"
+      gridClass="grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] gap-x-4 gap-y-0.5"
       primary={(name) => isActiveNic(props.getNic(name))}
     >
       {(name) => <NetCell name={name} get={() => props.getNic(name)} />}
@@ -2275,7 +2524,7 @@ function HistoryChart(props: {
       <Sparkline
         points={props.points}
         placeholder={sparklinePlaceholder(props.latest, props.streamError)}
-        class="h-24"
+        class="h-14"
       />
     </MetricSection>
   );

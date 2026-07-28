@@ -78,6 +78,8 @@
 <h1>“localhost” timed out — the host that needs no connection</h1>
 <p class="sub">Why the one tab that should <em>always</em> be green is the only one that’s red. <span class="pill">talk · --html</span></p>
 
+<div class="key"><strong>2026 mechanism update.</strong> This talk preserves the historical diagnosis that led to serve-first. The process mechanism it describes has since been deleted: current drishti uses the Nix-baked <code>osfacts snapshot --roots 1 --procs --ports</code> path on both linux and darwin, with no <code>lsof</code> fallback. The old command references below are evidence from the incident, not the current architecture.</div>
+
 <div class="key">
 <strong>The punchline.</strong> You’re right that <code>localhost</code> uses no network — and it doesn’t. But “no connection” isn’t “no handshake.” drishti treats <em>every</em> host uniformly: even localhost gets <code>nix-store&nbsp;--realise</code> → spawn the agent as a local stdio child → wait ≤30&nbsp;s for the first RPC. The agent enumerates <strong>all 956 processes before it starts answering</strong>, and on <code>zest</code> — a load-9.58 macOS box running <code>lsof</code> over its own process table — that enumeration overruns the 30&nbsp;s budget. The host that “should just work” is in fact the <em>worst</em> case in the fleet.
 </div>

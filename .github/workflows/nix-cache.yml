@@ -51,6 +51,9 @@ jobs:
           attic login --set-default oss https://cache.nixos.asia '${{ secrets.ATTIC_TOKEN }}'
           nix path-info --all | sort > "$RUNNER_TEMP/pre-build-paths"
 
+      - name: Test
+        run: nix develop --command just test
+
       - name: Build
         run: nix build -L --print-out-paths
 

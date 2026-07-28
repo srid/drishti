@@ -30,7 +30,8 @@ install:
       "$DRISHTI_KOLU_SHELL_QUOTE" @kolu/shell-quote \
       "$DRISHTI_KOLU_LOG" @kolu/log \
       "$DRISHTI_KOLU_SURFACE_APP" @kolu/surface-app \
-      "$DRISHTI_KOLU_SOLID_PWA_INSTALL" @kolu/solid-pwa-install'
+      "$DRISHTI_KOLU_SOLID_PWA_INSTALL" @kolu/solid-pwa-install \
+      "$DRISHTI_OSFACTS_CLIENT" osfacts-client'
 
 # Boot the parent server. Defaults to localhost; pass any number of
 # user@host targets after it. Exports DRISHTI_AGENT_DRVS_JSON (the

@@ -22,6 +22,8 @@
 #   DRISHTI_KOLU_LOG              — /nix/store path to @kolu/log source
 #                                    (the zero-dep logging leaf surface-remote
 #                                    imports — the log:Logger seam).
+#   DRISHTI_OSFACTS_CLIENT        — /nix/store path to osfacts-client source.
+#   DRISHTI_OSFACTS_BIN           — absolute path to the matched osfacts binary.
 #
 # All are hydrated into node_modules/@kolu/{surface,surface-remote,surface-map,shell-quote,log,surface-app,solid-pwa-install}
 # by scripts/hydrate-kolu-packages.sh (three callers: shell.nix
@@ -36,4 +38,6 @@
   DRISHTI_KOLU_SOLID_PWA_INSTALL = pkgs.kolu-solid-pwa-install;
   DRISHTI_KOLU_SHELL_QUOTE = pkgs.kolu-shell-quote;
   DRISHTI_KOLU_LOG = pkgs.kolu-log;
+  DRISHTI_OSFACTS_CLIENT = pkgs.osfacts-client;
+  DRISHTI_OSFACTS_BIN = "${pkgs.osfacts}/bin/osfacts";
 }

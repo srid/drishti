@@ -81,7 +81,8 @@ let
     } ''
     mkdir -p $out/bin
     makeWrapper ${resolvedPkgs.bun}/bin/bun $out/bin/drishti-agent \
-      --add-flags "${drishtiAgentBuilt}/lib/drishti/packages/agent/src/main.ts"
+      --add-flags "${drishtiAgentBuilt}/lib/drishti/packages/agent/src/main.ts" \
+      --set DRISHTI_OSFACTS_BIN "${resolvedPkgs.osfacts}/bin/osfacts"
   '';
 
   drishti-client = resolvedPkgs.runCommand "drishti-client"
@@ -128,5 +129,5 @@ let
 in
 {
   inherit drishti drishti-agent drishti-client drishtiBuilt drishtiAgentBuilt;
-  inherit (resolvedPkgs) kolu-surface kolu-surface-remote kolu-surface-map;
+  inherit (resolvedPkgs) kolu-surface kolu-surface-remote kolu-surface-map osfacts osfacts-client;
 }

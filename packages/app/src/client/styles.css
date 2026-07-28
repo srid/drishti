@@ -17,7 +17,7 @@
    * footer's rendered height (StatusFooter.tsx, intrinsic: it must stay
    * free to grow with env(safe-area-inset-bottom)) and the page's bottom
    * padding (App.tsx, which adds the same inset on top of this). */
-  --status-footer-height: 2.5rem;
+  --status-footer-height: 1.5rem;
 }
 
 html[data-theme="dark"] {
@@ -28,4 +28,15 @@ html[data-theme="dark"] {
 html[data-theme="light"] {
   background: #f7f8fb;
   color: #1a1d23;
+}
+
+/* Keep long fleet tab lists horizontally navigable without permanently
+ * spending a full row on Chrome's classic scrollbar. Trackpad/wheel scrolling
+ * and keyboard focus still move the strip. */
+.tab-strip-scroll {
+  scrollbar-width: none;
+}
+
+.tab-strip-scroll::-webkit-scrollbar {
+  display: none;
 }

@@ -42,7 +42,7 @@ export function StatusFooter(props: {
 }) {
   const pwa = useSurfaceApp();
   return (
-    <footer class="fixed inset-x-0 bottom-0 z-20 flex items-center justify-between border-t border-gray-200 bg-gray-50/95 px-3 pb-[max(0.25rem,env(safe-area-inset-bottom))] pt-1 font-mono text-xs backdrop-blur dark:border-gray-800 dark:bg-gray-950/95">
+    <footer class="fixed inset-x-0 bottom-0 z-20 flex items-center justify-between border-t border-gray-200 bg-gray-50/95 px-2 pb-[max(0.125rem,env(safe-area-inset-bottom))] pt-0.5 font-mono text-[10px] backdrop-blur dark:border-gray-800 dark:bg-gray-950/95">
       <span class="inline-flex items-center gap-1.5">
         <span class="text-[9px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
           srv

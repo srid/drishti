@@ -57,6 +57,8 @@
 
 <p>Status: <span class="tag ship">phases 1 &amp; 2 shipped</span> in the <code>feat/process-info-panel</code> PR. Phase 3 (per-process sparkline) deferred to <a href="https://github.com/srid/drishti/issues/21">issue #21</a>.</p>
 
+<p class="panel"><strong>2026 mechanism update.</strong> This page is a historical delivery record for the former platform-specific process reader. The live product now gets process identity and listening sockets from the Nix-baked <code>osfacts snapshot --roots 1 --procs --ports</code> contract on both platforms. The old <code>/proc</code>/<code>ps</code> metadata below is no longer read; per-process memory and age wait for osfacts OSF3 instead of being reimplemented downstream.</p>
+
 <h2>Motivation</h2>
 <p>The process table already renders every field a <code>Process</code> carried (<code>user, cpuPct, rssBytes, command, cwd</code>), but it <em>truncates</em> the command (CSS <code>max-w-md truncate</code>) and crams <code>cwd</code> inline after an <code>@</code>. There was no way to see a process's full command line, its full working directory, or any of the metadata an operator reaches for when triaging (parent, state, niceness, threads, how long it's been up). The feature is two complementary slices:</p>
 <ul>
