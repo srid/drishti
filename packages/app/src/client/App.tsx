@@ -64,7 +64,11 @@ import {
 } from "drishti-common/browser";
 import { reconcileRaiseTimes } from "./alertTiming";
 import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
-import { connectionOf, failureRecord } from "./entryStatusTone";
+import {
+  connectionOf,
+  connectionPhaseOf,
+  failureRecord,
+} from "./entryStatusTone";
 import { HostDot } from "./HostDot";
 import type { View } from "./view";
 import { searchForView, viewFromSearch } from "./urlState";
@@ -858,10 +862,6 @@ function FleetView(props: {
 function HostCard(props: { host: string; onSelect: () => void }) {
   const entry = hostMap.entry(props.host);
   const system = entry.cells.system.use({});
-  // SR9 — the fine connection (the word) rides the SAME entry as the dot; read it
-  // through `connectionOf` (the sole entry.state() seam) instead of a second
-  // `cells.connection` subscription (the drishti#102 split). Presentation unchanged.
-  const connection = () => connectionOf(entry.state());
   // The host's raised-alert set (kolu W5 `alerts` cell). A minimal pip on the
   // card surfaces "this host is in trouble" at a glance, alongside the OS
   // notification the app-scope `watchByEntry` fires — same source of truth. The
@@ -872,17 +872,18 @@ function HostCard(props: { host: string; onSelect: () => void }) {
   const alertCount = createMemo(() => alerts.value()?.items.length ?? 0);
 
   const sys = createMemo<SystemInfo>(() => system.value() ?? DEFAULT_SYSTEM);
-  const state = createMemo<ConnectionState>(
-    () => (connection() ?? DEFAULT_CONNECTION).phase,
-  );
   // The dot + readiness gate read the host MAP's `EntryStatus` fact
   // (floored on real transport liveness by `connectSurfaceMap`) — the
   // per-host `SurfaceHealth`/`app.health()` this used to gate on no longer
-  // exists now that every host rides the ONE admin transport. The status
-  // WORD stays driven by the richer `ConnectionState` cell (copying vs
-  // connecting vs the failure detail) — see `HostDot.tsx`'s docstring for
-  // why the dot and the word now read two different facts.
-  const entryState = createMemo<EntryState<{ reason: string }>>(() => entry.state());
+  // exists now that every host rides the ONE admin transport.
+  const entryState = createMemo<EntryState<{ reason: string }, ConnectionInfo>>(
+    () => entry.state(),
+  );
+  // SR9 — the WORD rides the SAME entry frame as the dot (never a second
+  // `cells.connection` subscription: the drishti#102 split). `connectionPhaseOf` is
+  // total over every arm, so a failed host reads "failed" in red rather than falling
+  // through the gate-closed `DEFAULT_CONNECTION` to an amber "connecting…".
+  const state = createMemo<ConnectionState>(() => connectionPhaseOf(entryState()));
   // CPU% and the core count are read straight off the `system` cell — the agent
   // folds them in (`system.cpuPct` / `system.coreCount`). The card used to open
   // the per-key `cpuCores` collection (one value stream PER core PER host) just
@@ -1111,9 +1112,14 @@ function HostView(props: {
   // `browser.ts`), routed through the ONE `interpretClientError` — no per-use-site
   // `onError` — in case a future dependency drift reintroduces this class of bug.
   const system = entry.cells.system.use();
+  const entryState = createMemo<EntryState<{ reason: string }, ConnectionInfo>>(
+    () => entry.state(),
+  );
   // SR9 — the word derives from the same entry the dot reads (no second subscription).
-  const connection = () => connectionOf(entry.state());
-  const entryState = createMemo<EntryState<{ reason: string }>>(() => entry.state());
+  // `connection()` is the LIVE payload, absent on a failed entry (kolu#2022); `phase()`
+  // is the word, total over every arm.
+  const connection = () => connectionOf(entryState());
+  const phase = createMemo<ConnectionState>(() => connectionPhaseOf(entryState()));
 
   // The host's raised-alert set (kolu W5 `alerts` cell). The fleet card shows a
   // count pip and the app fires an OS notification; the DETAIL view must EXPLAIN
@@ -1235,9 +1241,6 @@ function HostView(props: {
   );
 
   const currentSystem = createMemo(() => system.value() ?? DEFAULT_SYSTEM);
-  const currentConnection = createMemo(
-    () => connection() ?? DEFAULT_CONNECTION,
-  );
 
   // The standing failure, read off the ENTRY (`failureRecord`) rather than off the
   // live `connection.log` the overlay used to narrow on. Same seam the dot reads, so
@@ -1251,7 +1254,7 @@ function HostView(props: {
   // `connected`.
   const connectingView = () => (
     <ConnectingOverlay
-      connection={currentConnection()}
+      connection={connection()}
       failure={failure()}
       onReconnect={onReconnect}
     />
@@ -1350,24 +1353,21 @@ function HostView(props: {
     <>
       <Header
         system={currentSystem()}
-        connection={currentConnection()}
+        phase={phase()}
         entryState={entryState}
         count={allPids().length}
       />
-      {/* The readiness gate is now just the connection CELL's own state — the
-          per-host `SurfaceHealth` `<SurfaceGate>` used to fold (transport ∧
-          every sub's pending/error) no longer exists as a per-host fact now
-          that every host's data rides the ONE admin transport instead of its
-          own socket. `connectingView` covers both the cold-connect and the
-          not-yet-`connected` mirror cases the old fallback did; there is no
-          separate "degraded" amber notice left to distinguish a live-but-
+      {/* The readiness gate is the entry's own connection PHASE (`connectionPhaseOf`,
+          the same word the header paints) — the per-host `SurfaceHealth`
+          `<SurfaceGate>` used to fold (transport ∧ every sub's pending/error) no
+          longer exists as a per-host fact now that every host's data rides the ONE
+          admin transport instead of its own socket. `connectingView` covers both the
+          cold-connect and the not-yet-`connected` mirror cases the old fallback did;
+          there is no separate "degraded" amber notice left to distinguish a live-but-
           erroring sub from a still-warming one — each subscription below
           already surfaces its OWN error via its member's declared `client.onError`
           policy (SR11), routed through the ONE `interpretClientError`. */}
-      <Show
-        when={currentConnection().phase === "connected"}
-        fallback={connectingView()}
-      >
+      <Show when={phase() === "connected"} fallback={connectingView()}>
         <AlertsPanel
           ids={raisedIds()}
           system={currentSystem()}
@@ -1460,8 +1460,10 @@ function pidComparator(
 
 function Header(props: {
   system: ReturnType<() => typeof DEFAULT_SYSTEM>;
-  connection: ReturnType<() => typeof DEFAULT_CONNECTION>;
-  entryState: Accessor<EntryState<{ reason: string }>>;
+  /** The status WORD beside the dot — `connectionPhaseOf(entryState)`, not a phase
+   *  dug out of the live payload: a failed entry has no live payload to dig in. */
+  phase: ConnectionState;
+  entryState: Accessor<EntryState<{ reason: string }, ConnectionInfo>>;
   count: number;
 }) {
   // The component body runs ONCE at mount — when props.system is still
@@ -1485,11 +1487,9 @@ function Header(props: {
             <span class="text-gray-500">host:</span>{" "}
             <span class="font-semibold">{props.system.hostname || "—"}</span>
           </span>
-          <span
-            class={`flex items-center gap-1.5 ${STATE[props.connection.phase].text}`}
-          >
+          <span class={`flex items-center gap-1.5 ${STATE[props.phase].text}`}>
             <HostDot state={props.entryState} />
-            {props.connection.phase}
+            {props.phase}
           </span>
           <span class="text-gray-500">·</span>
           <span class="text-gray-500">
@@ -1593,7 +1593,11 @@ function FilterBar(props: {
 }
 
 function ConnectingOverlay(props: {
-  connection: ConnectionInfo;
+  /** The LIVE connection payload — `undefined` before the first frame lands, and on a
+   *  failed entry, which carries none at all (kolu#2022). Only the coming-up branch
+   *  below reads it; the failed branch renders off `failure` instead, so a missing
+   *  payload is never defaulted into a fabricated "connecting…". */
+  connection: ConnectionInfo | undefined;
   /** The entry's standing failure + its evidence (`failureRecord`), `null` while the
    *  host is merely coming up. This USED to be narrowed out of `connection` itself
    *  (`phase === "failed"`), a second authority that also lost the failure entirely
@@ -1604,13 +1608,14 @@ function ConnectingOverlay(props: {
   const c = () => props.connection;
   // The freshest parent progress line (e.g. "reconnecting in 4000ms…
   // (attempt 2/5)"). Display only — never parsed for control flow.
-  const lastProgress = () => c().log.at(-1)?.line ?? null;
+  const lastProgress = () => c()?.log.at(-1)?.line ?? null;
   // The pending-state headline. `disconnected` refines by cause
   // ("Host unreachable — retrying…" for a network fault); every other
   // state takes its static message. `cause` lives only on the `disconnected`
-  // arm, so narrow on `.phase` before reading it.
+  // arm, so narrow on `.phase` before reading it. No frame yet reads as the
+  // gate-closed default, which is exactly what that value means.
   const statusMessage = () => {
-    const conn = c();
+    const conn = c() ?? DEFAULT_CONNECTION;
     return conn.phase === "disconnected"
       ? disconnectedMessage(conn.cause)
       : STATE[conn.phase].message;
@@ -1623,14 +1628,15 @@ function ConnectingOverlay(props: {
   const [elapsedSec, setElapsedSec] = createSignal(0);
   createEffect(
     on(
-      () => c().phase,
+      () => c()?.phase,
       (state) => {
         setElapsedSec(0);
         // Only the in-progress states render the counter — `pending` is
         // the canonical "is this state in-flight" flag, so consult it
         // rather than leave the interval running in `connected`/`failed`
-        // where `elapsedSec()` is never read.
-        if (!STATE[state].pending) return;
+        // where `elapsedSec()` is never read. No payload = nothing in flight
+        // to count (a failed entry), so the interval never starts.
+        if (state === undefined || !STATE[state].pending) return;
         const startedAt = performance.now();
         const id = setInterval(
           () =>

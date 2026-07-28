@@ -19,13 +19,22 @@
  * connected host, so this steady-state joint-render assertion at the client's sole
  * `entry.state()` seam is the achievable realization of the "dot AND word agree in
  * one settled frame" invariant.
+ *
+ * kolu#2022 reopened the same defect on the FAILED arm — see the failed-frame case at
+ * the bottom, which is why the word goes through `connectionPhaseOf` rather than
+ * defaulting `connectionOf`'s absence.
  */
 import type { EntryState } from "@kolu/surface-map";
 import { testMembershipId } from "@kolu/surface-map/testing";
 import { describe, expect, it } from "bun:test";
 import type { ConnectionInfo } from "drishti-common/browser";
 import { STATE } from "./connectionColors";
-import { connectionOf, dotClass, statusTextClass } from "./entryStatusTone";
+import {
+  connectionOf,
+  connectionPhaseOf,
+  dotClass,
+  statusTextClass,
+} from "./entryStatusTone";
 
 /** One settled connected frame — the SINGLE object the dot AND the word read. */
 const connectedFrame: EntryState<{ reason: string }, ConnectionInfo> = {
@@ -83,5 +92,51 @@ describe("connection authority (drishti#102 regression)", () => {
     expect(dotClass(warmingFrame)).not.toContain("emerald"); // dot: not green
     const conn = connectionOf(warmingFrame);
     expect(STATE[conn!.phase].pending).toBe(true); // word: in-flight, agrees
+  });
+
+  // kolu#2022 — the same "one frame, two disagreeing renders" defect, on the OTHER
+  // arm. A failed entry carries no live `connection` at all now (a live word is
+  // work-in-flight; a failed host has none), so the old
+  // `connectionOf(...) ?? DEFAULT_CONNECTION` read a gate-closed placeholder whose
+  // phase is `connecting` — painting an amber "connecting…" beside the red dot, with
+  // the real reason sitting right there on the entry. Nothing covered this frame, and
+  // before kolu#2022 it already bit whenever the liveness floor dropped `connection`
+  // off a failed entry (a dead admin link — juspay/kolu#2007). `connectionPhaseOf` is
+  // the fence: the word for a failed entry comes off the coarse arm the dot reads.
+  it("a failed frame's word is failed — never defaulted to connecting", () => {
+    const failedFrame: EntryState<{ reason: string }, ConnectionInfo> = {
+      kind: "failed",
+      membershipId: testMembershipId(),
+      failure: { reason: "ssh exited with code 255" },
+      evidence: [{ source: "local", line: "ssh: connect to host box port 22" }],
+    };
+
+    // There is no live payload to read — the arm does not carry one.
+    expect(connectionOf(failedFrame)).toBeUndefined();
+
+    // …and the word says so, in the dot's own tone.
+    const phase = connectionPhaseOf(failedFrame);
+    expect(phase).toBe("failed");
+    expect(STATE[phase].text).toContain("red");
+    expect(STATE[phase].pending).toBe(false); // steady — nothing is in flight
+    expect(dotClass(failedFrame)).toContain("red");
+    expect(statusTextClass(failedFrame)).toContain("red");
+  });
+
+  // The live arms keep their own fine phase — the fold above is a failed-arm answer,
+  // not a coarsening of the word to `EntryStatus.kind`.
+  it("keeps the live arms' fine phase (provisioning is not flattened to warming)", () => {
+    const provisioningFrame: EntryState<{ reason: string }, ConnectionInfo> = {
+      kind: "warming",
+      membershipId: testMembershipId(),
+      connection: {
+        phase: "provisioning",
+        log: [],
+        sinceMs: 0,
+        campaignEpoch: 0,
+      },
+    };
+    expect(connectionPhaseOf(provisioningFrame)).toBe("provisioning");
+    expect(connectionPhaseOf(connectedFrame)).toBe("connected");
   });
 });

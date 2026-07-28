@@ -20,7 +20,11 @@
  */
 
 import type { EntryState, FailureEvidence } from "@kolu/surface-map";
-import type { ConnectionInfo } from "drishti-common/browser";
+import {
+  type ConnectionInfo,
+  type ConnectionState,
+  DEFAULT_CONNECTION,
+} from "drishti-common/browser";
 
 // A pure kind→tone lookup as a `Record` keyed on the full `EntryState["kind"]`
 // union — so adding a fourth displayed kind is a compile error here
@@ -117,9 +121,39 @@ export function statusPending(status: EntryState): boolean {
  * `serveHostMap` resolve. Deriving the word HERE — the sole `entry.state()` seam,
  * beside `dotClass` — means the dot and the word cannot disagree: there is one
  * source. A `not-a-member` entry (never reached) carries no connection.
+ *
+ * Neither does a FAILED one, since kolu#2022: a live word is work-in-flight and a
+ * failed entry has none — its post-mortem is the `failureRecord` instead. So this
+ * returns the payload only for the two LIVE arms, and callers that paint a word
+ * must go through `connectionPhaseOf` rather than defaulting the absence.
  */
 export function connectionOf<F>(
   status: EntryState<F, ConnectionInfo>,
 ): ConnectionInfo | undefined {
-  return status.kind === "not-a-member" ? undefined : status.connection;
+  return status.kind === "not-a-member" || status.kind === "failed"
+    ? undefined
+    : status.connection;
+}
+
+/** The connection PHASE to PAINT beside the dot — the one word authority, total over
+ *  every `EntryState` arm.
+ *
+ *  This exists because `connectionOf(...) ?? DEFAULT_CONNECTION` is a TRAP on a failed
+ *  entry. `DEFAULT_CONNECTION` is the gate-closed placeholder for "no frame has arrived
+ *  yet", and its phase is `connecting` — so defaulting a failed entry's absent payload
+ *  painted an amber "connecting…" word beside the red dot, with the real reason sitting
+ *  right there on the entry. That was drishti#102's split reopened on the other side:
+ *  one frame, two disagreeing renders. Before kolu#2022 it only bit when the liveness
+ *  floor dropped `connection` off a failed entry (a dead admin link — exactly
+ *  juspay/kolu#2007); now the failed arm carries no payload at ALL, so the default
+ *  would fire on every failed host.
+ *
+ *  A failed entry's word is `failed`, read off the coarse arm the dot reads. Only the
+ *  live arms fall back to `DEFAULT_CONNECTION`'s phase, which is what that value means. */
+export function connectionPhaseOf(
+  status: EntryState<{ reason: string }, ConnectionInfo>,
+): ConnectionState {
+  return status.kind === "failed"
+    ? "failed"
+    : (connectionOf(status)?.phase ?? DEFAULT_CONNECTION.phase);
 }
