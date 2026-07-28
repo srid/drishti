@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { type AgentBinaryCache, resolveSystem } from "@kolu/surface-remote";
+import { agentBinaryCache, resolveSystem } from "@kolu/surface-remote";
 import { resolveDrvForHost } from "./archMap";
 
-const TEST_BINARY_CACHE: AgentBinaryCache = {
+const TEST_BINARY_CACHE = agentBinaryCache({
   substituters: ["https://cache.example.org"],
   trustedPublicKeys: ["example:AAAA"],
-};
+});
 
 describe("resolveDrvForHost", () => {
   it("returns the .drv from the map when localhost's system is present", async () => {

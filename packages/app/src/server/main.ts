@@ -36,6 +36,10 @@ import { WebSocketServer } from "ws";
 import { z } from "zod";
 import { gateWsOrigin, parseAllowedOrigins } from "@kolu/surface/ws-origin";
 import {
+  type AgentBinaryCache,
+  agentBinaryCache,
+} from "@kolu/surface-remote";
+import {
   gateStaleSocket,
   installSurfaceApp,
   startWsHeartbeat,
@@ -103,13 +107,13 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
-  const binaryCacheSchema = z.object({
-    substituters: z.array(z.string().min(1)).min(1),
-    trustedPublicKeys: z.array(z.string().min(1)).min(1),
-  });
-  let binaryCache: z.infer<typeof binaryCacheSchema>;
+  // `agentBinaryCache` is surface-remote's own smart constructor: it owns the
+  // "could this declaration act?" gate (non-empty, non-blank, trimmed) and is
+  // the ONLY way to produce the nominal AgentBinaryCache. Validating here
+  // instead would be a second, drifting copy of that gate.
+  let binaryCache: AgentBinaryCache;
   try {
-    binaryCache = binaryCacheSchema.parse(JSON.parse(binaryCacheJson));
+    binaryCache = agentBinaryCache(JSON.parse(binaryCacheJson));
   } catch (err) {
     log(`DRISHTI_AGENT_BINARY_CACHE: invalid — ${(err as Error).message}`);
     process.exit(1);
