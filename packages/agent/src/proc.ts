@@ -1,9 +1,9 @@
 /** Cross-platform host observation through osfacts V2.
  *
- * osfacts is the only process, socket, CPU, memory, swap, uptime, network and
- * disk fact source. Node's os module is used only for host identity and OS
- * selection; there is no lsof/ps, /proc, sysctl, vm_stat, netstat or statfs
- * fallback here.
+ * osfacts is authoritative for process identity, sockets, and host telemetry.
+ * On Darwin, Apple's privileged ps recovers only per-process CPU/RSS facts
+ * osfacts explicitly marks unreadable; it never overwrites readable facts.
+ * Node's os module is used only for host identity and OS selection.
  */
 
 import { hostname, platform } from "node:os";
@@ -30,6 +30,11 @@ import {
   OsfactsSourceError,
   osfactsSourceStatus,
 } from "drishti-common/source-errors";
+import { readDarwinProcessUsage } from "./darwinPs";
+import {
+  type ProcessUsage,
+  recoverUnreadableProcessUsage,
+} from "./processUsageFallback";
 
 type RawSystemInfo = Omit<
   SystemInfo,
@@ -319,6 +324,7 @@ export function hostFromOsfacts(
 
 export type SnapshotHost = typeof snapshotHost;
 export type ReadHost = typeof readOsfactsHost;
+export type ReadDarwinProcessUsage = typeof readDarwinProcessUsage;
 
 /** One osfacts subprocess per fact family per cache window. The independently
  * polled surface collections share the same atomic V2 reading rather than
@@ -330,6 +336,7 @@ export function createOsfactsReader(
   readSnapshot: SnapshotHost = snapshotHost,
   readHost: ReadHost = readOsfactsHost,
   now: () => number = Date.now,
+  readDarwinUsage: ReadDarwinProcessUsage = readDarwinProcessUsage,
 ): ProcReader {
   const maxAgeMs = 1_000;
   let processCache:
@@ -343,17 +350,27 @@ export function createOsfactsReader(
     const takenMs = now();
     if (processCache && takenMs - processCache.takenMs < maxAgeMs)
       return processCache.promise;
-    const promise = readSnapshot(bin, {
-      procs: true,
-      ports: true,
-      mem: true,
-      startTime: true,
-      cpuTime: true,
-      uid: true,
-      cwd: true,
-      status: true,
-      argv: true,
-    }).then((reading) => {
+    // No capability gate: Darwin runs ps on every fresh process poll. It runs
+    // beside osfacts so the fallback adds no serial child latency. Failure is
+    // enrichment-local; the authoritative osfacts frame still publishes.
+    const nativeUsage: Promise<Map<Pid, ProcessUsage>> =
+      os === "darwin"
+        ? readDarwinUsage().catch(() => new Map<Pid, ProcessUsage>())
+        : Promise.resolve(new Map<Pid, ProcessUsage>());
+    const promise = Promise.all([
+      readSnapshot(bin, {
+        procs: true,
+        ports: true,
+        mem: true,
+        startTime: true,
+        cpuTime: true,
+        uid: true,
+        cwd: true,
+        status: true,
+        argv: true,
+      }),
+      nativeUsage,
+    ]).then(([reading, fallback]) => {
       const current = new Map<Pid, number>(
         reading.cpuTimes.map(({ pid, cpuTimeUs }) => [pid, cpuTimeUs]),
       );
@@ -370,7 +387,15 @@ export function createOsfactsReader(
         cpuPct.set(pid, Math.round(pct * 10) / 10);
       }
       processBaseline = { takenMs, cpuTimes: current };
-      return processesFromOsfacts(reading, cpuPct);
+      const frame = processesFromOsfacts(reading, cpuPct);
+      return {
+        ...frame,
+        processes: recoverUnreadableProcessUsage(
+          frame.processes,
+          fallback,
+          frame.sourceErrors,
+        ),
+      };
     });
     processCache = { takenMs, promise };
     return promise;
