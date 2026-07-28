@@ -90,6 +90,7 @@ import {
 import { isActiveNic } from "./nic";
 import {
   DEFAULT_PROCESS_SORT_KEY,
+  fallbackTableMarker,
   fullyBlindErrno,
   processComparator,
   processDetailMemoryText,
@@ -2060,14 +2061,45 @@ function UnreadableMark(props: { errno: string }) {
   );
 }
 
+function FallbackMark(props: { command: string }) {
+  const marker = () => fallbackTableMarker(props.command);
+  return (
+    <span
+      class="cursor-help text-gray-400/60 hover:text-gray-500 dark:text-gray-500/60 dark:hover:text-gray-400"
+      title={marker().title}
+      aria-label={marker().ariaLabel}
+    >
+      <span aria-hidden="true">{marker().glyph}</span>
+    </span>
+  );
+}
+
 function CompactCellValue(props: { cell: ProcessTableCellPresentation }) {
   return (
     <Show
       when={props.cell.warning}
-      fallback={props.cell.text}
+      fallback={
+        <span class="inline-flex items-baseline gap-1">
+          {props.cell.text}
+          <Show when={props.cell.fallbackCommand}>
+            {(command) => <FallbackMark command={command()} />}
+          </Show>
+        </span>
+      }
     >
       <UnreadableMark errno={props.cell.text} />
     </Show>
+  );
+}
+
+function DetailCellValue(props: { cell: ProcessTableCellPresentation }) {
+  return (
+    <span class="inline-flex items-baseline gap-1">
+      {props.cell.text}
+      <Show when={props.cell.fallbackCommand}>
+        {(command) => <FallbackMark command={command()} />}
+      </Show>
+    </span>
   );
 }
 
@@ -2106,6 +2138,9 @@ function ProcessDetail(props: {
   const p = () => props.process;
   const memoryText = () =>
     processDetailMemoryText(p().rssBytes, props.memTotal);
+  const memoryCell = () => processTableCell(p(), "mem", memoryText());
+  const cpuCell = () =>
+    processTableCell(p(), "cpu_time", `${p().cpuPct.toFixed(1)}%`);
   const startedText = () => {
     const started = p().startedAtMs;
     return started === null ? "—" : new Date(started).toLocaleString();
@@ -2171,12 +2206,12 @@ function ProcessDetail(props: {
         <DetailRow label="cpu">
           <span
             class={`tabular-nums ${
-              processTableCell(p(), "cpu_time", "").warning
+              cpuCell().warning
                 ? "text-amber-600 dark:text-amber-400"
                 : processPctColor(p().cpuPct)
             }`}
           >
-            {processTableCell(p(), "cpu_time", `${p().cpuPct.toFixed(1)}%`).text}
+            <DetailCellValue cell={cpuCell()} />
           </span>
         </DetailRow>
         <DetailRow label="parent">
@@ -2237,7 +2272,15 @@ function ProcessDetail(props: {
           </DetailRow>
         </Show>
         <DetailRow label="memory">
-          <span class="tabular-nums">{memoryText()}</span>
+          <span
+            class={`tabular-nums ${
+              memoryCell().warning
+                ? "text-amber-600 dark:text-amber-400"
+                : ""
+            }`}
+          >
+            <DetailCellValue cell={memoryCell()} />
+          </span>
         </DetailRow>
         <DetailRow label="started">
           <span class="tabular-nums">{startedText()}</span>

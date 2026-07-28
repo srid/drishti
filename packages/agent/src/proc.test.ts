@@ -61,6 +61,7 @@ describe("osfacts V2 process observation", () => {
       rssBytes: 8192,
       startedAtMs: 1700000000123.456,
       listeners: [{ uid: 1000, port: 8080, address: "00000000" }],
+      fallbacks: [],
       unreadable: [{ facet: "ports", errno: "EACCES" }],
     });
     expect(frame.processes.get(99)).toEqual({
@@ -76,6 +77,7 @@ describe("osfacts V2 process observation", () => {
       rssBytes: null,
       startedAtMs: null,
       listeners: [],
+      fallbacks: [],
       unreadable: [
         { facet: "proc", errno: "EPERM" },
         { facet: "cwd", errno: "EACCES" },
@@ -130,6 +132,10 @@ describe("osfacts V2 process observation", () => {
     expect((await reader.readProcesses()).get(42)).toMatchObject({
       cpuPct: 23.5,
       rssBytes: 8_388_608,
+      fallbacks: [
+        { facet: "cpu_time", command: "/bin/ps" },
+        { facet: "mem", command: "/bin/ps" },
+      ],
       unreadable: [],
     });
     clock = 2_001;

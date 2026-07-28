@@ -81,6 +81,18 @@ export function formatListenerAddress(address: string, port: number): string {
 // subpath (./browser.ts), imported only by the parent re-serve + the client.
 
 const PidSchema = z.number().int().nonnegative();
+const ProcessFacetSchema = z.enum([
+  "proc",
+  "ports",
+  "mem",
+  "start_time",
+  "cpu_time",
+  "uid",
+  "cwd",
+  "status",
+  "status_threads",
+  "argv",
+]);
 const ProcessSchema = z.object({
   /** Short process name from osfacts' versioned `P` row. */
   name: z.string(),
@@ -118,23 +130,21 @@ const ProcessSchema = z.object({
       uid: z.number().int().nonnegative().nullable(),
     }),
   ),
+  /** Values recovered through an external command after their authoritative
+   *  osfacts facets were unreadable. Kept per-facet so consumers can disclose
+   *  provenance without knowing which fallback commands exist. */
+  fallbacks: z.array(
+    z.object({
+      facet: ProcessFacetSchema,
+      command: z.string().min(1),
+    }),
+  ),
   /** Facet-specific mandatory osfacts `U` rows. A blind `ports` facet no
    *  longer makes the host listener table empty: OSF6 emits those listeners
    *  separately as claimed or unclaimed facts. */
   unreadable: z.array(
     z.object({
-      facet: z.enum([
-        "proc",
-        "ports",
-        "mem",
-        "start_time",
-        "cpu_time",
-        "uid",
-        "cwd",
-        "status",
-        "status_threads",
-        "argv",
-      ]),
+      facet: ProcessFacetSchema,
       errno: z.string(),
     }),
   ),
@@ -190,6 +200,12 @@ const processEqual = (a: ProcessValue, b: ProcessValue): boolean =>
   a.ppid === b.ppid &&
   a.rssBytes === b.rssBytes &&
   a.startedAtMs === b.startedAtMs &&
+  a.fallbacks.length === b.fallbacks.length &&
+  a.fallbacks.every(
+    (fact, i) =>
+      fact.facet === b.fallbacks[i]?.facet &&
+      fact.command === b.fallbacks[i]?.command,
+  ) &&
   a.unreadable.length === b.unreadable.length &&
   a.unreadable.every(
     (fact, i) =>

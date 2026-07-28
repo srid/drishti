@@ -28,10 +28,17 @@ const PUBLISHED_PROCESS_FACETS: readonly ProcessTableFacet[] = [
 export interface ProcessTableCellPresentation {
   text: string;
   warning: boolean;
+  fallbackCommand?: string;
 }
 
 export interface UnreadableTableMarker {
   glyph: "⊘";
+  title: string;
+  ariaLabel: string;
+}
+
+export interface FallbackTableMarker {
+  glyph: "↩";
   title: string;
   ariaLabel: string;
 }
@@ -43,6 +50,16 @@ export function unreadableTableMarker(errno: string): UnreadableTableMarker {
     glyph: "⊘",
     title: errno,
     ariaLabel: `Unreadable: ${errno}`,
+  };
+}
+
+/** A recovered value remains readable, while this quiet mark discloses that
+ * an external command supplied it. */
+export function fallbackTableMarker(command: string): FallbackTableMarker {
+  return {
+    glyph: "↩",
+    title: `Command fallback: ${command}`,
+    ariaLabel: `Value recovered using command fallback: ${command}`,
   };
 }
 
@@ -153,11 +170,17 @@ export function processTableCell(
   process: Process,
   facet: ProcessTableFacet,
   readableText: string,
-): { text: string; warning: boolean } {
+): ProcessTableCellPresentation {
   const blind = process.unreadable.find((fact) => fact.facet === facet);
-  return blind === undefined
+  if (blind !== undefined) return { text: blind.errno, warning: true };
+  const fallback = process.fallbacks.find((fact) => fact.facet === facet);
+  return fallback === undefined
     ? { text: readableText, warning: false }
-    : { text: blind.errno, warning: true };
+    : {
+        text: readableText,
+        warning: false,
+        fallbackCommand: fallback.command,
+      };
 }
 
 /** Thread count can be blind independently of state/nice. A broad status

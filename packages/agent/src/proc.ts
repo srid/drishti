@@ -30,7 +30,7 @@ import {
   OsfactsSourceError,
   osfactsSourceStatus,
 } from "drishti-common/source-errors";
-import { readDarwinProcessUsage } from "./darwinPs";
+import { DARWIN_PS_PATH, readDarwinProcessUsage } from "./darwinPs";
 import {
   type ProcessUsage,
   recoverUnreadableProcessUsage,
@@ -199,6 +199,7 @@ export function processesFromOsfacts(
       rssBytes: memory.get(row.pid) ?? null,
       startedAtMs: starts.get(row.pid) ?? null,
       listeners: [],
+      fallbacks: [],
       unreadable: unreadable.get(row.pid) ?? [],
     });
   }
@@ -217,6 +218,7 @@ export function processesFromOsfacts(
         rssBytes: memory.get(row.pid) ?? null,
         startedAtMs: starts.get(row.pid) ?? null,
         listeners: [],
+        fallbacks: [],
         unreadable: unreadable.get(row.pid) ?? [],
       });
   }
@@ -394,6 +396,7 @@ export function createOsfactsReader(
           frame.processes,
           fallback,
           frame.sourceErrors,
+          { command: DARWIN_PS_PATH },
         ),
       };
     });

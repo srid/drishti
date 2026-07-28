@@ -15,6 +15,7 @@ const process = (overrides: Partial<Process> = {}): Process => ({
   rssBytes: null,
   startedAtMs: 1,
   listeners: [],
+  fallbacks: [],
   unreadable: [],
   ...overrides,
 });
@@ -31,12 +32,18 @@ describe("process usage fallback policy", () => {
     const recovered = recoverUnreadableProcessUsage(
       new Map([[42, original]]),
       new Map([[42, { cpuPct: 17.5, rssBytes: 4_194_304 }]]),
+      [],
+      { command: "/bin/ps" },
     ).get(42)!;
 
     expect(recovered).toEqual({
       ...original,
       cpuPct: 17.5,
       rssBytes: 4_194_304,
+      fallbacks: [
+        { facet: "cpu_time", command: "/bin/ps" },
+        { facet: "mem", command: "/bin/ps" },
+      ],
       unreadable: [{ facet: "cwd", errno: "EPERM" }],
     });
     expect(original.cpuPct).toBe(0);
@@ -49,6 +56,8 @@ describe("process usage fallback policy", () => {
     const recovered = recoverUnreadableProcessUsage(
       new Map([[42, original]]),
       new Map([[42, { cpuPct: 99, rssBytes: 99_999 }]]),
+      [],
+      { command: "/bin/ps" },
     );
 
     expect(recovered.get(42)).toBe(original);
@@ -73,10 +82,15 @@ describe("process usage fallback policy", () => {
           code: "EACCES",
         },
       ],
+      { command: "/bin/ps" },
     ).get(42)!;
 
     expect(recovered.cpuPct).toBe(7.5);
     expect(recovered.rssBytes).toBe(65_536);
+    expect(recovered.fallbacks).toEqual([
+      { facet: "cpu_time", command: "/bin/ps" },
+      { facet: "mem", command: "/bin/ps" },
+    ]);
   });
 
   it("leaves blind facts honest when ps has no matching pid", () => {
@@ -89,6 +103,8 @@ describe("process usage fallback policy", () => {
     const recovered = recoverUnreadableProcessUsage(
       new Map([[42, original]]),
       new Map([[7, { cpuPct: 9, rssBytes: 1024 }]]),
+      [],
+      { command: "/bin/ps" },
     );
 
     expect(recovered.get(42)).toBe(original);

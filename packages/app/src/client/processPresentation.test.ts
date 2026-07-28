@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { Process } from "drishti-common";
 import {
   DEFAULT_PROCESS_SORT_KEY,
+  fallbackTableMarker,
   processComparator,
   processDetailMemoryText,
   processMatches,
@@ -14,7 +15,10 @@ import {
   unreadableTableMarker,
 } from "./processPresentation";
 
-const process = (unreadable: Process["unreadable"]): Process => ({
+const process = (
+  unreadable: Process["unreadable"],
+  fallbacks: Process["fallbacks"] = [],
+): Process => ({
   name: "server",
   command: "server --listen 8080",
   cpuPct: 0,
@@ -27,6 +31,7 @@ const process = (unreadable: Process["unreadable"]): Process => ({
   rssBytes: null,
   startedAtMs: null,
   listeners: [],
+  fallbacks,
   unreadable,
 });
 
@@ -109,6 +114,23 @@ describe("process table qualified cells", () => {
       glyph: "⊘",
       title: "EACCES",
       ariaLabel: "Unreadable: EACCES",
+    });
+  });
+
+  it("quietly identifies a command fallback without replacing its recovered value", () => {
+    const recovered = process([], [
+      { facet: "cpu_time", command: "/bin/ps" },
+    ]);
+
+    expect(processTableCell(recovered, "cpu_time", "17.5%")).toEqual({
+      text: "17.5%",
+      warning: false,
+      fallbackCommand: "/bin/ps",
+    });
+    expect(fallbackTableMarker("/bin/ps")).toEqual({
+      glyph: "↩",
+      title: "Command fallback: /bin/ps",
+      ariaLabel: "Value recovered using command fallback: /bin/ps",
     });
   });
 });
