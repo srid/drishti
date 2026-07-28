@@ -2079,10 +2079,17 @@ function CompactCellValue(props: { cell: ProcessTableCellPresentation }) {
     <Show
       when={props.cell.warning}
       fallback={
-        <span class="inline-flex items-baseline gap-1">
+        // The marker is an adornment, not part of the value's inline width.
+        // Keeping it absolute preserves right-aligned numeric columns: a
+        // fallback value occupies exactly the same width as a native value.
+        <span class="relative inline-block">
           {props.cell.text}
           <Show when={props.cell.fallbackCommand}>
-            {(command) => <FallbackMark command={command()} />}
+            {(command) => (
+              <span class="absolute left-full top-1/2 ml-1 -translate-y-1/2">
+                <FallbackMark command={command()} />
+              </span>
+            )}
           </Show>
         </span>
       }
