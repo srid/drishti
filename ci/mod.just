@@ -142,14 +142,13 @@ drv-stability:
 
     # (b) REAL app-only devDependency: add a package, regenerate root lock + bun.nix.
     # Agent projection (agent.lock / agent.bun.nix) is untouched → ids frozen.
+    # bun/nixpkgs-fmt come from nix develop (shebang recipes lack PATH).
     run_probe "app-only-devDep" 0 \
       'set -euo pipefail
        cd "$WT"
-       # Add a real app-only devDependency (not in agent.lock projection).
-       bun add -d left-pad@1.3.0 --cwd packages/app
-       nix run .#bun2nix -- -l bun.lock -o bun.nix
-       nixpkgs-fmt bun.nix >/dev/null
-       # Prove agent projection was not rewritten.
+       nix develop --accept-flake-config -c bun add -d left-pad@1.3.0 --cwd packages/app
+       nix develop --accept-flake-config -c nix run .#bun2nix -- -l bun.lock -o bun.nix
+       nix develop --accept-flake-config -c nixpkgs-fmt bun.nix >/dev/null
        git diff --exit-code packages/agent/agent.lock packages/agent/agent.bun.nix
       ' 1
 
