@@ -107,6 +107,12 @@ fmt-check:
 regenerate-bun-nix:
     {{ nix_shell }} sh -c 'nix run .#bun2nix -- -l bun.lock -o bun.nix && nixpkgs-fmt bun.nix'
 
+# Regenerate the agent-scoped lock + agent.bun.nix (positive projection).
+# Run after changing packages/agent or packages/common dependencies.
+# Does NOT touch the root bun.lock / bun.nix (app-only churn stays there).
+regenerate-agent-deps:
+    {{ nix_shell }} sh scripts/regenerate-agent-deps.sh
+
 # Regenerate the committed PWA icons (manifest icons, favicon, apple-touch)
 # from scripts/gen-pwa-icons.ts. Run this after editing the icon geometry.
 gen-pwa-icons:

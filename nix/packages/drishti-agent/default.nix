@@ -1,65 +1,27 @@
 # drishti-agent build derivation — the remote-side binary's staged tree.
 #
-# This is the keystone of issue #38. The monitor (`../drishti`) and the agent
-# used to share ONE build derivation (`drishtiBuilt`), so every client/server
-# edit rotated the agent's `.drv` hash and every remote paid a full cross-arch
-# `nix copy` + realise on the next reconnect. This derivation scopes the agent
-# to ONLY its own inputs, so a client/server-only rebuild leaves the agent
-# `.drv` byte-identical and every remote's cached agent stays warm.
+# This is the keystone of issue #38 / U5.1. The agent consumes a POSITIVE
+# dependency projection — never the shared root bun.nix with a denylist:
 #
-# Three churn edges are cut here, all necessary:
+#   1. `src` — packages/agent + packages/common + workspace package.json.
+#      Root bun.lock / bunfig.toml / bun.nix are NOT in the fileset.
 #
-#   1. `src` — packages/agent + packages/common + workspace package.json +
-#      agent-scoped install metadata. packages/app is absent. The ROOT
-#      bun.lock / bunfig.toml / bun.nix are ALSO absent: those files absorb
-#      app-only test tooling (happy-dom, @solidjs/testing-library, …) and
-#      used to rotate fleet BUILD_ID on UI-test waves (U4.1).
+#   2. `bunDeps` — fetchBunDeps over packages/agent/agent.bun.nix only
+#      (generated from the agent-scoped lock). App-only npm FODs never enter
+#      the attrset, so an unlisted app-only key mutation of root bun.nix
+#      cannot rotate fleet BUILD_ID.
 #
-#   2. `bunDeps` — `fetchBunDeps` over an agent-filtered bun.nix that drops
-#      the drishti-app workspace FOD AND every known app-test-only package.
-#      Adding an app-only npm fetch must not rehash the agent cache join.
+#   3. Install metadata — packages/agent/agent.lock + agent.bunfig.toml.
+#      Regenerated only when agent/common deps change
+#      (`just regenerate-agent-deps`).
 #
-#   3. Install metadata — `packages/agent/agent.lock` + `agent.bunfig.toml`
-#      (linker only). Regenerated only when agent/common deps change, never
-#      when app test deps land in the workspace root lock.
+# Acceptance (`just ci::drv-stability`):
+#   (a) real app-only devDependency + lock/bun.nix regen → BUILD_ID unchanged
+#   (b) agent-touching source edit → BUILD_ID rotates
 #
-# Acceptance (`just ci::drv-stability`): client .ts edit AND app-only
-# lock/devDependency mutation leave BUILD_ID unchanged; agent-touching
-# mutation rotates it.
-#
-# UW3: accidental agent-drv change is a fleet-wide daemon restart, not a
-# quiet rebuild.
-#
-# `@kolu/surface` is hydrated post-install. The agent declares the runtime
-# deps of hydrated sources itself (packages/agent/package.json).
+# UW3: accidental agent-drv change is a fleet-wide daemon restart.
 { stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-daemon, osfacts-client }:
 let
-  # Package name prefixes (bun.nix keys are "name@version") that exist only
-  # for app/browser tests. Extending this list is required when a new
-  # app-only test dep would otherwise re-enter the agent cache.
-  appTestOnlyNamePrefixes = [
-    "happy-dom@"
-    "@happy-dom/"
-    "@solidjs/testing-library@"
-    "@testing-library/"
-    "aria-query@"
-    "@types/aria-query@"
-    "dom-accessibility-api@"
-    "pretty-format@"
-    "lz-string@"
-    "react-is@"
-    "ansi-regex@"
-    "ansi-styles@"
-    "@babel/runtime@"
-    "buffer-image-size@"
-    "entities@7." # happy-dom's entities; parse5's entities@6 stays for monitor
-    "@types/whatwg-mimetype@"
-    "whatwg-mimetype@"
-  ];
-
-  isAppTestOnlyKey = name:
-    lib.any (p: lib.hasPrefix p name) appTestOnlyNamePrefixes;
-
   src = lib.fileset.toSource {
     root = ../../..;
     fileset = lib.fileset.unions [
@@ -67,10 +29,7 @@ let
       ../../../tsconfig.base.json
       ../../../packages/agent
       ../../../packages/common
-      # @kolu/* hydration script — invoked from postBunNodeModulesInstallPhase.
       ../../../scripts
-      # Agent-scoped install metadata (NOT the workspace-root lock/bunfig).
-      # Root bun.lock / bunfig.toml / bun.nix stay out of this fileset.
     ];
   };
 in
@@ -79,19 +38,12 @@ stdenv.mkDerivation {
   version = "0.1.0";
   inherit src;
 
-  # Listing our npins-pinned `bun` first wins on PATH over bun2nix.hook's
-  # propagated bun (same reproducibility reason as the monitor build).
   nativeBuildInputs = [ bun bun2nix.hook ];
 
-  # Agent dep cache: drop workspace app FOD + app-test-only npm FODs.
+  # POSITIVE projection: only packages/agent/agent.bun.nix — never import
+  # the root bun.nix (no denylist of app-test packages).
   bunDeps = bun2nix.fetchBunDeps {
-    bunNix =
-      { copyPathToStore, fetchFromGitHub, fetchgit, fetchurl, ... }@bunNixArgs:
-      let
-        full = import ../../../bun.nix bunNixArgs;
-        drop = name: name == "drishti-app" || isAppTestOnlyKey name;
-      in
-      lib.filterAttrs (name: _: !drop name) full;
+    bunNix = ../../../packages/agent/agent.bun.nix;
   };
 
   bunInstallFlags = [ "--linker=hoisted" ];
@@ -101,11 +53,22 @@ stdenv.mkDerivation {
   dontUseBunBuild = true;
   dontBuild = true;
 
-  # Point bun install at the agent-scoped lock + bunfig (stable under app
-  # test churn). Root workspace files are deliberately not in `src`.
+  # Agent-scoped lock + bunfig; replace package.json so it matches the
+  # agent lock workspaces (no packages/app, no root typescript/@types/bun).
   postPatch = ''
     cp packages/agent/agent.lock bun.lock
     cp packages/agent/agent.bunfig.toml bunfig.toml
+    cat > package.json <<'EOF'
+    {
+      "name": "drishti-agent-workspace",
+      "private": true,
+      "type": "module",
+      "workspaces": ["packages/agent", "packages/common"],
+      "overrides": {
+        "@babel/helper-module-imports": "^7.29.7"
+      }
+    }
+    EOF
   '';
 
   postBunNodeModulesInstallPhase = ''

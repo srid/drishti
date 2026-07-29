@@ -67,43 +67,55 @@ typecheck: install
 
 # Acceptance guard for issue #38: a client/server-only edit must NOT change the
 # agent's .drv hash — otherwise every remote re-copies + rebuilds the agent on
-# Fleet BUILD_ID stability (W2.5 / U4.1). Identity is the INNER wrapper hash —
-# not the outer agent .drv (outer carries COMMIT_HASH / monorepo rev). Three
-# probes in throwaway worktrees (host tree untouched):
-#   (a) client .ts edit            → BUILD_ID unchanged
-#   (b) app-only lock/devDep edit  → BUILD_ID unchanged  (the wave-3 failure class)
+# Fleet BUILD_ID stability (W2.5 / U5.1). Identity is the INNER wrapper hash.
+# Probes (throwaway worktrees; host tree untouched):
+#   (a) client .ts edit → BUILD_ID unchanged
+#   (b) REAL app-only devDependency + lock + bun.nix regen → all ids unchanged
 #   (c) agent-touching source edit → BUILD_ID rotates
-# Pinned to x86_64-linux via agentBuildIdsJson; `--no-eval-cache`.
+# Pinned via full agentBuildIdsJson map comparison for (b); x86_64 for (a)/(c).
 drv-stability:
     #!/usr/bin/env bash
     set -euo pipefail
     extract_id() {
       sed -n 's/.*"x86_64-linux"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
     }
-    base=$(nix eval --raw --no-eval-cache '.#agentBuildIdsJson' | extract_id)
+    base_map=$(nix eval --raw --no-eval-cache '.#agentBuildIdsJson')
+    base=$(printf '%s' "$base_map" | extract_id)
     if [ -z "$base" ]; then
       echo "drv-stability: FAIL — empty x86_64-linux BUILD_ID from agentBuildIdsJson"
       exit 1
     fi
-    echo "drv-stability: base BUILD_ID=$base"
+    echo "drv-stability: base BUILD_ID map=$base_map"
 
     run_probe() {
-      local name="$1" expect_change="$2" # expect_change=0|1
+      local name="$1" expect_change="$2" # 0=unchanged, 1=rotated (x86 only)
       local mutator="$3"
-      local tmp wt after
+      local compare_full_map="${4:-0}"
+      local tmp wt after after_map
       tmp=$(mktemp -d)
       wt="$tmp/wt"
       git worktree add -q --detach "$wt" HEAD
-      # Mutator is a shell snippet; WT is the worktree path.
       WT="$wt" bash -c "$mutator"
       git -C "$wt" -c user.email=ci@drishti -c user.name=ci add -A
+      # Allow empty commit only if mutator made no git-visible change (should not).
       git -C "$wt" -c user.email=ci@drishti -c user.name=ci \
-        commit -qm "drv-stability probe: $name"
-      after=$(nix eval --raw --no-eval-cache "$wt#agentBuildIdsJson" | extract_id)
+        commit -qm "drv-stability probe: $name" || true
+      after_map=$(nix eval --raw --no-eval-cache "$wt#agentBuildIdsJson")
+      after=$(printf '%s' "$after_map" | extract_id)
       git worktree remove --force "$wt" 2>/dev/null || true
       rm -rf "$tmp"
       if [ "$expect_change" = "0" ]; then
-        if [ "$base" = "$after" ]; then
+        if [ "$compare_full_map" = "1" ]; then
+          if [ "$base_map" = "$after_map" ]; then
+            echo "drv-stability: PASS ($name) — all three BUILD_IDs byte-identical"
+            echo "  map: $base_map"
+          else
+            echo "drv-stability: FAIL ($name) — BUILD_ID map rotated (must stay put)"
+            echo "  before: $base_map"
+            echo "  after:  $after_map"
+            exit 1
+          fi
+        elif [ "$base" = "$after" ]; then
           echo "drv-stability: PASS ($name) — BUILD_ID unchanged ($base)"
         else
           echo "drv-stability: FAIL ($name) — BUILD_ID rotated (must stay put)"
@@ -128,11 +140,18 @@ drv-stability:
     run_probe "client-ts" 0 \
       'printf "\n// drv-stability probe — client edit must not churn agent BUILD_ID\n" >> "$WT/packages/app/src/client/theme.ts"'
 
-    # (b) app-only lock/devDependency mutation (wave-3 failure class)
-    run_probe "app-only-lock" 0 \
-      'printf "\n# drv-stability app-only lock marker\n" >> "$WT/bun.lock"
-       printf "\n# drv-stability app-only bunfig marker\n" >> "$WT/bunfig.toml"
-       printf "\n# drv-stability app-only bun.nix marker\n" >> "$WT/bun.nix"'
+    # (b) REAL app-only devDependency: add a package, regenerate root lock + bun.nix.
+    # Agent projection (agent.lock / agent.bun.nix) is untouched → ids frozen.
+    run_probe "app-only-devDep" 0 \
+      'set -euo pipefail
+       cd "$WT"
+       # Add a real app-only devDependency (not in agent.lock projection).
+       bun add -d left-pad@1.3.0 --cwd packages/app
+       nix run .#bun2nix -- -l bun.lock -o bun.nix
+       nixpkgs-fmt bun.nix >/dev/null
+       # Prove agent projection was not rewritten.
+       git diff --exit-code packages/agent/agent.lock packages/agent/agent.bun.nix
+      ' 1
 
     # (c) agent-touching edit must rotate
     run_probe "agent-touch" 1 \
