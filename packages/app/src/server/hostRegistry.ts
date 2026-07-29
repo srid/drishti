@@ -343,7 +343,7 @@ export function awaitExitViaProcessOracle(
  * axis or the build axis fired. Contracts differ ⇒ contract axis; equal
  * (compatible) contracts ⇒ build axis. Silent default-to-build is forbidden.
  */
-export function replacedAxisFromContracts(
+function replacedAxisFromContracts(
   runningContractVersion: string,
   bakedContractVersion: string,
 ): "build" | "contract" {

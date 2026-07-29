@@ -13,7 +13,6 @@ import {
   captureDrainPersistFailure,
   convergenceFromDrainPersistFailure,
   expectProvisionedBuildId,
-  replacedAxisFromContracts,
 } from "./hostRegistry";
 
 const fakeResolve = async () => ({
@@ -317,19 +316,7 @@ describe("W8.2 / W9 production projects replaced verdict as session data", () =>
     // W9: no prose classifier on verdict.reason.
     expect(src).not.toMatch(/includes\(["']newer contract["']\)/);
     expect(src).not.toMatch(/verdict\.reason.*replacedAxis|replacedAxis\(verdict\.reason/);
-  });
-});
-
-describe("W9 replacedAxisFromContracts (structured axis, both arms)", () => {
-  it("equal contract versions ⇒ build axis (build-replacement arm)", () => {
-    // Mutation (a): always return "contract" ⇒ this assertion reds.
-    expect(replacedAxisFromContracts("1.0", "1.0")).toBe("build");
-    expect(replacedAxisFromContracts("2.3", "2.3")).toBe("build");
-  });
-
-  it("differing contract versions ⇒ contract axis (contract-replacement arm)", () => {
-    // Mutation (b): always return "build" ⇒ this assertion reds.
-    expect(replacedAxisFromContracts("0.9.0", "1.0")).toBe("contract");
-    expect(replacedAxisFromContracts("9.9.9", "1.0")).toBe("contract");
+    // Module-private helper (not exported) — both arms bound by gated e2e legs.
+    expect(src).not.toMatch(/export function replacedAxisFromContracts/);
   });
 });
