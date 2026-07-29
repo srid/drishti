@@ -29,6 +29,7 @@ import {
   type DrainableProbe,
   type InstanceKey,
 } from "@kolu/surface-daemon-supervisor";
+import { AGENT_SURFACE_VERSION } from "drishti-common";
 import {
   HISTORY_RING_FILE,
   loadHistoryRing,
@@ -48,7 +49,7 @@ function syntheticPolicy(binderBuildId: string) {
   return {
     capability: "drainable" as const,
     baked: {
-      contractVersion: "1.0",
+      contractVersion: AGENT_SURFACE_VERSION,
       build: daemonBuild(binderBuildId),
     },
     onContractSkew: { kind: "drain-newer-else-refuse" as const },
@@ -112,7 +113,7 @@ describe("synthetic mixed-build window (UW3 bootstrap)", () => {
 
     const probe = syntheticProbe({
       running: {
-        contractVersion: "1.0",
+        contractVersion: AGENT_SURFACE_VERSION,
         build: daemonBuild(previousBuildId),
         instanceKey: instanceKeyFromStartedAt(1_700_000_000_000),
       },

@@ -326,6 +326,11 @@ export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
 // so `@kolu/surface` serves ONE coalesced snapshot-then-delta stream for it (SR5).
 // The hand-rolled `ProcessesSnapshotMessage` parallel stream is gone.
 
+/** Agent surface contract version — control-core hello `surfaceVersion` and
+ *  parent convergence policy `baked.contractVersion`. Single source for agent
+ *  main, parent hostRegistry, and mixed-build / policy tests. */
+export const AGENT_SURFACE_VERSION = "1.0";
+
 /** One point in a host's metric history — CPU% and memory% at a wall-clock
  *  instant. Captured by the **agent daemon** on each poll tick and retained
  *  in a durable on-disk ring (`history.ring.json` under the daemon home) so

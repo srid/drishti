@@ -50,7 +50,7 @@ import {
   sshConnector,
   type SshProv,
 } from "@kolu/surface-remote";
-import { surface } from "drishti-common";
+import { AGENT_SURFACE_VERSION, surface } from "drishti-common";
 import { saveHosts } from "./hostsStore";
 import { makeLogger } from "./log";
 
@@ -72,10 +72,6 @@ const CONNECT_TIMEOUT_MS = 30_000;
  *  agent process to exit before treating the drain as not-taken. Sized
  *  above a local 2s because each liveness edge is a full ssh round-trip. */
 const DRAIN_TEARDOWN_CEILING_MS = 6_000;
-
-/** Agent surface contract version — must match the agent's control-core
- *  hello `surfaceVersion` (`"1.0"`). */
-const AGENT_SURFACE_VERSION = "1.0";
 
 /** Drain budget: at most 2 drain attempts per lineage, then adopt the
  *  resident with a standing anomaly rather than go dark. */

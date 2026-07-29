@@ -52,6 +52,7 @@ import {
 // here.
 import { derived, scan, source } from "@kolu/surface/reactor";
 import {
+  AGENT_SURFACE_VERSION,
   type CoreId,
   type CpuCore,
   type MetricHistoryMsg,
@@ -82,8 +83,6 @@ const POLL_INTERVAL_MS = 2000;
 const RING_PERSIST_INTERVAL_MS = 30_000;
 /** Idle-exit after this many ms with no live parent connections. */
 const IDLE_TIMEOUT_MS = 60 * 60_000;
-/** Agent surface contract version — the control-core hello's `surfaceVersion`. */
-const SURFACE_VERSION = "1.0";
 
 // The host-CPU aggregate, folded into the `system` cell so a glance card reads
 // one scalar instead of subscribing to every per-core cell (which opens N
@@ -350,7 +349,7 @@ export async function buildAgentRuntime(
     const stateRoot = opts.stateRoot ?? "";
     const control = controlCoreFragment({
       stateRoot,
-      surfaceVersion: SURFACE_VERSION,
+      surfaceVersion: AGENT_SURFACE_VERSION,
       startedAt,
       commit: identity.navigableCommit,
       buildId: identity.staleKey,
