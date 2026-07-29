@@ -29,13 +29,6 @@ export type ClientErrorPolicy = { kind: "log"; label: string };
  *  (UW3 — the durable ring lives in the agent daemon); the parent re-serves it. */
 export const mirroredAgentSurface = surface;
 
-/** @deprecated Prefer `surface.spec.streams` — metricHistory is on the agent surface
- *  itself since UW3. Kept as an alias so older import sites typecheck during the
- *  transition; equals the agent surface's streams map. */
-export const historySurface = {
-  spec: { streams: surface.spec.streams },
-} as const;
-
 /** The COMBINED surface the BROWSER consumes — the agent members (including
  *  durable `metricHistory`) exactly as the parent re-serves them. The browser's
  *  client types off THIS, so it reaches every member at the same flat paths. */
