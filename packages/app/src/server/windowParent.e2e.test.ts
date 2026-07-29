@@ -230,6 +230,8 @@ if [[ -n "\${DRISHTI_E2E_XDG_STATE_HOME:-}" ]]; then
 fi
 if [[ -n "\${DRISHTI_E2E_BUILD_ID:-}" ]]; then
   export DRISHTI_AGENT_BUILD_ID="\$DRISHTI_E2E_BUILD_ID"
+  # both-or-neither (readBakedIdentity / UW5) — never BUILD_ID alone
+  export DRISHTI_AGENT_COMMIT_HASH="\${DRISHTI_E2E_COMMIT_HASH:-e2e-\$DRISHTI_E2E_BUILD_ID}"
 fi
 if [[ -n "\${DRISHTI_OSFACTS_BIN:-}" ]]; then
   export DRISHTI_OSFACTS_BIN
@@ -312,6 +314,7 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
         HOME: home,
         XDG_STATE_HOME: join(home, ".local", "state"),
         DRISHTI_AGENT_BUILD_ID: previousBuildId,
+        DRISHTI_AGENT_COMMIT_HASH: `e2e-${previousBuildId}`,
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
       };
       const frontPrev = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
@@ -335,6 +338,7 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
       await delay(3500);
 
       process.env.DRISHTI_AGENT_BUILD_ID = currentBuildId;
+      process.env.DRISHTI_AGENT_COMMIT_HASH = `e2e-${currentBuildId}`;
       process.env.DRISHTI_E2E_HOME = home;
       process.env.DRISHTI_E2E_XDG_STATE_HOME = join(home, ".local", "state");
       process.env.DRISHTI_E2E_BUILD_ID = currentBuildId;
@@ -495,6 +499,7 @@ describe("W6.4 real refuse + renew via production pool", () => {
         HOME: home,
         XDG_STATE_HOME: join(home, ".local", "state"),
         DRISHTI_AGENT_BUILD_ID: `refuse-prev-${fixture.buildId.slice(0, 8)}`,
+        DRISHTI_AGENT_COMMIT_HASH: `e2e-refuse-prev-${fixture.buildId.slice(0, 8)}`,
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
       };
       const frontPrev = nodeSpawn(
@@ -519,6 +524,7 @@ describe("W6.4 real refuse + renew via production pool", () => {
       const prevPid = Number.parseInt(readFileSync(dh.gatePath, "utf8"), 10);
 
       process.env.DRISHTI_AGENT_BUILD_ID = fixture.buildId;
+      process.env.DRISHTI_AGENT_COMMIT_HASH = `e2e-${fixture.buildId}`;
       process.env.DRISHTI_E2E_HOME = home;
       process.env.DRISHTI_E2E_XDG_STATE_HOME = join(home, ".local", "state");
       process.env.DRISHTI_E2E_BUILD_ID = fixture.buildId;
@@ -643,6 +649,7 @@ describe("W9 contract-axis replaced outcome via production pool", () => {
         HOME: home,
         XDG_STATE_HOME: join(home, ".local", "state"),
         DRISHTI_AGENT_BUILD_ID: `contract-prev-${fixture.buildId.slice(0, 8)}`,
+        DRISHTI_AGENT_COMMIT_HASH: `e2e-contract-prev-${fixture.buildId.slice(0, 8)}`,
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
       };
       const frontPrev = nodeSpawn(
@@ -667,6 +674,7 @@ describe("W9 contract-axis replaced outcome via production pool", () => {
       const prevPid = Number.parseInt(readFileSync(dh.gatePath, "utf8"), 10);
 
       process.env.DRISHTI_AGENT_BUILD_ID = fixture.buildId;
+      process.env.DRISHTI_AGENT_COMMIT_HASH = `e2e-${fixture.buildId}`;
       process.env.DRISHTI_E2E_HOME = home;
       process.env.DRISHTI_E2E_XDG_STATE_HOME = join(home, ".local", "state");
       process.env.DRISHTI_E2E_BUILD_ID = fixture.buildId;

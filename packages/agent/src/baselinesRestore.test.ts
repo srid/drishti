@@ -126,6 +126,7 @@ describe("W3.3 baseline + alert restore process-level", () => {
       HOME: home,
       XDG_STATE_HOME: join(home, ".local", "state"),
       DRISHTI_AGENT_BUILD_ID: "base-w33",
+      DRISHTI_AGENT_COMMIT_HASH: "e2e-commit-base-w33",
     };
     const front = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
       env,
@@ -255,6 +256,7 @@ describe("W3.3 baseline + alert restore process-level", () => {
       HOME: home,
       XDG_STATE_HOME: join(home, ".local", "state"),
       DRISHTI_AGENT_BUILD_ID: "base-drain",
+      DRISHTI_AGENT_COMMIT_HASH: "e2e-commit-base-drain",
     };
     const front = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
       env,
@@ -311,7 +313,11 @@ describe("W3.3 baseline + alert restore process-level", () => {
     // ring output (alerts + baselines from the previous daemon).
 
     const front2 = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
-      env: { ...env, DRISHTI_AGENT_BUILD_ID: "base-succ" },
+      env: {
+        ...env,
+        DRISHTI_AGENT_BUILD_ID: "base-succ",
+        DRISHTI_AGENT_COMMIT_HASH: "e2e-commit-base-succ",
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
     children.push(front2);

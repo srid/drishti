@@ -158,6 +158,7 @@ describe("W6.3 standing persist-failure automatic path", () => {
         HOME: home,
         XDG_STATE_HOME: join(home, ".local", "state"),
         DRISHTI_AGENT_BUILD_ID: previousBuildId,
+        DRISHTI_AGENT_COMMIT_HASH: `e2e-${previousBuildId}`,
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
       };
       const frontPrev = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
@@ -185,6 +186,7 @@ describe("W6.3 standing persist-failure automatic path", () => {
       mkdirSync(ringPath, { mode: 0o700 });
 
       process.env.DRISHTI_AGENT_BUILD_ID = currentBuildId;
+      process.env.DRISHTI_AGENT_COMMIT_HASH = `e2e-${currentBuildId}`;
       process.env.DRISHTI_E2E_HOME = home;
       process.env.DRISHTI_E2E_XDG_STATE_HOME = join(home, ".local", "state");
       process.env.DRISHTI_E2E_BUILD_ID = currentBuildId;

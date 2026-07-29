@@ -712,7 +712,9 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
                 "PATH",
                 "XDG_STATE_HOME",
                 "DRISHTI_OSFACTS_BIN",
+                // both-or-neither (readBakedIdentity) — never BUILD_ID alone
                 "DRISHTI_AGENT_BUILD_ID",
+                "DRISHTI_AGENT_COMMIT_HASH",
               ] as const
             )
               .map((k): [string, string | undefined] => [k, process.env[k]])
@@ -854,7 +856,9 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
               "PATH",
               "XDG_STATE_HOME",
               "DRISHTI_OSFACTS_BIN",
+              // both-or-neither (readBakedIdentity) — never BUILD_ID alone
               "DRISHTI_AGENT_BUILD_ID",
+              "DRISHTI_AGENT_COMMIT_HASH",
             ] as const
           )
             .map((k): [string, string | undefined] => [k, process.env[k]])

@@ -105,7 +105,9 @@ function agentEnv(
     ...process.env,
     HOME: home,
     XDG_STATE_HOME: join(home, ".local", "state"),
+    // both-or-neither: readBakedIdentity throws on half-pair (UW5)
     DRISHTI_AGENT_BUILD_ID: buildId,
+    DRISHTI_AGENT_COMMIT_HASH: `e2e-commit-${buildId}`,
     ...extra,
   };
 }

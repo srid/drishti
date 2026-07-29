@@ -111,6 +111,7 @@ describe("W6.2 flush failure — degraded frame binds publish mutation", () => {
       HOME: home,
       XDG_STATE_HOME: join(home, ".local", "state"),
       DRISHTI_AGENT_BUILD_ID: "flush-w62",
+      DRISHTI_AGENT_COMMIT_HASH: "e2e-commit-flush-w62",
     };
     const front = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
       env,

@@ -152,6 +152,8 @@ if [[ -n "\${DRISHTI_E2E_XDG_STATE_HOME:-}" ]]; then
 fi
 if [[ -n "\${DRISHTI_E2E_BUILD_ID:-}" ]]; then
   export DRISHTI_AGENT_BUILD_ID="\$DRISHTI_E2E_BUILD_ID"
+  # both-or-neither (readBakedIdentity / UW5) — never BUILD_ID alone
+  export DRISHTI_AGENT_COMMIT_HASH="\${DRISHTI_E2E_COMMIT_HASH:-e2e-\$DRISHTI_E2E_BUILD_ID}"
 fi
 if [[ -n "\${DRISHTI_OSFACTS_BIN:-}" ]]; then
   export DRISHTI_OSFACTS_BIN
@@ -283,6 +285,7 @@ describe("U3.1 production assembly — REAL buildHostPool planted 0755", () => {
       process.env.HOME = home;
       process.env.XDG_STATE_HOME = join(home, ".local", "state");
       process.env.DRISHTI_AGENT_BUILD_ID = fixture.buildId;
+      process.env.DRISHTI_AGENT_COMMIT_HASH = `e2e-${fixture.buildId}`;
       process.env.DRISHTI_E2E_HOME = home;
       process.env.DRISHTI_E2E_XDG_STATE_HOME = join(home, ".local", "state");
       process.env.DRISHTI_E2E_BUILD_ID = fixture.buildId;
