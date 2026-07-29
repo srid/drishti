@@ -290,6 +290,8 @@ describe("W3.3 baseline + alert restore process-level", () => {
       sock.dispose();
     }
     void drainThrew;
+    // Allow deferred lifetime abort + final flush to settle on disk.
+    await delay(400);
 
     // Wait for previous pid GONE (real drain, not soft sleep).
     const goneDeadline = Date.now() + 15_000;
@@ -305,23 +307,8 @@ describe("W3.3 baseline + alert restore process-level", () => {
     }
     expect(oldGone).toBe(true);
 
-    // Re-plant ring for successor (drain flush may have rewritten alerts).
-    saveHistoryRing(
-      dh.file(HISTORY_RING_FILE),
-      [{ t: Date.now(), cpu: 85, mem: 40, swap: 0, disk: 20 }],
-      { items: ["cpu"] },
-      {
-        host: {
-          takenMs: Date.now() - 5000,
-          cpus: cpus as never,
-          networks: [],
-        },
-        process: {
-          takenMs: Date.now() - 5000,
-          cpuTimes: [[1, 1_000_000] as [number, number]],
-        },
-      },
-    );
+    // W7.1: NO post-drain re-plant. Successor eats the drain flush's real
+    // ring output (alerts + baselines from the previous daemon).
 
     const front2 = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
       env: { ...env, DRISHTI_AGENT_BUILD_ID: "base-succ" },
@@ -397,11 +384,11 @@ describe("W3.3 baseline + alert restore process-level", () => {
     }
   }, 90_000);
 
-  it("main.ts production site: alertsSeed = loaded.alerts + importBaselines (confinement)", () => {
-    // W4.3 / W4.6: mutations at these production lines go red here.
-    const mainSrc = readFileSync(join(import.meta.dir, "main.ts"), "utf8");
-    expect(mainSrc).toMatch(/alertsSeed\s*=\s*loaded\.alerts/);
-    expect(mainSrc).not.toMatch(/alertsSeed\s*=\s*NO_ALERTS/);
-    expect(mainSrc).toMatch(/reader\.importBaselines\?\.\(loaded\.baselines\)/);
+  it("runtime production site: alertsSeed = loaded.alerts + importBaselines (confinement)", () => {
+    // W4.3 / W4.6 / W7: production sites live in runtime.ts.
+    const rtSrc = readFileSync(join(import.meta.dir, "runtime.ts"), "utf8");
+    expect(rtSrc).toMatch(/alertsSeed\s*=\s*loaded\.alerts/);
+    expect(rtSrc).not.toMatch(/alertsSeed\s*=\s*NO_ALERTS/);
+    expect(rtSrc).toMatch(/reader\.importBaselines\?\.\(loaded\.baselines\)/);
   });
 });

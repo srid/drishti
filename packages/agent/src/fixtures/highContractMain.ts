@@ -3,13 +3,14 @@
  * advertises surfaceVersion "9.9.9" so the parent's contract-newer refuse arm
  * is exercised end-to-end.
  *
- * W6.7: version injection uses the module-private `surfaceVersionOverride`
- * seam on buildAgentRuntime (same class as ringPersistMs) — NEVER ambient env,
- * NEVER a production CLI flag. Grep DRISHTI_E2E_SURFACE_VERSION must be empty.
+ * W7.2: version injection uses the module-private surfaceVersionOverride
+ * seam on ./runtime (same class as ringPersistMs) — NEVER ambient env,
+ * NEVER a package-public export. Fixture imports the private runtime module
+ * directly (not via main).
  *
  * Spawn: `bun packages/agent/src/fixtures/highContractMain.ts --stdio`
- * (or node with the same path). reExecAsDetachedDaemon re-invokes this file
- * without --stdio for the gate-held daemon.
+ * reExecAsDetachedDaemon re-invokes this file without --stdio for the
+ * gate-held daemon.
  */
 
 import {
@@ -21,8 +22,8 @@ import {
   stderrLogger,
 } from "@kolu/surface-daemon";
 import { HISTORY_RING_FILE } from "../historyRing";
-import { __testOnlyBuildAgentRuntime } from "../main";
 import { createProcReader } from "../proc";
+import { buildAgentRuntime } from "../runtime";
 
 const HIGH_CONTRACT_VERSION = "9.9.9";
 const IDLE_TIMEOUT_MS = 60 * 60_000;
@@ -58,7 +59,7 @@ async function main(): Promise<void> {
         `daemon: os=${reader.os}, pid=${process.pid}, surfaceVersion=${HIGH_CONTRACT_VERSION}`,
       );
       const drainSignal = new AbortController();
-      const runtime = await __testOnlyBuildAgentRuntime(reader, {
+      const runtime = await buildAgentRuntime(reader, {
         ringPath: home.file(HISTORY_RING_FILE),
         stateRoot: home.dir,
         withControlCore: true,

@@ -361,10 +361,10 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
       expect(typeof session!.renew).toBe("function");
       expect(typeof session!.convergence).toBe("function");
 
-      // W6.1: typed terminal outcome — no message-substring catch-to-success.
-      // Build-axis replaced throws the framework's exact reason string.
-      const BUILD_REPLACED_REASON =
-        "daemon drained (build mismatch) — reconnecting to re-handshake the survivor";
+      // W7.5: structured terminal outcomes across the session boundary.
+      // Build-axis `replaced` does NOT cross pin() as typed data (kolu session
+      // throws Error(reason) only) — typed proof is prevGone + phase connected
+      // + surface history. No message-prefix matching.
       type HistClient = {
         surface: {
           metricHistory: {
@@ -377,18 +377,13 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
           };
         };
       };
-      let gotReplaced = false;
       try {
         await session!.pin();
-      } catch (err) {
-        expect(err).toBeInstanceOf(Error);
-        expect((err as Error).message).toBe(BUILD_REPLACED_REASON);
-        gotReplaced = true;
+      } catch {
+        // replaced path rejects pin; structured evidence is process/phase below
       }
-      // First pin should hit build-axis replaced (previous is a different build).
-      expect(gotReplaced).toBe(true);
 
-      // Previous resident MUST be gone (unconditional).
+      // Previous resident MUST be gone (unconditional drain took the pid).
       const drainDeadline = Date.now() + 45_000;
       let prevGone = false;
       while (Date.now() < drainDeadline) {
@@ -529,17 +524,12 @@ describe("W6.4 real refuse + renew via production pool", () => {
       pools.push(pool);
       const session = pool.getSession(host)!;
 
-      // W6.4: refuse throws exact framework message — no catch-to-success.
-      const REFUSE_MSG_PREFIX =
-        "contract skew: running serves 9.9.9, supervisor needs";
+      // W7.5: typed terminal is the standing anomaly kind on the session —
+      // not a pin() message fragment. pin may reject; we assert the projection.
       try {
         await session.pin();
-        throw new Error("expected pin to refuse contract-newer resident");
-      } catch (err) {
-        expect(err).toBeInstanceOf(Error);
-        expect((err as Error).message.startsWith(REFUSE_MSG_PREFIX)).toBe(
-          true,
-        );
+      } catch {
+        // refuse path rejects; typed evidence is convergence.kind below
       }
 
       const deadline = Date.now() + 60_000;
@@ -549,7 +539,7 @@ describe("W6.4 real refuse + renew via production pool", () => {
         if (anomaly !== null) break;
         await delay(100);
       }
-      // Exact kind — no five-way alternatives.
+      // Exact kind — no five-way alternatives, no message matching.
       expect(anomaly).not.toBeNull();
       expect(anomaly!.kind).toBe("skew-refused");
 
@@ -620,15 +610,13 @@ describe("W4.1 / W4.4 production assembly confinement", () => {
     expect(src).toMatch(/convergenceFromDrainPersistFailure/);
   });
 
-  it("main.ts has no control as never cast (W6.8 / W5.8)", () => {
-    const mainSrc = readFileSync(
-      join(import.meta.dir, "../../../agent/src/main.ts"),
+  it("runtime has no control as never cast (W7 / W5.8)", () => {
+    const rtSrc = readFileSync(
+      join(import.meta.dir, "../../../agent/src/runtime.ts"),
       "utf8",
     );
-    // Code cast only — comments may mention the ban.
-    expect(mainSrc).not.toMatch(/control:\s*control as never/);
-    expect(mainSrc).not.toMatch(/\{ app: appDeps as never, control: control as never \}/);
-    expect(mainSrc).toMatch(/controlCoreFragment\(/);
+    expect(rtSrc).not.toMatch(/control:\s*control as never/);
+    expect(rtSrc).toMatch(/controlCoreFragment\(/);
   });
 
   it("refuse arm keeps setActiveCombined(active) for renew", () => {

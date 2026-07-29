@@ -103,21 +103,36 @@ describe("buildHostPool discriminated construction (W4.7)", () => {
       expect(drishtiAgentConvergencePolicy("").baked.build).toEqual({
         kind: "off-nix",
       });
-      // Pin must not silently succeed without a derivation.
+      // W7.4: exact off-nix ResolveDrvError unavailable message (not any error).
+      const OFF_NIX_MSG =
+        "off-nix pool: no agent derivation (can't-judge path has no resolveDrvPath)";
       let pinErr: unknown = null;
       try {
         await session!.pin();
       } catch (e) {
         pinErr = e;
       }
-      // Either throws or fails the session — never a clean connected adopt
-      // with a provisioned agent.
-      if (pinErr === null) {
-        // Wait briefly — may fail async
-        await new Promise((r) => setTimeout(r, 2000));
-        expect(session!.currentState().phase).not.toBe("connected");
+      if (pinErr !== null) {
+        expect(pinErr).toBeInstanceOf(Error);
+        expect((pinErr as Error).message).toBe(OFF_NIX_MSG);
       } else {
-        expect(pinErr).toBeTruthy();
+        // Async failure path: wait for disconnected/failed with exact error.
+        const deadline = Date.now() + 10_000;
+        let st = session!.currentState();
+        while (Date.now() < deadline) {
+          st = session!.currentState();
+          if (
+            (st.phase === "failed" || st.phase === "disconnected") &&
+            "error" in st &&
+            typeof st.error === "string" &&
+            st.error.length > 0
+          ) {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        expect(st.phase === "failed" || st.phase === "disconnected").toBe(true);
+        expect("error" in st ? st.error : "").toBe(OFF_NIX_MSG);
       }
       await pool.destroyAll();
     } finally {
@@ -161,15 +176,28 @@ describe("buildHostPool discriminated construction (W4.7)", () => {
       } catch (e) {
         err = e;
       }
-      // Must surface the missing BUILD_ID failure (thrown from resolve path).
-      const msg = err instanceof Error ? err.message : String(err ?? "");
-      // pin may wrap; also accept failed phase with the error in state
-      if (err === null) {
-        const st = session!.currentState();
-        expect(st.phase === "failed" || st.phase === "disconnected").toBe(true);
-        expect(JSON.stringify(st)).toMatch(/missing BUILD_ID|BUILD_ID for system/);
+      // W7.4: exact missing-BUILD_ID failure (not bare architecture substring).
+      const MISSING_RE = /missing BUILD_ID for system "x86_64-linux"/;
+      if (err !== null) {
+        expect(err).toBeInstanceOf(Error);
+        expect((err as Error).message).toMatch(MISSING_RE);
       } else {
-        expect(msg).toMatch(/missing BUILD_ID|BUILD_ID for system|x86_64-linux/);
+        const deadline = Date.now() + 10_000;
+        let st = session!.currentState();
+        while (Date.now() < deadline) {
+          st = session!.currentState();
+          if (
+            (st.phase === "failed" || st.phase === "disconnected") &&
+            "error" in st &&
+            typeof st.error === "string" &&
+            MISSING_RE.test(st.error)
+          ) {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        expect(st.phase === "failed" || st.phase === "disconnected").toBe(true);
+        expect("error" in st ? String(st.error) : "").toMatch(MISSING_RE);
       }
       await pool.destroyAll();
     } finally {

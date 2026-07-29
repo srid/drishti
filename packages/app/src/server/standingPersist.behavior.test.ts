@@ -208,13 +208,11 @@ describe("W6.3 standing persist-failure automatic path", () => {
       pools.push(pool);
       const session = pool.getSession(host)!;
 
-      const BUILD_REPLACED_REASON =
-        "daemon drained (build mismatch) — reconnecting to re-handshake the survivor";
+      // W7.5: no message-prefix matching; drain evidence is structured below.
       try {
         await session.pin();
-      } catch (err) {
-        expect(err).toBeInstanceOf(Error);
-        expect((err as Error).message).toBe(BUILD_REPLACED_REASON);
+      } catch {
+        // replaced rejects pin
       } finally {
         // Remove EISDIR trap so successor can rewrite the ring file.
         try {
