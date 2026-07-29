@@ -85,9 +85,11 @@ stdenv.mkDerivation {
   # hoisted linker matches `bunfig.toml`: hydrated @kolu/surface must resolve
   # its transitive deps (@orpc/*, zod, solid-js) from the workspace-root
   # node_modules, not from an isolated per-package tree.
-  # --production: same as the monitor build — skip test-only devDeps that
-  # nest parse5/entities and trip bun's hoisted linker on aarch64-darwin.
-  bunInstallFlags = [ "--linker=hoisted" "--production" ];
+  # No --production here: this tree excludes packages/app, and bun's frozen
+  # lockfile install rewrites when --production drops workspace members' deps
+  # (lockfile had changes). The darwin parse5/entities nest is a monitor
+  # (drishti-built) issue; agent does not ship app test tooling.
+  bunInstallFlags = [ "--linker=hoisted" ];
 
   # Pure overhead for a Bun app — no shebangs we care about, no native binaries.
   dontFixup = true;
