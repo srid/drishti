@@ -55,10 +55,8 @@ export function withAgentBootBarrier<Client>(
       ),
     ]);
 
-    // Let a late stderr chunk land on remoteLines before we read the fatal.
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
     if (race.kind === "closed") {
+      await drainLateStderr(remoteLines, prefixes);
       return refuseOrRewrap(conn, race.info, remoteLines, prefixes, hooks);
     }
 
@@ -69,6 +67,7 @@ export function withAgentBootBarrier<Client>(
         new Promise<null>((r) => setTimeout(() => r(null), 100)),
       ]);
       if (info !== null) {
+        await drainLateStderr(remoteLines, prefixes);
         return refuseOrRewrap(conn, info, remoteLines, prefixes, hooks);
       }
       // Still running; admit will diagnose. Hand the connection to the session.
@@ -79,6 +78,21 @@ export function withAgentBootBarrier<Client>(
       closed: closedP,
     };
   };
+}
+
+/**
+ * After process exit, stderr data events can land one tick late (GHA race).
+ * Poll briefly until a fatal prefix appears or the budget is spent.
+ */
+async function drainLateStderr(
+  remoteLines: readonly string[],
+  prefixes: readonly string[],
+): Promise<void> {
+  for (let i = 0; i < 10; i++) {
+    if (extractAgentBootFatal(remoteLines, prefixes) !== null) return;
+    await new Promise<void>((r) => setImmediate(r));
+    await new Promise<void>((r) => setTimeout(r, 15));
+  }
 }
 
 function refuseOrRewrap<Client>(
