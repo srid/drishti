@@ -73,10 +73,8 @@ import {
   convergenceBannerVisible,
 } from "./convergenceProjection";
 import { DaemonDialog } from "./DaemonDialog";
-import {
-  DaemonStatusChip,
-  FleetDaemonStatusChip,
-} from "./DaemonStatusChip";
+import { DaemonStatusChip } from "./DaemonStatusChip";
+import { HostCardGlance } from "./daemonHostGlance";
 import type { DaemonStatus } from "../common/daemonStatus";
 import {
   createDaemonStatusStore,
@@ -981,77 +979,47 @@ function HostCard(props: { host: string; onSelect: () => void }) {
     return `/ · ${gb.used}/${gb.total} GB · ${disk().toFixed(0)}%`;
   });
 
-  // U3.4: outer surface is layout chrome, not a button. Host selection and the
-  // daemon chip are sibling controls — never nest chip button inside selection.
+  // U3.4 / U4.3: production glance placement (HostCardGlance) owns the
+  // interactive structure — tests render that component, not a hand mirror.
   return (
-    <div
-      data-testid={`host-card-${props.host}`}
-      class="flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3 transition-colors hover:border-indigo-400 hover:bg-white dark:border-gray-800 dark:bg-gray-900/40 dark:hover:border-indigo-500 dark:hover:bg-gray-900"
+    <HostCardGlance
+      host={props.host}
+      connectionPhase={state()}
+      alertCount={alertCount()}
+      entryState={entryState}
+      onSelect={props.onSelect}
     >
-      <div class="flex items-center gap-2">
-        <button
-          type="button"
-          data-testid={`host-card-select-${props.host}`}
-          onClick={props.onSelect}
-          class="flex min-w-0 flex-1 items-center gap-2 text-left"
-        >
-          <HostDot state={entryState} class="shrink-0" />
-          <span class="truncate font-semibold" title={props.host}>
-            {props.host}
-          </span>
-          <Show when={entryState().kind === "connected" && alertCount() > 0}>
-            <span
-              class="shrink-0 rounded-full bg-red-500/15 px-1.5 text-xs font-semibold text-red-600 dark:text-red-400"
-              title={`${alertCount()} alert${alertCount() === 1 ? "" : "s"}`}
-            >
-              {alertCount()}
-            </span>
-          </Show>
-          <span class={`ml-auto shrink-0 text-xs ${STATE[state()].text}`}>
-            {state()}
-          </span>
-        </button>
-        <FleetDaemonStatusChip host={props.host} />
-      </div>
-
-      <button
-        type="button"
-        data-testid={`host-card-body-${props.host}`}
-        onClick={props.onSelect}
-        class="flex w-full flex-col gap-2 text-left"
-      >
-        <Show
-          when={entryState().kind === "connected"}
-          fallback={
-            <div class="py-3 text-center text-xs text-gray-400 dark:text-gray-500">
-              {STATE[state()].label}
-            </div>
-          }
-        >
-          <CardMetric
-            label="cpu"
-            pct={cpuPct()}
-            detail={`${cpuPct().toFixed(0)}% · ${coreCount()} cores`}
-          />
-          <CardMetric label="mem" pct={mem()} detail={memText()} />
-          <CardMetric label="swap" pct={swap()} detail={swapText()} />
-          <CardMetric label="disk" pct={disk()} detail={diskText()} />
-          <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400">
-            <span>
-              load{" "}
-              <span class="font-semibold text-gray-700 dark:text-gray-300">
-                {sys().loadAvg[0].toFixed(2)}
-              </span>{" "}
-              {sys().loadAvg[1].toFixed(2)} {sys().loadAvg[2].toFixed(2)}
-            </span>
-            <span>
-              up {formatUptime(sys().uptime)} · {sys().os}
-            </span>
+      <Show
+        when={entryState().kind === "connected"}
+        fallback={
+          <div class="py-3 text-center text-xs text-gray-400 dark:text-gray-500">
+            {STATE[state()].label}
           </div>
-          <HostCardSparkline host={props.host} />
-        </Show>
-      </button>
-    </div>
+        }
+      >
+        <CardMetric
+          label="cpu"
+          pct={cpuPct()}
+          detail={`${cpuPct().toFixed(0)}% · ${coreCount()} cores`}
+        />
+        <CardMetric label="mem" pct={mem()} detail={memText()} />
+        <CardMetric label="swap" pct={swap()} detail={swapText()} />
+        <CardMetric label="disk" pct={disk()} detail={diskText()} />
+        <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400">
+          <span>
+            load{" "}
+            <span class="font-semibold text-gray-700 dark:text-gray-300">
+              {sys().loadAvg[0].toFixed(2)}
+            </span>{" "}
+            {sys().loadAvg[1].toFixed(2)} {sys().loadAvg[2].toFixed(2)}
+          </span>
+          <span>
+            up {formatUptime(sys().uptime)} · {sys().os}
+          </span>
+        </div>
+        <HostCardSparkline host={props.host} />
+      </Show>
+    </HostCardGlance>
   );
 }
 

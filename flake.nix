@@ -100,9 +100,9 @@
           # `nix run github:srid/drishti -- user@host` → the monitor.
           default = drvs.drishti;
           inherit (drvs) drishti drishti-agent drishti-client drishtiBuilt drishtiAgentBuilt;
-          # W2.5 identity key (hash of inner wrapper) — drv-stability pins this,
-          # not the outer agent .drv (outer stamps monorepo COMMIT_HASH).
-          inherit (drvs) drishtiAgentBuildId drishti-agent-inner;
+          # Inner wrapper derivation only (packages.* must be derivations —
+          # raw BUILD_ID string lives on agentBuildIdsJson, not packages).
+          inherit (drvs) drishti-agent-inner;
           # @kolu/* source paths — exposed so `nix build .#kolu-surface`
           # realizes the store path used by the dev shell's hydrate hook.
           kolu-surface = pkgs.kolu-surface;

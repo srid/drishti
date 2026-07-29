@@ -81,14 +81,17 @@ typecheck: install
 # Heavy pool/window e2e legs key on KOLU_DAEMON_TESTS (kolu daemon-test-gate);
 # this default leaves them OFF so GHA/shared runners skip them. Use
 # `just test-daemon` (or `ci::test-daemon` on odu linux) for the full suite.
+# App-scoped Solid/happy-dom preload (NOT root bunfig — agent BUILD_ID).
+test_preload := "--preload ./packages/app/src/client/test-setup.ts"
+
 test *args: install
-    {{ nix_shell }} bun test --conditions=browser {{ args }}
+    {{ nix_shell }} bun test --conditions=browser {{ test_preload }} {{ args }}
 
 # Full suite including daemon-gated e2e (KOLU_DAEMON_TESTS=1). Same env kolu's
 # `describeDaemon` / odu daemon lane uses — no new knob. Forks real agents and
 # may realise agent .drvs; CI/odu linux only (not GHA default `just test`).
 test-daemon *args: install
-    KOLU_DAEMON_TESTS=1 {{ nix_shell }} bun test --conditions=browser {{ args }}
+    KOLU_DAEMON_TESTS=1 {{ nix_shell }} bun test --conditions=browser {{ test_preload }} {{ args }}
 
 # Format all *.nix files (and any future biome target — drishti doesn't
 # bring biome in by default; add when JS formatting becomes a chore).

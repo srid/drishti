@@ -22,7 +22,7 @@ nix_shell := if env('IN_NIX_SHELL', '') != '' { '' } else { 'nix develop --accep
 [macos]
 [parallel]
 [metadata("ci")]
-default: nix typecheck fmt-check bun-nix-fresh home-manager drv-stability agent-boots test-daemon
+default: nix typecheck fmt-check bun-nix-fresh flake-check home-manager drv-stability agent-boots test-daemon
 
 # Single per-platform `bun install`. Funnel every bun consumer through this
 # node so concurrent `bun install` runs against the same workspace don't race.
@@ -67,20 +67,17 @@ typecheck: install
 
 # Acceptance guard for issue #38: a client/server-only edit must NOT change the
 # agent's .drv hash — otherwise every remote re-copies + rebuilds the agent on
-# the next reconnect. Identity is the INNER wrapper hash (W2.5 BUILD_ID) — not
-# the outer agent .drv (which legitimately carries COMMIT_HASH / monorepo rev
-# and advances on any commit, client-only included). Snapshot
-# drishtiAgentBuildId, replay a client-only edit in a throwaway git worktree
-# (so this host's tree is never touched), and assert the id is byte-identical.
-# Pinned to x86_64-linux: pure cross-arch eval makes the evaluating platform
-# irrelevant. `--no-eval-cache` so a warm eval cache can't mask a regression.
+# Fleet BUILD_ID stability (W2.5 / U4.1). Identity is the INNER wrapper hash —
+# not the outer agent .drv (outer carries COMMIT_HASH / monorepo rev). Three
+# probes in throwaway worktrees (host tree untouched):
+#   (a) client .ts edit            → BUILD_ID unchanged
+#   (b) app-only lock/devDep edit  → BUILD_ID unchanged  (the wave-3 failure class)
+#   (c) agent-touching source edit → BUILD_ID rotates
+# Pinned to x86_64-linux via agentBuildIdsJson; `--no-eval-cache`.
 drv-stability:
     #!/usr/bin/env bash
     set -euo pipefail
-    # BUILD_ID is hash(inner wrapper path) — the sole convergeAdmit identity key.
-    # agentBuildIdsJson is the per-system map the parent already bakes.
     extract_id() {
-      # JSON: {"x86_64-linux":"<id>",...} — pull the x86_64-linux value.
       sed -n 's/.*"x86_64-linux"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
     }
     base=$(nix eval --raw --no-eval-cache '.#agentBuildIdsJson' | extract_id)
@@ -88,22 +85,63 @@ drv-stability:
       echo "drv-stability: FAIL — empty x86_64-linux BUILD_ID from agentBuildIdsJson"
       exit 1
     fi
-    tmp=$(mktemp -d)
-    wt="$tmp/wt"
-    trap 'git worktree remove --force "$wt" 2>/dev/null || true; rm -rf "$tmp"' EXIT
-    git worktree add -q --detach "$wt" HEAD
-    printf '\n// drv-stability probe — client edit must not churn agent BUILD_ID\n' \
-      >> "$wt/packages/app/src/client/theme.ts"
-    git -C "$wt" -c user.email=ci@drishti -c user.name=ci commit -qam 'drv-stability probe'
-    after=$(nix eval --raw --no-eval-cache "$wt#agentBuildIdsJson" | extract_id)
-    if [ "$base" = "$after" ]; then
-      echo "drv-stability: PASS — agent BUILD_ID unchanged across a client edit ($base)"
-    else
-      echo "drv-stability: FAIL — a client edit churned the agent BUILD_ID (identity)"
-      echo "  before: $base"
-      echo "  after:  $after"
-      exit 1
-    fi
+    echo "drv-stability: base BUILD_ID=$base"
+
+    run_probe() {
+      local name="$1" expect_change="$2" # expect_change=0|1
+      local mutator="$3"
+      local tmp wt after
+      tmp=$(mktemp -d)
+      wt="$tmp/wt"
+      git worktree add -q --detach "$wt" HEAD
+      # Mutator is a shell snippet; WT is the worktree path.
+      WT="$wt" bash -c "$mutator"
+      git -C "$wt" -c user.email=ci@drishti -c user.name=ci add -A
+      git -C "$wt" -c user.email=ci@drishti -c user.name=ci \
+        commit -qm "drv-stability probe: $name"
+      after=$(nix eval --raw --no-eval-cache "$wt#agentBuildIdsJson" | extract_id)
+      git worktree remove --force "$wt" 2>/dev/null || true
+      rm -rf "$tmp"
+      if [ "$expect_change" = "0" ]; then
+        if [ "$base" = "$after" ]; then
+          echo "drv-stability: PASS ($name) — BUILD_ID unchanged ($base)"
+        else
+          echo "drv-stability: FAIL ($name) — BUILD_ID rotated (must stay put)"
+          echo "  before: $base"
+          echo "  after:  $after"
+          exit 1
+        fi
+      else
+        if [ "$base" != "$after" ]; then
+          echo "drv-stability: PASS ($name) — BUILD_ID rotated as expected"
+          echo "  before: $base"
+          echo "  after:  $after"
+        else
+          echo "drv-stability: FAIL ($name) — BUILD_ID stayed put (must rotate on agent touch)"
+          echo "  id: $base"
+          exit 1
+        fi
+      fi
+    }
+
+    # (a) client-only source edit
+    run_probe "client-ts" 0 \
+      'printf "\n// drv-stability probe — client edit must not churn agent BUILD_ID\n" >> "$WT/packages/app/src/client/theme.ts"'
+
+    # (b) app-only lock/devDependency mutation (wave-3 failure class)
+    run_probe "app-only-lock" 0 \
+      'printf "\n# drv-stability app-only lock marker\n" >> "$WT/bun.lock"
+       printf "\n# drv-stability app-only bunfig marker\n" >> "$WT/bunfig.toml"
+       printf "\n# drv-stability app-only bun.nix marker\n" >> "$WT/bun.nix"'
+
+    # (c) agent-touching edit must rotate
+    run_probe "agent-touch" 1 \
+      'printf "\n// drv-stability probe — agent touch must rotate BUILD_ID\n" >> "$WT/packages/agent/src/main.ts"'
+
+# Flake schema check — packages.* must be derivations (U4.2). Catches raw
+# strings under packages.<system> that GHA build alone misses.
+flake-check:
+    {{ nix_shell }} nix flake check --no-build --show-trace
 
 # Boot the BUILT agent to prove its runtime module graph resolves — the guard
 # this pipeline lacked. `typecheck` resolves `@kolu/*` from the dev node_modules

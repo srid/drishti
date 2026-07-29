@@ -3,9 +3,9 @@
 # shellHook) needs @kolu/surface, @orpc/*, and zod resolvable from one
 # node_modules. Isolated linker would leave each workspace package's deps in
 # its own node_modules — surface-nix-host would resolve nothing from root.
+#
+# Client-component test preload lives on the `just test` command line (app-
+# scoped), not here: a root [test] entry is an agent-derivation input and
+# must not absorb app-only tooling (U4.1 / fleet BUILD_ID).
 [install]
 linker = "hoisted"
-
-# Client component tests need happy-dom + Solid JSX (see test-setup.ts).
-[test]
-preload = ["./packages/app/src/client/test-setup.ts"]

@@ -19,6 +19,7 @@ import {
   FleetDaemonStatusChip,
 } from "./DaemonStatusChip";
 import { DaemonDialog } from "./DaemonDialog";
+import { HostCardGlance, TabHostGlance } from "./daemonHostGlance";
 import {
   type DaemonChipKind,
   chipFromDaemonStatus,
@@ -34,8 +35,30 @@ import {
   type RenewStateMap,
 } from "./daemonStatusStore";
 
+const glanceSrc = readFileSync(
+  join(import.meta.dir, "daemonHostGlance.tsx"),
+  "utf8",
+);
 const tabSrc = readFileSync(join(import.meta.dir, "TabStrip.tsx"), "utf8");
 const appSrc = readFileSync(join(import.meta.dir, "App.tsx"), "utf8");
+
+/** Minimal EntryState lens for glance placements (no live hostMap). */
+function fakeEntryState(
+  kind: "connected" | "disconnected" | "failed" = "connected",
+) {
+  return () => {
+    if (kind === "connected") {
+      return { kind: "connected" as const, value: {} };
+    }
+    if (kind === "failed") {
+      return {
+        kind: "failed" as const,
+        failure: { reason: "test-fail" },
+      };
+    }
+    return { kind: "disconnected" as const };
+  };
+}
 
 afterEach(() => cleanup());
 
@@ -433,7 +456,7 @@ describe("U3.2 store binding — FleetDaemonStatusChip", () => {
   });
 });
 
-describe("U3.4 no nested buttons — sibling chip + selection", () => {
+describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance)", () => {
   const bootRefused = status({
     phase: "failed",
     anomaly: {
@@ -454,7 +477,7 @@ describe("U3.4 no nested buttons — sibling chip + selection", () => {
     }
   }
 
-  it("tab placement: select + chip are sibling controls with distinct actions", async () => {
+  it("TabHostGlance: select + chip sibling controls, distinct actions", async () => {
     let selected = 0;
     let opened: string | undefined;
     const store = mockStore({
@@ -463,21 +486,20 @@ describe("U3.4 no nested buttons — sibling chip + selection", () => {
         opened = h ?? undefined;
       },
     });
+    // PRODUCTION component (TabChip mounts this) — not a hand-written mirror.
     const { container } = render(() => (
       <DaemonStatusCtx.Provider value={store}>
-        {/* Mirrors TabChip: selection button + FleetDaemonStatusChip siblings. */}
-        <div data-testid="tab-chip-tab-host">
-          <button
-            type="button"
-            data-testid="tab-select-tab-host"
-            onClick={() => {
-              selected += 1;
-            }}
-          >
-            tab-host
-          </button>
-          <FleetDaemonStatusChip host="tab-host" />
-        </div>
+        <TabHostGlance
+          host="tab-host"
+          active={false}
+          connectionKind="failed"
+          alertCount={0}
+          entryState={fakeEntryState("failed")}
+          onSelect={() => {
+            selected += 1;
+          }}
+          onClose={() => {}}
+        />
       </DaemonStatusCtx.Provider>
     ));
     assertNoNestedButtons(container as HTMLElement);
@@ -489,33 +511,27 @@ describe("U3.4 no nested buttons — sibling chip + selection", () => {
     expect(selected).toBe(1);
   });
 
-  it("tab placement: healthy host has no chip (quiet-when-healthy)", () => {
+  it("TabHostGlance: healthy host has no chip (quiet-when-healthy)", () => {
     const store = mockStore({
       byHost: { "tab-ok": status({ phase: "connected" }) },
     });
     render(() => (
       <DaemonStatusCtx.Provider value={store}>
-        <div data-testid="tab-chip-tab-ok">
-          <button type="button" data-testid="tab-select-tab-ok">
-            tab-ok
-          </button>
-          <FleetDaemonStatusChip host="tab-ok" />
-        </div>
+        <TabHostGlance
+          host="tab-ok"
+          active={true}
+          connectionKind="connected"
+          alertCount={0}
+          entryState={fakeEntryState("connected")}
+          onSelect={() => {}}
+          onClose={() => {}}
+        />
       </DaemonStatusCtx.Provider>
     ));
     expect(screen.queryByTestId("daemon-status-chip")).toBeNull();
   });
 
-  it("production TabChip and HostCard keep FleetDaemonStatusChip as a sibling (not nested)", () => {
-    // MUTATION: nest <FleetDaemonStatusChip> inside the select <button> ⇒ red.
-    expect(tabSrc).toMatch(/<\/button>\s*<FleetDaemonStatusChip\s+host=/);
-    expect(appSrc).toMatch(/<\/button>\s*<FleetDaemonStatusChip\s+host=/);
-    // And production uses the store-bound chip (not a null literal).
-    expect(tabSrc).toMatch(/FleetDaemonStatusChip\s+host=\{props\.host\}/);
-    expect(appSrc).toMatch(/FleetDaemonStatusChip\s+host=\{props\.host\}/);
-  });
-
-  it("card placement: select + chip are sibling controls with distinct actions", async () => {
+  it("HostCardGlance: select + chip sibling controls, distinct actions", async () => {
     let selected = 0;
     let opened: string | undefined;
     const store = mockStore({
@@ -524,23 +540,20 @@ describe("U3.4 no nested buttons — sibling chip + selection", () => {
         opened = h ?? undefined;
       },
     });
+    // PRODUCTION component (HostCard mounts this) — not a hand-written mirror.
     const { container } = render(() => (
       <DaemonStatusCtx.Provider value={store}>
-        {/* Mirrors HostCard header: selection button + FleetDaemonStatusChip siblings. */}
-        <div data-testid="host-card-card-host">
-          <div>
-            <button
-              type="button"
-              data-testid="host-card-select-card-host"
-              onClick={() => {
-                selected += 1;
-              }}
-            >
-              card-host
-            </button>
-            <FleetDaemonStatusChip host="card-host" />
-          </div>
-        </div>
+        <HostCardGlance
+          host="card-host"
+          connectionPhase="failed"
+          alertCount={0}
+          entryState={fakeEntryState("failed")}
+          onSelect={() => {
+            selected += 1;
+          }}
+        >
+          <div>metrics</div>
+        </HostCardGlance>
       </DaemonStatusCtx.Provider>
     ));
     assertNoNestedButtons(container as HTMLElement);
@@ -549,5 +562,15 @@ describe("U3.4 no nested buttons — sibling chip + selection", () => {
     await fireEvent.click(screen.getByTestId("daemon-status-chip"));
     expect(opened).toBe("card-host");
     expect(selected).toBe(1);
+  });
+
+  it("production call sites mount the glance components (not inlined nests)", () => {
+    expect(tabSrc).toMatch(/TabHostGlance/);
+    expect(appSrc).toMatch(/HostCardGlance/);
+    // MUTATION: nest FleetDaemonStatusChip inside the select button in
+    // daemonHostGlance.tsx ⇒ rendered assertNoNestedButtons reds.
+    expect(glanceSrc).toMatch(
+      /<\/button>\s*<FleetDaemonStatusChip\s+host=\{props\.host\}\s*\/>/,
+    );
   });
 });

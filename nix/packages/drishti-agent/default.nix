@@ -7,52 +7,70 @@
 # to ONLY its own inputs, so a client/server-only rebuild leaves the agent
 # `.drv` byte-identical and every remote's cached agent stays warm.
 #
-# Two churn edges are cut here, both necessary:
+# Three churn edges are cut here, all necessary:
 #
-#   1. `src` — a narrow fileset of packages/agent + packages/common (the wire
-#      contract) + the workspace metadata. packages/app (client + server) is
-#      deliberately absent, so editing it cannot rehash `src`.
+#   1. `src` — packages/agent + packages/common + workspace package.json +
+#      agent-scoped install metadata. packages/app is absent. The ROOT
+#      bun.lock / bunfig.toml / bun.nix are ALSO absent: those files absorb
+#      app-only test tooling (happy-dom, @solidjs/testing-library, …) and
+#      used to rotate fleet BUILD_ID on UI-test waves (U4.1).
 #
-#   2. `bunDeps` — `fetchBunDeps` builds a `symlinkJoin` over every entry in
-#      `bun.nix`, INCLUDING `"drishti-app" = copyPathToStore ./packages/app`
-#      (bun2nix bakes each workspace member's source into the dep cache). That
-#      FOD takes packages/app's source as a direct Nix input, so a naive reuse
-#      of the full `bun.nix` would still churn the agent on client edits even
-#      with a narrow `src`. We pass a `bun.nix` with the `drishti-app` entry
-#      removed; the agent depends only on drishti-common + npm tarballs, none
-#      of which move when client/server source changes.
+#   2. `bunDeps` — `fetchBunDeps` over an agent-filtered bun.nix that drops
+#      the drishti-app workspace FOD AND every known app-test-only package.
+#      Adding an app-only npm fetch must not rehash the agent cache join.
 #
-# Acceptance test (`just drv-stability`, also a CI node): a committed client
-# edit must leave `drishti-agent.drvPath` unchanged.
+#   3. Install metadata — `packages/agent/agent.lock` + `agent.bunfig.toml`
+#      (linker only). Regenerated only when agent/common deps change, never
+#      when app test deps land in the workspace root lock.
 #
-# UW3 meaning shift: once the agent is a durable daemon, an accidental
-# agent-drv change no longer costs only a cache miss — it costs a
-# fleet-wide daemon restart (every host drains and replaces). Treat
-# agent-side churn as a fleet event, not a quiet rebuild.
+# Acceptance (`just ci::drv-stability`): client .ts edit AND app-only
+# lock/devDependency mutation leave BUILD_ID unchanged; agent-touching
+# mutation rotates it.
 #
-# `@kolu/surface` is hydrated post-install exactly as in the monitor build
-# (it is a Nix-store source, not a bun.lock entry). Because it's hydrated, its
-# support deps must be declared by consumers so the hoisted node_modules
-# resolves them — and this build excludes packages/app, so it can't lean on the
-# monitor's declarations. The split mirrors the import graph: the wire
-# contract's needs (@orpc/contract, zod) live on drishti-common; the
-# server/peer-server deps the agent serves (@orpc/server, @orpc/client — the
-# latter pulled by peer-server's stdio-codec) live on drishti-agent. No agent-
-# reachable @kolu/surface entrypoint imports solid-js, so it is not declared.
+# UW3: accidental agent-drv change is a fleet-wide daemon restart, not a
+# quiet rebuild.
+#
+# `@kolu/surface` is hydrated post-install. The agent declares the runtime
+# deps of hydrated sources itself (packages/agent/package.json).
 { stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-daemon, osfacts-client }:
 let
+  # Package name prefixes (bun.nix keys are "name@version") that exist only
+  # for app/browser tests. Extending this list is required when a new
+  # app-only test dep would otherwise re-enter the agent cache.
+  appTestOnlyNamePrefixes = [
+    "happy-dom@"
+    "@happy-dom/"
+    "@solidjs/testing-library@"
+    "@testing-library/"
+    "aria-query@"
+    "@types/aria-query@"
+    "dom-accessibility-api@"
+    "pretty-format@"
+    "lz-string@"
+    "react-is@"
+    "ansi-regex@"
+    "ansi-styles@"
+    "@babel/runtime@"
+    "buffer-image-size@"
+    "entities@7." # happy-dom's entities; parse5's entities@6 stays for monitor
+    "@types/whatwg-mimetype@"
+    "whatwg-mimetype@"
+  ];
+
+  isAppTestOnlyKey = name:
+    lib.any (p: lib.hasPrefix p name) appTestOnlyNamePrefixes;
+
   src = lib.fileset.toSource {
     root = ../../..;
     fileset = lib.fileset.unions [
       ../../../package.json
-      ../../../bun.lock
-      ../../../bunfig.toml
       ../../../tsconfig.base.json
-      ../../../bun.nix
       ../../../packages/agent
       ../../../packages/common
       # @kolu/* hydration script — invoked from postBunNodeModulesInstallPhase.
       ../../../scripts
+      # Agent-scoped install metadata (NOT the workspace-root lock/bunfig).
+      # Root bun.lock / bunfig.toml / bun.nix stay out of this fileset.
     ];
   };
 in
@@ -65,45 +83,31 @@ stdenv.mkDerivation {
   # propagated bun (same reproducibility reason as the monitor build).
   nativeBuildInputs = [ bun bun2nix.hook ];
 
-  # The agent's dep cache, with the `drishti-app` workspace FOD filtered out
-  # (see the churn-edge note in the header). `fetchBunDeps` calls
-  # `pkgs.callPackage bunNix { ... }`, so a function with bun.nix's signature
-  # that forwards its args and drops one attr is a drop-in replacement.
+  # Agent dep cache: drop workspace app FOD + app-test-only npm FODs.
   bunDeps = bun2nix.fetchBunDeps {
     bunNix =
       { copyPathToStore, fetchFromGitHub, fetchgit, fetchurl, ... }@bunNixArgs:
-      # Exclude-list of workspace-member FODs the agent does NOT depend on.
-      # MAINTENANCE INVARIANT: every non-agent `packages/*` member must appear
-      # here, or its source silently re-enters the cache and reintroduces the
-      # drv churn this build exists to prevent. Today that's just drishti-app
-      # (client + server); a future member the agent doesn't use must be added.
-      # `just drv-stability` guards the client-edit case but can't see a member
-      # that didn't exist when it was written.
-      builtins.removeAttrs (import ../../../bun.nix bunNixArgs) [ "drishti-app" ];
+      let
+        full = import ../../../bun.nix bunNixArgs;
+        drop = name: name == "drishti-app" || isAppTestOnlyKey name;
+      in
+      lib.filterAttrs (name: _: !drop name) full;
   };
 
-  # hoisted linker matches `bunfig.toml`: hydrated @kolu/surface must resolve
-  # its transitive deps (@orpc/*, zod, solid-js) from the workspace-root
-  # node_modules, not from an isolated per-package tree.
-  # No --production here: this tree excludes packages/app, and bun's frozen
-  # lockfile install rewrites when --production drops workspace members' deps
-  # (lockfile had changes). The darwin parse5/entities nest is a monitor
-  # (drishti-built) issue; agent does not ship app test tooling.
   bunInstallFlags = [ "--linker=hoisted" ];
 
-  # Pure overhead for a Bun app — no shebangs we care about, no native binaries.
   dontFixup = true;
   dontPatchShebangs = true;
-
-  # No client bundle: the agent never reads dist, and dropping the build step
-  # keeps the churniest output out of the agent's closure entirely.
   dontUseBunBuild = true;
   dontBuild = true;
 
-  # @kolu/surface is a Nix-store source, not a bun.lock entry — drop it in
-  # after bun install populates node_modules. The agent needs only
-  # @kolu/surface (not surface-remote/surface-map, which are the parent's
-  # provisioning + fleet-membership libs).
+  # Point bun install at the agent-scoped lock + bunfig (stable under app
+  # test churn). Root workspace files are deliberately not in `src`.
+  postPatch = ''
+    cp packages/agent/agent.lock bun.lock
+    cp packages/agent/agent.bunfig.toml bunfig.toml
+  '';
+
   postBunNodeModulesInstallPhase = ''
     sh scripts/hydrate-kolu-packages.sh \
       ${kolu-surface} @kolu/surface \
@@ -117,8 +121,6 @@ stdenv.mkDerivation {
     cp -r packages $out/lib/drishti/
     cp -r node_modules $out/lib/drishti/
     cp package.json bunfig.toml tsconfig.base.json $out/lib/drishti/
-    # Guard: the wrapper in ../../../default.nix hard-codes this entry-point
-    # path. Fail the build (not runtime) if it moves.
     entry="$out/lib/drishti/packages/agent/src/main.ts"
     test -e "$entry" || {
       echo "installPhase: $entry missing — update default.nix if the path changed"
