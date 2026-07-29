@@ -67,15 +67,13 @@
             (import ./default.nix { inherit pkgs b2n; }).drishti-agent.drvPath)
         perSystemAttrs;
 
-      # Per-system agent BUILD_ID (hash of that system's drishtiAgentBuilt).
+      # Per-system agent BUILD_ID — same shipped-wrapper hash as
+      # `drishtiAgentBuildId` in default.nix (agent tree + bun + osfacts + flags).
       # Parent convergeAdmit uses this so a multi-arch host expects the build
       # id of the agent it actually provisions — not the parent-arch only id.
       agentBuildIdBySystem = builtins.mapAttrs
         (_: { pkgs, b2n }:
-          let
-            built = (import ./default.nix { inherit pkgs b2n; }).drishtiAgentBuilt;
-          in
-          builtins.hashString "sha256" (toString built))
+          (import ./default.nix { inherit pkgs b2n; }).drishtiAgentBuildId)
         perSystemAttrs;
 
       # The caches provisioning prefetches the agent closure from before

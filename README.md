@@ -99,7 +99,7 @@ Per-host primitives:
 | **Collection** | `sourceErrors` | Named osfacts `E` rows (`operation`, `source`, `facet`, `code`) accompanying otherwise usable partial frames. |
 | **Collection** | `cpuCores` | Per-core CPU usage, model, and nullable MHz. The whole grid rides the collection's batched deltas. |
 | **Collection** | `networkInterfaces` | Per-NIC network I/O from osfacts V2, keyed by interface name — `{ rxBytes, txBytes, rxRate, txRate }` (cumulative bytes since boot + bytes/sec throughput); loopback filtered out. The UI strip collapses idle interfaces behind a `+N idle` toggle. |
-| **Stream** | `metricHistory` | Parent-owned in-memory CPU/memory/swap/disk history: full retained snapshot on subscribe, then one delta per poll. |
+| **Stream** | `metricHistory` | Agent-daemon-owned durable CPU/memory/swap/disk history ring on disk (`~/.local/state/drishti/history.ring.json`): full retained snapshot on subscribe, then one delta per poll. Survives parent deploys and reconnects; corrupt/unknown-version rings surface as a typed `unavailable` standing state (never a silently empty chart). |
 | **Procedure** | `process.kill` | Send an allowed signal to a PID on the host that owns it. The UI exposes TERM and KILL. |
 
 The process, listener, source-error, CPU, and network collections are observation-only. `process.kill` is the one explicit per-host mutation.

@@ -1,16 +1,14 @@
 /**
- * Synthetic mixed-build window (UW3 bootstrap).
+ * Unit: synthetic mixed-build policy skeleton (NOT an e2e / window proof).
  *
- * Drishti has no daemon-capable previous release tag yet, so the mixed-build
- * proof cannot resolve a real previous tag (that hard-refuses when previous
- * equals current). Instead we drive a REAL build-axis drain through the
- * framework's `convergeAdmit` skeleton with a synthetic previous identity
- * (same surface, different baked buildId) and assert the successor path
- * re-reads history from `history.ring.json`.
+ * The real window e2e lives in `window.e2e.test.ts` (W1): real processes,
+ * --stdio front, adopt pid equality, drain exit, dispositions via the
+ * served surface. This file only unit-tests convergeAdmit policy wiring and
+ * the previous-tag arming gate ("previous must differ from current").
  *
  * At the first daemon-capable release tag, the previous-tag resolver
  * (`assertPreviousReleaseWindow` + `runPreviousReleaseWindow`) arms with its
- * "previous must differ from current" hard refusal.
+ * hard refusal when previous equals current.
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -84,7 +82,7 @@ function syntheticProbe(args: {
   };
 }
 
-describe("synthetic mixed-build window (UW3 bootstrap)", () => {
+describe("synthetic mixed-build policy unit (not e2e)", () => {
   it("build-axis drain via convergeAdmit then successor re-reads history.ring.json", async () => {
     const dir = mkdtempSync(join(tmpdir(), "drishti-mixed-"));
     temps.push(dir);

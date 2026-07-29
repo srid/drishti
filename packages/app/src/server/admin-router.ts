@@ -141,6 +141,44 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
               opts.pool.recheckAll();
               return { ok: true };
             },
+            renew: async ({ input }: { input: { host: string } }) => {
+              // W7: manual build-axis replace via HostSession.renew.
+              if (!opts.pool.has(input.host)) {
+                return { ok: false, error: "host not found" };
+              }
+              const session = opts.pool.getSession(input.host);
+              if (session === undefined) {
+                return { ok: false, error: "host session missing" };
+              }
+              try {
+                await session.renew();
+                // After a successful drain the session should re-dial; force
+                // reconnect so the successor comes up without waiting for
+                // idle teardown paths.
+                opts.pool.reconnect(input.host);
+                return { ok: true };
+              } catch (err) {
+                return { ok: false, error: (err as Error).message };
+              }
+            },
+            convergence: ({ input }: { input: { host: string } }) => {
+              // W7: project HostSession.convergence() for honest UI / tests.
+              if (!opts.pool.has(input.host)) {
+                return { anomaly: null };
+              }
+              const session = opts.pool.getSession(input.host);
+              if (session === undefined) {
+                return { anomaly: null };
+              }
+              const c = session.convergence();
+              if (c === null) return { anomaly: null };
+              return {
+                anomaly: {
+                  kind: c.kind,
+                  detail: c.detail,
+                },
+              };
+            },
           },
         },
       },

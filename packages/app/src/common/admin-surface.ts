@@ -82,6 +82,26 @@ export const adminSurface = defineSurface({
         input: z.object({}),
         output: z.object({ ok: z.boolean() }),
       },
+      // W7: build-axis replace — drain + await exit via control-core (HostSession.renew).
+      // After renew the session reconnect machinery spawns the successor.
+      renew: {
+        input: z.object({ host: z.string() }),
+        output: z.object({ ok: z.boolean(), error: z.string().optional() }),
+      },
+      // W7: standing convergence anomaly for a host (adopted-stale / skew /
+      // unconverged / cross-supervisor / link-failed), or null when clean.
+      // Typed kind + detail for minimal honest UI projection.
+      convergence: {
+        input: z.object({ host: z.string() }),
+        output: z.object({
+          anomaly: z
+            .object({
+              kind: z.string(),
+              detail: z.string(),
+            })
+            .nullable(),
+        }),
+      },
     },
   },
 });

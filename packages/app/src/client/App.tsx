@@ -1171,6 +1171,31 @@ function HostView(props: {
       .catch((err) => console.error(`reconnect ${props.host} failed`, err));
   };
 
+  // W7: standing convergence anomaly (adopt-stale / skew / …) + renew verb.
+  // Polled lightly; the anomaly is standing until renew/reconnect clears it.
+  const [convergence, setConvergence] = createSignal<{
+    kind: string;
+    detail: string;
+  } | null>(null);
+  const pollConvergence = () => {
+    void adminRpc()
+      .hosts.convergence({ host: props.host })
+      .then((r) => setConvergence(r.anomaly))
+      .catch(() => setConvergence(null));
+  };
+  pollConvergence();
+  const convIv = setInterval(pollConvergence, 5_000);
+  onCleanup(() => clearInterval(convIv));
+  const onRenew = () => {
+    void adminRpc()
+      .hosts.renew({ host: props.host })
+      .then((r) => {
+        if (!r.ok) console.error(`renew ${props.host} failed: ${r.error}`);
+        pollConvergence();
+      })
+      .catch((err) => console.error(`renew ${props.host} failed`, err));
+  };
+
   // The live process table, consumed as a declarative value-bearing reactive
   // subscription: `createSubscription` folds every snapshot|delta frame in-loop
   // (via `foldProcessesMessage`) into the full process map, replacing the
@@ -1407,6 +1432,25 @@ function HostView(props: {
           already surfaces its OWN error via its member's declared `client.onError`
           policy (SR11), routed through the ONE `interpretClientError`. */}
       <Show when={phase() === "connected"} fallback={connectingView()}>
+        {/* W7: standing convergence anomaly + renew verb (minimal honest UI). */}
+        <Show when={convergence()}>
+          {(c) => (
+            <div class="flex items-center justify-between gap-3 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-800 dark:text-amber-300">
+              <span class="min-w-0 truncate">
+                <span class="font-semibold">{c().kind}</span>
+                {" — "}
+                {c().detail}
+              </span>
+              <button
+                type="button"
+                class="shrink-0 rounded border border-amber-600/50 px-2 py-0.5 font-medium hover:bg-amber-500/20"
+                onClick={onRenew}
+              >
+                Renew agent
+              </button>
+            </div>
+          )}
+        </Show>
         <AlertsPanel
           ids={raisedIds()}
           system={currentSystem()}

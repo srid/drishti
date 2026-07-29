@@ -57,11 +57,13 @@ import {
   type CoreId,
   type CpuCore,
   type MetricHistoryMsg,
+  type MetricSample,
   type SystemInfo,
   surface,
 } from "drishti-common";
 import {
   applyHysteresis,
+  type Alerts,
   type MetricsFrame,
   NO_ALERTS,
 } from "drishti-common/alerts";
@@ -80,8 +82,14 @@ import {
 import { createProcReader, type ProcReader } from "./proc";
 
 const POLL_INTERVAL_MS = 2000;
-/** How often the durable ring is flushed to disk while running. Drain also flushes. */
-const RING_PERSIST_INTERVAL_MS = 30_000;
+/** How often the durable ring is flushed to disk while running. Drain also flushes.
+ *  Override via DRISHTI_RING_PERSIST_MS (test seam for W10 / e2e). */
+const RING_PERSIST_INTERVAL_MS = (() => {
+  const raw = process.env.DRISHTI_RING_PERSIST_MS;
+  if (raw === undefined || raw === "") return 30_000;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 30_000;
+})();
 /** Idle-exit after this many ms with no live parent connections. */
 const IDLE_TIMEOUT_MS = 60 * 60_000;
 
@@ -156,7 +164,7 @@ type Serve = (opts: {
   onFirstRequest: () => void;
 }) => Promise<unknown>;
 
-export interface AgentRuntime {
+interface AgentRuntime {
   // biome-ignore lint/suspicious/noExplicitAny: top-level oRPC router for daemonMain / serve.
   router: any;
   /**
@@ -166,35 +174,37 @@ export interface AgentRuntime {
    * connection count.
    */
   isIdle: () => boolean;
-  /** Flush the history ring to disk (idempotent). */
+  /** Flush the history ring to disk (idempotent). Surfaces typed degraded on failure. */
   flushRing: () => void;
   /** Tear down poll loops / surface sources. */
   close: () => Promise<void>;
   done: Promise<void>;
 }
 
-export interface BuildAgentRuntimeOptions {
-  /** Absolute path for the durable history ring. Omit → in-memory only (tests). */
+interface BuildAgentRuntimeOptions {
+  /** Absolute path for the durable history ring. Required for daemon mode. */
   ringPath?: string;
   /** Fired after the ring is flushed on control-core drain (daemon mode). */
   onDrain?: () => void | Promise<void>;
-  /** Daemon home — used only for control-core hello's stateRoot. */
+  /** Daemon home — required when withControlCore is true. */
   stateRoot?: string;
   /** Whether to compose the control-core fragment (daemon mode). Tests omit it. */
   withControlCore?: boolean;
+  /** Test-only: inject saveHistoryRing failure (W10 mutation). */
+  saveRing?: typeof saveHistoryRing;
 }
 
 /**
- * Build the agent surface runtime + poll loop for `reader`. Shared by the
- * durable daemon path and the injectable `serveAgent` test path.
+ * Build the agent surface runtime + poll loop for `reader`. Module-private —
+ * not a public production API (W11). Shared by daemon main and serveAgent tests.
  *
  * **Serve before you enumerate.** The connect handshake needs only the cheap
  * `system` snapshot, so that is the one read we seed before returning. The
  * process/socket snapshot starts empty and the poll loop fills it.
  */
-export async function buildAgentRuntime(
+async function buildAgentRuntime(
   reader: ProcReader,
-  opts: BuildAgentRuntimeOptions = {},
+  opts: BuildAgentRuntimeOptions,
 ): Promise<AgentRuntime> {
   const systemStore = inMemoryStore({
     ...(await reader.readSystem()),
@@ -206,55 +216,117 @@ export async function buildAgentRuntime(
     return () => clearInterval(iv);
   };
 
-  // ── Durable history ring ──────────────────────────────────────────────
-  // Boot disposition: a one-shot incident shown to the first subscriber(s).
-  // After a corrupt load the file is already moved aside — resume an empty
-  // ok ring so sampling/persistence continue (F1: sticky halt would kill
-  // the feature for the life of a durable daemon). Unknown-version leaves
-  // the file alone (must not overwrite) but still samples in memory so
-  // live charts work while persistence is withheld.
+  // ── Durable history ring (W2 standing unavailable; W4 alerts; W10 flush) ──
+  // unavailable is STANDING: every subscriber sees it until a legitimate
+  // transition. unknown-version / unreadable stay unavailable (file left alone).
+  // corrupt starts unavailable (F9); first successful sample transitions to ok
+  // once the corrupt file has been moved aside (disk path free).
   let historyView: HistoryView = { kind: "ok", samples: [] };
-  /** One-shot typed incident for first metricHistory yields after boot load. */
-  let bootIncident: MetricHistoryMsg | null = null;
-  /** When true, never flush to disk (unknown-version left the file alone). */
+  /** Restored / live hysteresis fold seed (W4). */
+  let alertsSeed: Alerts = NO_ALERTS;
+  /** Read current alerts from the cell once the runtime is built. */
+  let readAlerts: () => Alerts = () => alertsSeed;
+  /** When true, never flush to disk (file left alone: unknown-v / unreadable). */
   let persistWithheld = false;
+  /**
+   * Corrupt load moved the file aside — disk path is free. Stay standing
+   * unavailable until the first successful persist of a fresh ring (so every
+   * subscriber — including late ones after boot — still sees typed
+   * unavailable for F9 / W2). Sampling accumulates into `freshSamples` only.
+   */
+  let corruptAwaitingFresh = false;
+  let freshSamples: MetricSample[] = [];
+  const saveRing = opts.saveRing ?? saveHistoryRing;
+
   if (opts.ringPath !== undefined) {
     const loaded = loadHistoryRing(opts.ringPath);
     if (loaded.kind === "ok") {
-      historyView = loaded;
+      historyView = { kind: "ok", samples: loaded.samples };
+      alertsSeed = loaded.alerts;
+    } else if (
+      loaded.reason === "unknown-version" ||
+      loaded.reason === "unreadable"
+    ) {
+      // STANDING unavailable; file left alone; stream reports unavailable —
+      // never an ok-empty masquerade (W2).
+      persistWithheld = true;
+      historyView = {
+        kind: "unavailable",
+        reason: loaded.reason,
+        samples: [],
+      };
+      log(
+        `history ring standing unavailable (${loaded.reason}) at ${opts.ringPath}`,
+      );
     } else {
-      bootIncident = { kind: "unavailable", reason: loaded.reason };
-      if (
-        loaded.reason === "unknown-version" ||
-        loaded.reason === "unreadable"
-      ) {
-        // File still present and never judged (or future-version) — sample
-        // in memory only; never flush over it (F13 / F4).
-        persistWithheld = true;
-        historyView = { kind: "ok", samples: [] };
-        log(
-          `history ring unavailable (${loaded.reason}) at ${opts.ringPath} — reporting once, then sampling in-memory only (persist withheld; file left alone)`,
-        );
-      } else {
-        // Corrupt garbage: file was moved aside — free path, start a fresh ok ring.
-        historyView = { kind: "ok", samples: [] };
-        log(
-          `history ring unavailable (corrupt) at ${opts.ringPath} — reporting once, then resuming a fresh ring (corrupt file already moved aside)`,
-        );
-      }
+      // Corrupt: file already moved aside. Stand unavailable until a fresh
+      // ring is successfully written to the free path.
+      corruptAwaitingFresh = true;
+      historyView = {
+        kind: "unavailable",
+        reason: "corrupt",
+        samples: [],
+      };
+      log(
+        `history ring corrupt at ${opts.ringPath} — moved aside; standing unavailable until first successful persist`,
+      );
     }
   }
   const historyBus: Channel<MetricHistoryMsg> =
     inMemoryChannel<MetricHistoryMsg>();
 
+  const publishHistory = (msg: MetricHistoryMsg): void => {
+    historyBus.publish(msg);
+  };
+
   const flushRing = (): void => {
     if (opts.ringPath === undefined || persistWithheld) return;
-    // Only persist a healthy ring. Never overwrite an unknown-version file.
-    if (historyView.kind !== "ok") return;
+    // Corrupt-awaiting-fresh: try to materialise the free path; success is
+    // the legitimate transition out of standing unavailable.
+    if (historyView.kind === "unavailable") {
+      if (!corruptAwaitingFresh) return;
+      try {
+        saveRing(opts.ringPath, freshSamples, readAlerts());
+        corruptAwaitingFresh = false;
+        historyView = { kind: "ok", samples: [...freshSamples] };
+        publishHistory({
+          kind: "snapshot",
+          samples: [...freshSamples],
+        });
+        log(
+          `history ring recovered after corrupt — fresh ring persisted (${freshSamples.length} samples)`,
+        );
+      } catch (err) {
+        log(
+          `history ring fresh-persist after corrupt failed: ${(err as Error).message}`,
+        );
+      }
+      return;
+    }
+    const samples =
+      historyView.kind === "ok" || historyView.kind === "degraded"
+        ? historyView.samples
+        : [];
     try {
-      saveHistoryRing(opts.ringPath, historyView.samples);
+      saveRing(opts.ringPath, samples, readAlerts());
+      // Successful flush after a prior degrade recovers durability.
+      if (historyView.kind === "degraded") {
+        historyView = { kind: "ok", samples };
+        publishHistory({ kind: "snapshot", samples: [...samples] });
+      }
     } catch (err) {
       log(`history ring flush failed: ${(err as Error).message}`);
+      // W10: typed degraded — samples still serve; durability loss is visible.
+      historyView = {
+        kind: "degraded",
+        reason: "persist-failed",
+        samples,
+      };
+      publishHistory({
+        kind: "degraded",
+        reason: "persist-failed",
+        samples: [...samples],
+      });
     }
   };
 
@@ -275,7 +347,8 @@ export async function buildAgentRuntime(
   const appDeps = {
     cells: {
       system: { store: systemStore },
-      alerts: derived.cell(scan(metrics, NO_ALERTS, applyHysteresis)),
+      // W4: seed hysteresis from the ring so alert state survives drain.
+      alerts: derived.cell(scan(metrics, alertsSeed, applyHysteresis)),
     },
     collections: {
       processes: derived.collection(
@@ -322,18 +395,20 @@ export async function buildAgentRuntime(
         ): AsyncIterable<MetricHistoryMsg> {
           metricHistoryLeases += 1;
           try {
-            // Subscribe BEFORE the snapshot so a tick between snapshot and
-            // tail cannot drop a sample for this subscriber (F7).
+            // Subscribe BEFORE the first frame so a tick cannot drop a sample.
             const tail = historyBus.subscribe(signal);
-            // One-shot boot incident (corrupt/unknown-version at load).
-            if (bootIncident !== null) {
-              yield bootIncident;
-              bootIncident = null;
-            }
+            // STANDING state: every subscriber (including late ones) sees
+            // unavailable / degraded / ok as currently held — no one-shot.
             if (historyView.kind === "unavailable") {
               yield {
                 kind: "unavailable",
                 reason: historyView.reason,
+              } satisfies MetricHistoryMsg;
+            } else if (historyView.kind === "degraded") {
+              yield {
+                kind: "degraded",
+                reason: "persist-failed",
+                samples: [...historyView.samples],
               } satisfies MetricHistoryMsg;
             } else {
               yield {
@@ -375,11 +450,15 @@ export async function buildAgentRuntime(
   };
   const built: BuiltRuntime = opts.withControlCore
     ? (() => {
+        if (opts.stateRoot === undefined || opts.stateRoot === "") {
+          throw new Error(
+            "buildAgentRuntime: stateRoot is required when withControlCore is true",
+          );
+        }
         const identity = readBakedIdentity("DRISHTI_AGENT");
         const startedAt = Date.now();
-        const stateRoot = opts.stateRoot ?? "";
         const control = controlCoreFragment({
-          stateRoot,
+          stateRoot: opts.stateRoot,
           surfaceVersion: AGENT_SURFACE_VERSION,
           startedAt,
           commit: identity.navigableCommit,
@@ -394,6 +473,8 @@ export async function buildAgentRuntime(
           {},
           { app: appDeps as never, control },
         );
+        // W4: flush must read live hysteresis, not only the boot seed.
+        readAlerts = () => runtime.ctx.app.cells.alerts.get() as Alerts;
         return {
           router: runtime.router,
           done: runtime.done,
@@ -404,6 +485,7 @@ export async function buildAgentRuntime(
     : (() => {
         // Test path — single surface, no control core (serveAgent injects a fake serve).
         const runtime = implementSurface(surface, appDeps as never);
+        readAlerts = () => runtime.ctx.cells.alerts.get() as Alerts;
         return {
           router: runtime.router,
           done: runtime.done,
@@ -435,10 +517,36 @@ export async function buildAgentRuntime(
       emitMetrics?.(metricPercents(sys));
 
       // Sample the durable ring on each system tick (agent owns the ring).
-      if (historyView.kind === "ok") {
+      // Standing unavailable with persist withheld (unknown-v / unreadable)
+      // does not sample into the served view — that would masquerade as ok.
+      // Corrupt-awaiting-fresh accumulates into a side buffer; transition to
+      // ok only after a successful flush (keeps F9 standing for late subs).
+      if (
+        historyView.kind === "unavailable" &&
+        corruptAwaitingFresh &&
+        !persistWithheld
+      ) {
+        // Accumulate only — recovery persist runs on the ring persist interval
+        // (or drain), so standing unavailable stays visible to late subscribers.
+        const sample = captureSample(Date.now(), sys);
+        freshSamples = pushSample(freshSamples, sample, HISTORY_RETENTION_MS);
+      } else if (historyView.kind === "ok") {
         const sample = captureSample(Date.now(), sys);
         historyView = {
           kind: "ok",
+          samples: pushSample(
+            historyView.samples,
+            sample,
+            HISTORY_RETENTION_MS,
+          ),
+        };
+        historyBus.publish({ kind: "delta", sample });
+      } else if (historyView.kind === "degraded") {
+        // W10: keep serving live samples while durability is lost.
+        const sample = captureSample(Date.now(), sys);
+        historyView = {
+          kind: "degraded",
+          reason: "persist-failed",
           samples: pushSample(
             historyView.samples,
             sample,

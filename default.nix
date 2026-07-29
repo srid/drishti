@@ -77,15 +77,23 @@ let
     then resolvedPkgs.callPackage ./nix/packages/drishti-agent { bun2nix = b2n; }
     else throw "drishti agent build derivation needs `b2n` (lib.mkBun2nix output) — invoke via flake.nix";
 
-  # Identity env for the durable daemon (UW3). BUILD_ID flips iff the agent
-  # *closure* changes — the convergence kit's build-mismatch axis. It is a
-  # pure hash of `drishtiAgentBuilt` so a client-only monorepo commit cannot
-  # churn the agent wrapper (drv-stability / issue #38). Do NOT bake monorepo
-  # `self.rev` into this wrapper — that would rehash the agent (and trigger a
-  # fleet-wide drain) on every app edit. COMMIT_HASH stays unset here (reads
-  # as "" / off-nix navigable identity via readBakedIdentity); the parent
+  # Identity env for the durable daemon (UW3). BUILD_ID flips iff the SHIPPED
+  # wrapper closure changes (agent tree + bun + osfacts + the makeWrapper flags
+  # below) — the convergence kit's build-mismatch axis. A client-only monorepo
+  # commit must NOT churn this id (drv-stability / issue #38). Do NOT bake
+  # monorepo `self.rev` into this wrapper — that would rehash the agent (and
+  # trigger a fleet-wide drain) on every app edit. COMMIT_HASH stays unset here
+  # (reads as "" / off-nix navigable identity via readBakedIdentity); the parent
   # wrapper still carries the monorepo rev for UI diagnostics.
-  drishtiAgentBuildId = builtins.hashString "sha256" (toString drishtiAgentBuilt);
+  drishtiAgentBuildId = builtins.hashString "sha256" (builtins.concatStringsSep "\n" [
+    (toString drishtiAgentBuilt)
+    (toString resolvedPkgs.bun)
+    (toString resolvedPkgs.osfacts)
+    # Wrapper flag surface: entrypoint path is under drishtiAgentBuilt already;
+    # name the osfacts env key so a flag rename rotates the id too.
+    "DRISHTI_OSFACTS_BIN"
+    "packages/agent/src/main.ts"
+  ]);
   drishti-agent = resolvedPkgs.runCommand "drishti-agent"
     {
       nativeBuildInputs = [ resolvedPkgs.makeWrapper ];
@@ -150,5 +158,6 @@ let
 in
 {
   inherit drishti drishti-agent drishti-client drishtiBuilt drishtiAgentBuilt;
+  inherit drishtiAgentBuildId;
   inherit (resolvedPkgs) kolu-surface kolu-surface-remote kolu-surface-map osfacts osfacts-client;
 }

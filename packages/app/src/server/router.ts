@@ -186,6 +186,12 @@ export function buildRouter(opts: BuildRouterOptions) {
               kind: "unavailable",
               reason: historyView.reason,
             } satisfies MetricHistoryMsg;
+          } else if (historyView.kind === "degraded") {
+            yield {
+              kind: "degraded",
+              reason: "persist-failed",
+              samples: [...historyView.samples],
+            } satisfies MetricHistoryMsg;
           } else {
             yield {
               kind: "snapshot",

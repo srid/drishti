@@ -22,18 +22,22 @@ import { type MetricKey, metricPercents } from "./metrics";
 export type { MetricHistoryUnavailableReason };
 
 /** Folded metric-history state shared by agent, parent, and browser.
- *  `unavailable` is a typed disposition — never a silently empty chart. */
+ *  `unavailable` is a STANDING typed disposition — never a silently empty
+ *  chart. `degraded` keeps serving samples while durability is lost. */
 export type HistoryView =
   | { kind: "ok"; samples: MetricSample[] }
   | {
       kind: "unavailable";
       reason: MetricHistoryUnavailableReason;
       samples: [];
+    }
+  | {
+      kind: "degraded";
+      reason: "persist-failed";
+      samples: MetricSample[];
     };
 
-/** Fold one snapshot/delta/unavailable frame into a HistoryView. Pure:
- *  deltas against an unavailable disposition leave the state unchanged
- *  (do not silently populate a typed-unavailable chart). */
+/** Fold one stream frame into a HistoryView. Pure. */
 export function foldHistoryView(
   state: HistoryView,
   msg: MetricHistoryMsg,
@@ -43,14 +47,25 @@ export function foldHistoryView(
     case "snapshot":
       return { kind: "ok", samples: [...msg.samples] };
     case "delta": {
+      // Standing unavailable: do not masquerade as an ok chart.
       if (state.kind === "unavailable") return state;
-      return {
-        kind: "ok",
-        samples: pushSample(state.samples, msg.sample, retentionMs),
-      };
+      const base =
+        state.kind === "degraded" ? state.samples : state.samples;
+      const next = pushSample(base, msg.sample, retentionMs);
+      // Stay degraded if durability was already lost.
+      if (state.kind === "degraded") {
+        return { kind: "degraded", reason: "persist-failed", samples: next };
+      }
+      return { kind: "ok", samples: next };
     }
     case "unavailable":
       return { kind: "unavailable", reason: msg.reason, samples: [] };
+    case "degraded":
+      return {
+        kind: "degraded",
+        reason: "persist-failed",
+        samples: [...msg.samples],
+      };
     default: {
       const _exhaustive: never = msg;
       throw new Error(

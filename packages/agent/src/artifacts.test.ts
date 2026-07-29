@@ -9,6 +9,7 @@ import {
 import {
   createSharedArtifactWatchdog,
   executeVersionDispositionProof,
+  unknownProtocolFilesOnDisk,
 } from "@kolu/surface-daemon/upgrade-window.testlib";
 import {
   HISTORY_RING_FILE,
@@ -49,6 +50,17 @@ function drishtiArtifacts(home: {
       diskBasenamePatterns: [/^history\.ring\.json\.corrupt-\d+$/],
       why: "metric history survives parent deploys and reconnects; typed unavailable on corrupt/unknown-version",
     },
+    // W9: agent.stderr.log (+ rotation .old) — registry-only rule from UW2.
+    {
+      id: "agent-stderr-log",
+      pathShape: `${pathShapeRoot}/agent.stderr.log`,
+      role: "log",
+      coveredByTest: "artifacts.test.ts",
+      versionField: null,
+      diskBasenames: ["agent.stderr.log", "agent.stderr.log.old"],
+      diskBasenamePatterns: [],
+      why: "detached daemon stderr trail (reExecAsDetachedDaemon rotation keeps one .old)",
+    },
   ];
 }
 
@@ -67,6 +79,7 @@ describe("drishti shared-artifact registry", () => {
       expect(ids).toContain("drishti-gate");
       expect(ids).toContain("drishti-socket");
       expect(ids).toContain("history-ring");
+      expect(ids).toContain("agent-stderr-log");
 
       const ring = registry.find((a) => a.id === "history-ring");
       if (ring === undefined) throw new Error("history-ring missing");
@@ -75,6 +88,14 @@ describe("drishti shared-artifact registry", () => {
       expect(ring.versionDisposition).toBe("unavailable");
       expect(ring.coveredByTest).toBe("historyRing.test.ts");
       expect(HISTORY_RING_VERSION).toBe(1);
+
+      const stderrLog = registry.find((a) => a.id === "agent-stderr-log");
+      if (stderrLog === undefined) throw new Error("agent-stderr-log missing");
+      expect(stderrLog.role).toBe("log");
+      expect(stderrLog.diskBasenames).toEqual([
+        "agent.stderr.log",
+        "agent.stderr.log.old",
+      ]);
 
       // UW2 final: versionField requires executed plant → readback → observe
       // that RETURNS the declared versionDisposition kind (not void).
@@ -115,7 +136,12 @@ describe("drishti shared-artifact registry", () => {
       });
 
       const watchdog = createSharedArtifactWatchdog(registry);
-      watchdog.assertInventory(["drishti-gate", "drishti-socket", "history-ring"]);
+      watchdog.assertInventory([
+        "drishti-gate",
+        "drishti-socket",
+        "history-ring",
+        "agent-stderr-log",
+      ]);
 
       const gaps = watchdog.coverageGaps(
         new Set(["historyRing.test.ts", "artifacts.test.ts"]),
@@ -124,6 +150,11 @@ describe("drishti shared-artifact registry", () => {
       expect(
         gaps.filter((g) => g.startsWith("history-ring")),
       ).toEqual([]);
+
+      // W9: unregistered log name is reported (registry-only sweep).
+      writeFileSync(home.file("mystery.log"), "not registered\n");
+      const unknown = unknownProtocolFilesOnDisk(registry, home.dir);
+      expect(unknown.some((f) => f.includes("mystery.log"))).toBe(true);
     } finally {
       if (prev === undefined) delete process.env.HOME;
       else process.env.HOME = prev;

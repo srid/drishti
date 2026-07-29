@@ -364,9 +364,8 @@ export type MetricHistoryUnavailableReason =
  *  frame, then one `delta` per poll tick. The ring lives in the agent
  *  daemon (survives parent deploys); the parent re-serves it to browsers.
  *
- *  `unavailable` is a TYPED disposition for a corrupt or unknown-version
- *  on-disk ring — never a silently empty chart. The agent leaves a bad
- *  file alone (or moves it aside); the stream reports the failure. */
+ *  `unavailable` is a TYPED standing disposition — never a silently empty
+ *  chart. `degraded` means samples still serve but durability was lost. */
 export const MetricHistoryMessage = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("snapshot"),
@@ -379,6 +378,11 @@ export const MetricHistoryMessage = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("unavailable"),
     reason: z.enum(MetricHistoryUnavailableReasons),
+  }),
+  z.object({
+    kind: z.literal("degraded"),
+    reason: z.literal("persist-failed"),
+    samples: z.array(MetricSampleSchema),
   }),
 ]);
 

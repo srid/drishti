@@ -125,16 +125,33 @@ async function main(): Promise<void> {
     context,
   ) => resolveDrvForHost(host, agentDrvBySystem, binaryCache, context);
 
-  // Per-system agent BUILD_IDs for multi-arch convergeAdmit (UW3). Absent
-  // off-nix; parent falls back to the single DRISHTI_AGENT_BUILD_ID.
+  // Per-system agent BUILD_IDs for multi-arch convergeAdmit (UW3).
+  // W6: when the parent holds a drv map (this process always does — DRVS is
+  // required above), the expected build id MUST be provisioned too. No silent
+  // "" fallback on the provisioned path. Off-nix (no DRVS) never reaches here.
   let buildIdBySystem: Record<string, string> = {};
   const buildIdsJson = process.env.DRISHTI_AGENT_BUILD_IDS_JSON;
-  if (buildIdsJson !== undefined && buildIdsJson !== "") {
+  if (buildIdsJson === undefined || buildIdsJson === "") {
+    // Single-arch fallback: require the parent-arch DRISHTI_AGENT_BUILD_ID.
+    const single = process.env.DRISHTI_AGENT_BUILD_ID;
+    if (single === undefined || single === "") {
+      log(
+        "DRISHTI_AGENT_BUILD_IDS_JSON (or DRISHTI_AGENT_BUILD_ID) is required on the provisioned path — the parent holds a drv map and cannot admit with an empty expected build id. The monitor wrapper and `just dev` bake/export these.",
+      );
+      process.exit(1);
+    }
+  } else {
     try {
       buildIdBySystem = drvMapSchema.parse(JSON.parse(buildIdsJson));
     } catch (err) {
       log(
         `DRISHTI_AGENT_BUILD_IDS_JSON: invalid — ${(err as Error).message}`,
+      );
+      process.exit(1);
+    }
+    if (Object.keys(buildIdBySystem).length === 0) {
+      log(
+        "DRISHTI_AGENT_BUILD_IDS_JSON is empty — provisioned path requires at least one system → build id",
       );
       process.exit(1);
     }

@@ -10,6 +10,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { MetricSample } from "drishti-common";
+import { NO_ALERTS } from "drishti-common/alerts";
 import {
   HISTORY_RING_VERSION,
   loadHistoryRing,
@@ -45,7 +46,7 @@ describe("loadHistoryRing / saveHistoryRing", () => {
     saveHistoryRing(path, samples);
 
     const loaded = loadHistoryRing(path);
-    expect(loaded).toEqual({ kind: "ok", samples });
+    expect(loaded).toEqual({ kind: "ok", samples, alerts: NO_ALERTS });
 
     const raw = JSON.parse(readFileSync(path, "utf8")) as {
       v: number;
@@ -55,11 +56,32 @@ describe("loadHistoryRing / saveHistoryRing", () => {
     expect(raw.samples).toEqual(samples);
   });
 
+  it("round-trips alert fold state (W4)", () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const path = join(dir, "history.ring.json");
+    const samples = [sample(1000)];
+    const alerts = { items: ["cpu", "mem"] as const };
+    saveHistoryRing(path, samples, { items: ["cpu", "mem"] });
+
+    const loaded = loadHistoryRing(path);
+    expect(loaded.kind).toBe("ok");
+    if (loaded.kind === "ok") {
+      expect(loaded.alerts).toEqual({ items: ["cpu", "mem"] });
+      expect(loaded.samples).toEqual(samples);
+    }
+    void alerts;
+  });
+
   it("treats a missing file as honest empty ok", () => {
     const dir = tempDir();
     dirs.push(dir);
     const path = join(dir, "history.ring.json");
-    expect(loadHistoryRing(path)).toEqual({ kind: "ok", samples: [] });
+    expect(loadHistoryRing(path)).toEqual({
+      kind: "ok",
+      samples: [],
+      alerts: NO_ALERTS,
+    });
   });
 
   it("returns unavailable unknown-version for a planted v+1 ring and leaves the file alone", () => {
@@ -77,10 +99,35 @@ describe("loadHistoryRing / saveHistoryRing", () => {
       kind: "unavailable",
       reason: "unknown-version",
       samples: [],
+      alerts: NO_ALERTS,
     });
 
     // File must still be the planted payload — never rewritten or deleted.
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(planted);
+  });
+
+  it("W3: v+1 with DIFFERENT samples shape is unknown-version (not corrupt) and file left alone", () => {
+    // Auditor mutation: future payload shape must not be renamed as corrupt.
+    const dir = tempDir();
+    dirs.push(dir);
+    const path = join(dir, "history.ring.json");
+    const planted = {
+      v: HISTORY_RING_VERSION + 1,
+      // Different shape than current samples: array of numbers, not MetricSample.
+      samples: [1, 2, 3],
+      buckets: { cpu: [[0, 1]] },
+    };
+    writeFileSync(path, JSON.stringify(planted), "utf8");
+
+    const loaded = loadHistoryRing(path);
+    expect(loaded.kind).toBe("unavailable");
+    if (loaded.kind === "unavailable") {
+      expect(loaded.reason).toBe("unknown-version");
+    }
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(planted);
+    expect(
+      readdirSync(dir).filter((n) => n.includes(".corrupt-")).length,
+    ).toBe(0);
   });
 
   it("returns unavailable corrupt for a truncated ring and moves the file aside (never deletes)", () => {
@@ -94,6 +141,7 @@ describe("loadHistoryRing / saveHistoryRing", () => {
       kind: "unavailable",
       reason: "corrupt",
       samples: [],
+      alerts: NO_ALERTS,
     });
 
     // Original path gone; a corrupt-* sibling remains.
@@ -151,6 +199,7 @@ describe("loadHistoryRing / saveHistoryRing", () => {
         kind: "unavailable",
         reason: "unreadable",
         samples: [],
+        alerts: NO_ALERTS,
       });
       // File still at the original path (no .corrupt-* sibling).
       chmodSync(path, 0o600);

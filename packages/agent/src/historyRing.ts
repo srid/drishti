@@ -1,17 +1,19 @@
 /**
  * Durable on-disk metric-history ring for the agent daemon.
  *
- * File shape: `{ v: number, samples: MetricSample[] }` at
+ * File shape: `{ v, samples, alerts? }` at
  * `~/.local/state/drishti/history.ring.json` (via `daemonHome.file(...)`).
  *
- * Dispositions are TYPED — never a silently empty chart on a corrupt or
- * unknown-version ring:
+ * Dispositions are TYPED — never a silently empty chart:
  *   - missing file → honest empty (`ok` with `[]`)
  *   - unknown `v`  → leave the file alone, return `unavailable`/`unknown-version`
+ *     (version check BEFORE full-shape validation — W3)
  *   - garbage/truncated → rename aside to `history.ring.json.corrupt-<ts>`
  *     (NEVER delete), return `unavailable`/`corrupt`
+ *   - unreadable → leave alone, return `unavailable`/`unreadable`
  *
- * Writes are atomic (temp in same dir + rename).
+ * Writes are atomic (temp in same dir + rename). Write failure is the caller's
+ * job to surface as a typed degraded state (W10) — this module throws.
  */
 
 import {
@@ -26,6 +28,11 @@ import {
   type MetricHistoryUnavailableReason,
   type MetricSample,
 } from "drishti-common";
+import {
+  AlertsSchema,
+  type Alerts,
+  NO_ALERTS,
+} from "drishti-common/alerts";
 import type { HistoryView } from "drishti-common/history";
 import { z } from "zod";
 
@@ -41,13 +48,24 @@ export const HISTORY_RING_VERSION = 1;
 /** File basename under the daemon home. */
 export const HISTORY_RING_FILE = "history.ring.json";
 
-const RingFileSchema = z.object({
-  v: z.number().int(),
+/** Current-version on-disk payload — only applied after `v` is known current. */
+const CurrentRingFileSchema = z.object({
+  v: z.literal(HISTORY_RING_VERSION),
   samples: z.array(MetricSampleSchema),
+  /** Optional hysteresis fold state (W4) — absent ⇒ NO_ALERTS on restore. */
+  alerts: AlertsSchema.optional(),
 });
 
-/** Load disposition — same shape as HistoryView (ok ring or typed unavailable). */
-export type HistoryRingLoad = HistoryView;
+export type HistoryRingFile = {
+  samples: MetricSample[];
+  alerts: Alerts;
+};
+
+/** Load disposition — HistoryView plus restored alert fold state. */
+export type HistoryRingLoad =
+  | (HistoryView & { kind: "ok"; alerts: Alerts })
+  | (HistoryView & { kind: "unavailable"; alerts: Alerts })
+  | (HistoryView & { kind: "degraded"; alerts: Alerts });
 
 /** Load a history ring from `path`. Missing file is honest empty. Unknown
  *  version leaves the file alone. Garbage is moved aside, never deleted. */
@@ -58,11 +76,8 @@ export function loadHistoryRing(path: string): HistoryRingLoad {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
-      return { kind: "ok", samples: [] };
+      return { kind: "ok", samples: [], alerts: NO_ALERTS };
     }
-    // Unreadable (EACCES, transient EIO/EMFILE, …): typed unavailable without
-    // move-aside — we never judged the bytes. Caller must NOT resume
-    // persistence over the still-present file (F13: that would clobber it).
     log(`read failed (${code ?? "unknown"}): ${(err as Error).message}`);
     return unavailable("unreadable");
   }
@@ -75,32 +90,45 @@ export function loadHistoryRing(path: string): HistoryRingLoad {
     return unavailable("corrupt");
   }
 
-  const shape = RingFileSchema.safeParse(parsed);
+  // W3: version check BEFORE full current-version shape validation.
+  // A future payload with a different samples shape must not be renamed
+  // as corrupt — leave the file alone and report unknown-version.
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "v" in parsed &&
+    typeof (parsed as { v: unknown }).v === "number" &&
+    (parsed as { v: number }).v !== HISTORY_RING_VERSION
+  ) {
+    return unavailable("unknown-version");
+  }
+
+  const shape = CurrentRingFileSchema.safeParse(parsed);
   if (!shape.success) {
     moveCorruptAside(path);
     return unavailable("corrupt");
   }
 
-  if (shape.data.v !== HISTORY_RING_VERSION) {
-    // Unknown version: leave the file alone so a future reader (or the
-    // writer that produced it) can still use it. Report typed unavailability.
-    return unavailable("unknown-version");
-  }
-
-  return { kind: "ok", samples: shape.data.samples };
+  return {
+    kind: "ok",
+    samples: shape.data.samples,
+    alerts: shape.data.alerts ?? NO_ALERTS,
+  };
 }
 
-/** Atomic write: temp in the same directory, then rename over the target. */
+/** Atomic write of samples + alert fold state. Throws on failure. */
 export function saveHistoryRing(
   path: string,
   samples: readonly MetricSample[],
+  alerts: Alerts = NO_ALERTS,
 ): void {
   const dir = dirname(path);
   const tmp = join(dir, `.history.ring.json.${process.pid}.${Date.now()}.tmp`);
   const body = JSON.stringify({
     v: HISTORY_RING_VERSION,
     samples: [...samples],
-  } satisfies z.infer<typeof RingFileSchema>);
+    alerts,
+  } satisfies z.infer<typeof CurrentRingFileSchema>);
   writeFileSync(tmp, body, { encoding: "utf8", mode: 0o600 });
   try {
     renameSync(tmp, path);
@@ -117,7 +145,7 @@ export function saveHistoryRing(
 function unavailable(
   reason: MetricHistoryUnavailableReason,
 ): HistoryRingLoad {
-  return { kind: "unavailable", reason, samples: [] };
+  return { kind: "unavailable", reason, samples: [], alerts: NO_ALERTS };
 }
 
 /** Move a corrupt ring aside. NEVER deletes — a future autopsy may need it. */
@@ -126,9 +154,6 @@ function moveCorruptAside(path: string): void {
   try {
     renameSync(path, aside);
   } catch (err) {
-    // If the rename itself fails (race, permissions), leave the original
-    // in place rather than delete — fail-loud via the typed unavailable
-    // return; the caller already has the disposition.
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
     log(
       `move-aside failed for ${path}: ${(err as Error).message} (left in place)`,

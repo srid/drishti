@@ -324,6 +324,10 @@ function attachDaemonSession(args: {
   return Object.assign(base, {
     convergence: () => args.getConvergence(),
     preservation: { children: "die" as const },
+    // W8 / F10 ruling: renew stays minimal on the framework's exported
+    // drainAndAwaitExit. The framework does not yet offer a connector-side
+    // replace verb — that is a kolu follow-up (framework gap, logged); do
+    // not grow a parallel enactment here, and do not touch the kolu repo.
     renew: async () => {
       const active = args.getActiveCombined();
       if (active === null) {
@@ -353,6 +357,36 @@ function attachDaemonSession(args: {
  *  bound until this returns) down. */
 /** Shared never-settling promise for non-exit closes (one allocation). */
 const NEVER_EXITS: Promise<void> = new Promise(() => {});
+
+/**
+ * W6: resolve the expected agent BUILD_ID for a provisioned host.
+ *
+ * - Non-empty `buildIdBySystem` ⇒ provisioned path: system MUST have an entry
+ *   (fail-fast; no silent "" fallback).
+ * - Empty map ⇒ genuine off-nix: use `fallbackBuildId` (may be "" / can't-judge).
+ */
+export function expectProvisionedBuildId(args: {
+  system: string | undefined;
+  buildIdBySystem: Readonly<Record<string, string>>;
+  fallbackBuildId: string;
+}): string {
+  const keys = Object.keys(args.buildIdBySystem);
+  if (keys.length > 0) {
+    if (args.system === undefined) {
+      throw new Error(
+        "drishti agent provision: remote system unknown but BUILD_IDS map is present — cannot select expected build id",
+      );
+    }
+    const bySystem = args.buildIdBySystem[args.system];
+    if (bySystem === undefined || bySystem === "") {
+      throw new Error(
+        `drishti agent provision: missing BUILD_ID for system ${JSON.stringify(args.system)} — DRISHTI_AGENT_BUILD_IDS_JSON must cover every provisioned system (no silent "" fallback on the provisioned path)`,
+      );
+    }
+    return bySystem;
+  }
+  return args.fallbackBuildId;
+}
 
 export function buildHostPool(opts: HostPoolOptions): HostPool {
   // Policy is pure config (mint once as fallback). Budget is minted PER host
@@ -397,15 +431,13 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         ),
         resolveDrvPath: async (context) => {
           const resolved = await opts.resolveDrvPath(host, context);
-          // Prefer per-system build id when the resolver reports the system.
-          if (
-            budget === null &&
-            resolved.system !== undefined &&
-            buildIdBySystem[resolved.system] !== undefined
-          ) {
-            expectedBuildId = buildIdBySystem[resolved.system]!;
-          }
+          // W6: provisioned path fail-fast via expectProvisionedBuildId.
           if (budget === null) {
+            expectedBuildId = expectProvisionedBuildId({
+              system: resolved.system,
+              buildIdBySystem,
+              fallbackBuildId,
+            });
             budget = createConnectorDrainBudget(
               drishtiAgentConvergencePolicy(expectedBuildId),
             );
