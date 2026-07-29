@@ -246,10 +246,6 @@ export async function buildAgentRuntime(
     };
   });
 
-  // setSystem is filled after the runtime is built — the poll tick uses the
-  // framework's cell face so equals/onWrite/store.set/bus.publish all fire.
-  let setSystem: ((sys: SystemInfo) => void) | null = null;
-
   const appDeps = {
     cells: {
       system: { store: systemStore },
@@ -334,43 +330,53 @@ export async function buildAgentRuntime(
     },
   };
 
-  // biome-ignore lint/suspicious/noExplicitAny: runtime.router is the final top-level router.
-  let router: any;
-  let done: Promise<void>;
-  let closeRuntime: () => Promise<void>;
-
-  if (opts.withControlCore) {
-    const identity = readBakedIdentity("DRISHTI_AGENT");
-    const startedAt = Date.now();
-    const stateRoot = opts.stateRoot ?? "";
-    const control = controlCoreFragment({
-      stateRoot,
-      surfaceVersion: AGENT_SURFACE_VERSION,
-      startedAt,
-      commit: identity.navigableCommit,
-      buildId: identity.staleKey,
-      onDrain: async () => {
-        flushRing();
-        await opts.onDrain?.();
-      },
-    });
-    const runtime = implementSurfaces(
-      { app: surface, control: controlCoreSurface },
-      {},
-      { app: appDeps as never, control },
-    );
-    router = runtime.router;
-    done = runtime.done;
-    closeRuntime = () => runtime.close();
-    setSystem = (sys) => runtime.ctx.app.cells.system.set(sys);
-  } else {
-    // Test path — single surface, no control core (serveAgent injects a fake serve).
-    const runtime = implementSurface(surface, appDeps as never);
-    router = runtime.router;
-    done = runtime.done;
-    closeRuntime = () => runtime.close();
-    setSystem = (sys) => runtime.ctx.cells.system.set(sys);
-  }
+  // One construction object per branch — no null-then-assign on router/done/close/setSystem.
+  // setSystem is the framework's cell face so equals/onWrite/store.set/bus.publish all fire.
+  type BuiltRuntime = {
+    // biome-ignore lint/suspicious/noExplicitAny: top-level oRPC router.
+    router: any;
+    done: Promise<void>;
+    close: () => Promise<void>;
+    setSystem: (sys: SystemInfo) => void;
+  };
+  const built: BuiltRuntime = opts.withControlCore
+    ? (() => {
+        const identity = readBakedIdentity("DRISHTI_AGENT");
+        const startedAt = Date.now();
+        const stateRoot = opts.stateRoot ?? "";
+        const control = controlCoreFragment({
+          stateRoot,
+          surfaceVersion: AGENT_SURFACE_VERSION,
+          startedAt,
+          commit: identity.navigableCommit,
+          buildId: identity.staleKey,
+          onDrain: async () => {
+            flushRing();
+            await opts.onDrain?.();
+          },
+        });
+        const runtime = implementSurfaces(
+          { app: surface, control: controlCoreSurface },
+          {},
+          { app: appDeps as never, control },
+        );
+        return {
+          router: runtime.router,
+          done: runtime.done,
+          close: () => runtime.close(),
+          setSystem: (sys) => runtime.ctx.app.cells.system.set(sys),
+        };
+      })()
+    : (() => {
+        // Test path — single surface, no control core (serveAgent injects a fake serve).
+        const runtime = implementSurface(surface, appDeps as never);
+        return {
+          router: runtime.router,
+          done: runtime.done,
+          close: () => runtime.close(),
+          setSystem: (sys) => runtime.ctx.cells.system.set(sys),
+        };
+      })();
 
   if (emitMetrics === null)
     throw new Error(
@@ -378,7 +384,7 @@ export async function buildAgentRuntime(
         "construction — the scan→source eager-subscribe invariant broke",
     );
 
-  void done.catch((err: unknown) => {
+  void built.done.catch((err: unknown) => {
     log(`surface runtime fault: ${(err as Error).message} — exiting`);
     process.exit(1);
   });
@@ -391,7 +397,7 @@ export async function buildAgentRuntime(
         ...cpuAggregate(await reader.readCpuCores()),
         pollIntervalMs: POLL_INTERVAL_MS,
       };
-      setSystem?.(sys);
+      built.setSystem(sys);
       emitMetrics?.(metricPercents(sys));
 
       // Sample the durable ring on each system tick (agent owns the ring).
@@ -427,16 +433,16 @@ export async function buildAgentRuntime(
     clearInterval(interval);
     if (persistInterval !== null) clearInterval(persistInterval);
     flushRing();
-    await closeRuntime();
+    await built.close();
   };
 
   return {
-    router,
+    router: built.router,
     // Callback name required by daemonMain idleTimeout; body is lease-based.
     isIdle: () => metricHistoryLeases === 0,
     flushRing,
     close: shutdown,
-    done,
+    done: built.done,
   };
 }
 
