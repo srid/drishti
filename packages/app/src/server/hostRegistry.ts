@@ -6,16 +6,21 @@
  * UW3: each host session is a `DaemonSession` over the combined
  * app+control agent contract. The parent dials via `sshConnector` against
  * the agent's durable `--stdio` front; `convergeAdmit` decides whether to
- * adopt, drain-and-replace, or refuse the resident daemon. ONLY the policy
- * object and the link-state projection at the edge are drishti-written —
- * the decision table, budget, and probe live in
- * `@kolu/surface-daemon-supervisor`.
+ * adopt, drain-and-replace, or refuse the resident daemon.
  *
- * What's left of the pre-map era is exactly `@kolu/surface-remote`'s
- * `buildRemotePool` plus the ONE piece of app-specific knowledge it
- * deliberately doesn't hold: how a host becomes a `DaemonSession`
- * (`makeSession`/`sshConnector` + admit), and where the host set persists
- * (`hostsStore.ts`).
+ * Drishti-written plugs on the framework skeleton:
+ *   - **policy** — `drishtiAgentConvergencePolicy` (contract version, drain
+ *     arms, budget)
+ *   - **link projection** — session `onState` → `DrishtiConvergence` /
+ *     `link-failed`
+ *   - **combined-client stash** — WeakMap from app-scoped client → combined
+ *     dial so admit/renew can reach control-core
+ *   - **exit oracle** — `awaitExitViaProcessOracle` (ClosedInfo.kind === "exit"
+ *     only; transport loss never looks like process exit)
+ *   - **renew** — drain + await exit via control-core for build-axis replace
+ *
+ * Decision table, budget arithmetic, and probe live in
+ * `@kolu/surface-daemon-supervisor`. Host-set persistence is `hostsStore.ts`.
  */
 
 import { composeSurfaceContracts, scopeSibling } from "@kolu/surface/define";
@@ -32,6 +37,7 @@ import {
   drainAndAwaitExit,
   drainRejectionSuffix,
   probeDaemonIdentityFrom,
+  type ConnectorDrainBudget,
 } from "@kolu/surface-daemon-supervisor";
 import {
   type Admit,
@@ -138,6 +144,14 @@ export interface HostPoolOptions {
   hostsFile: string;
 }
 
+/** Live combined dial stashed under the app-scoped client admit receives. */
+type ActiveCombined = {
+  client: AgentDaemonClient;
+  dispose: () => void;
+  processExit: Promise<void>;
+  signal: AbortSignal;
+};
+
 /** drishti's connector-arm convergence policy — drainable; drain-newer on
  *  contract skew; drain-and-replace on build mismatch; budgeted adopt-stale. */
 export function drishtiAgentConvergencePolicy(binderBuildId: string) {
@@ -156,11 +170,16 @@ export function drishtiAgentConvergencePolicy(binderBuildId: string) {
   };
 }
 
-/** Process-exit oracle: resolve ONLY on ClosedInfo.kind === "exit".
- *  transport-failed / endpoint-down / spawn-error are link or bootstrap
- *  loss — never process exit; leave the wait hanging until the ceiling
- *  yields drain-not-taken. */
-function awaitExitViaProcessOracle(
+/**
+ * Process-exit oracle: resolve ONLY on ClosedInfo.kind === "exit".
+ * transport-failed / endpoint-down / spawn-error are link or bootstrap
+ * loss — never process exit; leave the wait hanging until the ceiling
+ * yields drain-not-taken.
+ *
+ * Exported for unit tests that exercise the same wait semantics without
+ * importing the full pool.
+ */
+export function awaitExitViaProcessOracle(
   processExit: Promise<void>,
   signal: AbortSignal,
 ): Promise<void> {
@@ -184,6 +203,135 @@ function awaitExitViaProcessOracle(
       cleanup();
       resolve();
     });
+  });
+}
+
+/** Admit factory: probe identity, run convergeAdmit, bind active on adopt. */
+function makeAgentAdmit(args: {
+  combinedByScopedClient: WeakMap<AgentAppClient, ActiveCombined>;
+  budget: ConnectorDrainBudget;
+  setConvergence: (c: DrishtiConvergence | null) => void;
+  setActiveCombined: (a: ActiveCombined | null) => void;
+}): Admit<AgentAppClient> {
+  return async (scopedClient): Promise<AdmitVerdict> => {
+    const active = args.combinedByScopedClient.get(scopedClient);
+    if (active === undefined) {
+      throw new Error("drishti agent admit: no matching combined connection");
+    }
+    const probe = await probeDaemonIdentityFrom({
+      client: active.client,
+      dispose: active.dispose,
+      capability: "drainable",
+      awaitExit: (signal) =>
+        awaitExitViaProcessOracle(active.processExit, signal),
+      drainCeilingMs: DRAIN_TEARDOWN_CEILING_MS,
+    });
+    if (active.signal.aborted) {
+      throw new Error("drishti agent admit superseded");
+    }
+
+    const admitLog: DaemonLogger = stderrLogger();
+    const verdict = await convergeAdmit({
+      running: {
+        ...probe.identity,
+        instanceKey: probe.instanceKey,
+      },
+      budget: args.budget,
+      drain: probe.fireDrain,
+      awaitExit: probe.awaitExit,
+      ceilingMs: probe.drainCeilingMs,
+      log: admitLog,
+    });
+    if (active.signal.aborted) {
+      throw new Error("drishti agent admit superseded");
+    }
+
+    switch (verdict.kind) {
+      case "adopt": {
+        args.setConvergence(null);
+        args.setActiveCombined(active);
+        return { kind: "adopt" };
+      }
+      case "adopt-stale": {
+        args.setConvergence(verdict.anomaly);
+        args.setActiveCombined(active);
+        return { kind: "adopt" };
+      }
+      case "replaced": {
+        args.setConvergence(null);
+        return { kind: "replaced", reason: verdict.reason };
+      }
+      case "refuse": {
+        args.setConvergence(verdict.anomaly);
+        return {
+          kind: "refuse",
+          state: { error: verdict.error, cause: "remote" },
+        };
+      }
+      default: {
+        const _exhaustive: never = verdict;
+        throw new Error(
+          `drishti agent admit: unreachable verdict ${JSON.stringify(_exhaustive)}`,
+        );
+      }
+    }
+  };
+}
+
+/**
+ * Attach daemon supervision members (convergence / renew / preservation)
+ * onto a base Session, plus the link-state projection that keeps
+ * `DrishtiConvergence` honest at the edge.
+ */
+function attachDaemonSession(args: {
+  base: Session<AgentAppClient, SshProv>;
+  getConvergence: () => DrishtiConvergence | null;
+  setConvergence: (c: DrishtiConvergence | null) => void;
+  getActiveCombined: () => ActiveCombined | null;
+  setActiveCombined: (a: ActiveCombined | null) => void;
+}): HostSession {
+  const { base } = args;
+
+  // Link-state projection at the edge — the ONLY convergence code
+  // drishti writes besides the policy object.
+  base.onState((s) => {
+    if (s.phase === "failed") {
+      args.setConvergence({
+        kind: "link-failed",
+        detail: s.error,
+      });
+      args.setActiveCombined(null);
+    } else if (s.phase === "disconnected") {
+      const current = args.getConvergence();
+      if (current === null || current.kind === "link-failed") {
+        args.setConvergence(null);
+      }
+      args.setActiveCombined(null);
+    }
+  });
+
+  return Object.assign(base, {
+    convergence: () => args.getConvergence(),
+    preservation: { children: "die" as const },
+    renew: async () => {
+      const active = args.getActiveCombined();
+      if (active === null) {
+        throw new Error(
+          "drishti agent is not bound — cannot drain (the daemon is unreachable)",
+        );
+      }
+      const { took, drainRejection } = await drainAndAwaitExit(
+        () => active.client.surface.control.core.drain(),
+        (signal) => awaitExitViaProcessOracle(active.processExit, signal),
+        { ceilingMs: DRAIN_TEARDOWN_CEILING_MS },
+      );
+      if (!took) {
+        throw new Error(
+          `drishti agent drain did not complete — it did not exit within ${DRAIN_TEARDOWN_CEILING_MS}ms` +
+            drainRejectionSuffix(drainRejection),
+        );
+      }
+    },
   });
 }
 
@@ -212,18 +360,11 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
 
       // Arm-local convergence state (closures, not class fields).
       let convergence: DrishtiConvergence | null = null;
-
-      type ActiveCombined = {
-        client: AgentDaemonClient;
-        dispose: () => void;
-        processExit: Promise<void>;
-        signal: AbortSignal;
-      };
+      let activeCombined: ActiveCombined | null = null;
       const combinedByScopedClient = new WeakMap<
         AgentAppClient,
         ActiveCombined
       >();
-      let activeCombined: ActiveCombined | null = null;
 
       // sshConnector always runs `<binary> --stdio` (appended by the connector
       // itself — do NOT pass `--stdio` in extraArgs). That flag is the durable
@@ -247,7 +388,8 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         resolveDrvPath: (context) => opts.resolveDrvPath(host, context),
       });
 
-      // Process-exit oracle: resolve ONLY on ClosedInfo `exit`.
+      // Connector wraps the combined dial: stash ActiveCombined, hand admit
+      // the app-scoped client (pump + kill forward use that scope).
       const rawConnector: Connector<AgentAppClient, SshProv> = async (ctx) => {
         const conn = await inner(ctx);
         const processExit = conn.closed.then((info: ClosedInfo) => {
@@ -267,71 +409,16 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         return { ...conn, client: scopedClient };
       };
 
-      const admit: Admit<AgentAppClient> = async (
-        scopedClient,
-      ): Promise<AdmitVerdict> => {
-        const active = combinedByScopedClient.get(scopedClient);
-        if (active === undefined) {
-          throw new Error("drishti agent admit: no matching combined connection");
-        }
-        const probe = await probeDaemonIdentityFrom({
-          client: active.client,
-          dispose: active.dispose,
-          capability: "drainable",
-          awaitExit: (signal) =>
-            awaitExitViaProcessOracle(active.processExit, signal),
-          drainCeilingMs: DRAIN_TEARDOWN_CEILING_MS,
-        });
-        if (active.signal.aborted) {
-          throw new Error("drishti agent admit superseded");
-        }
-
-        const admitLog: DaemonLogger = stderrLogger();
-        const verdict = await convergeAdmit({
-          running: {
-            ...probe.identity,
-            instanceKey: probe.instanceKey,
-          },
-          budget,
-          drain: probe.fireDrain,
-          awaitExit: probe.awaitExit,
-          ceilingMs: probe.drainCeilingMs,
-          log: admitLog,
-        });
-        if (active.signal.aborted) {
-          throw new Error("drishti agent admit superseded");
-        }
-
-        switch (verdict.kind) {
-          case "adopt": {
-            convergence = null;
-            activeCombined = active;
-            return { kind: "adopt" };
-          }
-          case "adopt-stale": {
-            convergence = verdict.anomaly;
-            activeCombined = active;
-            return { kind: "adopt" };
-          }
-          case "replaced": {
-            convergence = null;
-            return { kind: "replaced", reason: verdict.reason };
-          }
-          case "refuse": {
-            convergence = verdict.anomaly;
-            return {
-              kind: "refuse",
-              state: { error: verdict.error, cause: "remote" },
-            };
-          }
-          default: {
-            const _exhaustive: never = verdict;
-            throw new Error(
-              `drishti agent admit: unreachable verdict ${JSON.stringify(_exhaustive)}`,
-            );
-          }
-        }
-      };
+      const admit = makeAgentAdmit({
+        combinedByScopedClient,
+        budget,
+        setConvergence: (c) => {
+          convergence = c;
+        },
+        setActiveCombined: (a) => {
+          activeCombined = a;
+        },
+      });
 
       const base = makeSession<AgentAppClient, SshProv>({
         connectOnce: rawConnector,
@@ -346,45 +433,15 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         label: `host:${host}`,
       });
 
-      // Link-state projection at the edge — the ONLY convergence code
-      // drishti writes besides the policy object.
-      base.onState((s) => {
-        if (s.phase === "failed") {
-          convergence = {
-            kind: "link-failed",
-            detail: s.error,
-          };
-          activeCombined = null;
-        } else if (s.phase === "disconnected") {
-          if (convergence === null || convergence.kind === "link-failed") {
-            convergence = null;
-          }
-          activeCombined = null;
-        }
-      });
-
-      const session: HostSession = Object.assign(base, {
-        convergence: () => convergence,
-        preservation: { children: "die" as const },
-        renew: async () => {
-          const active = activeCombined;
-          if (active === null) {
-            throw new Error(
-              "drishti agent is not bound — cannot drain (the daemon is unreachable)",
-            );
-          }
-          const { took, drainRejection } = await drainAndAwaitExit(
-            () => active.client.surface.control.core.drain(),
-            (signal) =>
-              awaitExitViaProcessOracle(active.processExit, signal),
-            { ceilingMs: DRAIN_TEARDOWN_CEILING_MS },
-          );
-          if (!took) {
-            throw new Error(
-              `drishti agent drain did not complete — it did not exit within ${DRAIN_TEARDOWN_CEILING_MS}ms` +
-                drainRejectionSuffix(drainRejection),
-            );
-          }
+      const session = attachDaemonSession({
+        base,
+        getConvergence: () => convergence,
+        setConvergence: (c) => {
+          convergence = c;
+        },
+        getActiveCombined: () => activeCombined,
+        setActiveCombined: (a) => {
+          activeCombined = a;
         },
       });
 
