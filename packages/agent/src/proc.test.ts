@@ -61,6 +61,7 @@ describe("osfacts V2 process observation", () => {
       rssBytes: 8192,
       startedAtMs: 1700000000123.456,
       listeners: [{ uid: 1000, port: 8080, address: "00000000" }],
+      fallbacks: [],
       unreadable: [{ facet: "ports", errno: "EACCES" }],
     });
     expect(frame.processes.get(99)).toEqual({
@@ -76,6 +77,7 @@ describe("osfacts V2 process observation", () => {
       rssBytes: null,
       startedAtMs: null,
       listeners: [],
+      fallbacks: [],
       unreadable: [
         { facet: "proc", errno: "EPERM" },
         { facet: "cwd", errno: "EACCES" },
@@ -106,6 +108,121 @@ describe("osfacts V2 process observation", () => {
     expect((await reader.readProcesses()).get(42)?.cpuPct).toBe(0);
     clock = 2_001;
     expect((await reader.readProcesses()).get(42)?.cpuPct).toBe(50);
+  });
+
+  it("runs Darwin ps every poll and recovers osfacts-blind CPU and RSS", async () => {
+    const reading = parseSnapshotOutput(
+      "V\t2\nP\t42\t1\tserver\nU\t42\tcpu_time\tEACCES\nU\t42\tmem\tEACCES\n",
+    );
+    let clock = 1_000;
+    let psCalls = 0;
+    const reader = createOsfactsReader(
+      "/nix/store/osfacts/bin/osfacts",
+      "darwin",
+      "mac",
+      async () => reading,
+      async () => parseHostOutput(hostFixture),
+      () => clock,
+      async () => {
+        psCalls++;
+        return new Map([[42, { cpuPct: 23.5, rssBytes: 8_388_608 }]]);
+      },
+    );
+
+    expect((await reader.readProcesses()).get(42)).toMatchObject({
+      cpuPct: 23.5,
+      rssBytes: 8_388_608,
+      fallbacks: [
+        { facet: "cpu_time", command: "/bin/ps" },
+        { facet: "mem", command: "/bin/ps" },
+      ],
+      unreadable: [],
+    });
+    clock = 2_001;
+    await reader.readProcesses();
+    expect(psCalls).toBe(2);
+  });
+
+  it("does not invoke the Darwin fallback on Linux", async () => {
+    let psCalls = 0;
+    const reader = createOsfactsReader(
+      "/nix/store/osfacts/bin/osfacts",
+      "linux",
+      "linux",
+      async () => parseSnapshotOutput(snapshotFixture),
+      async () => parseHostOutput(hostFixture),
+      () => 1_000,
+      async () => {
+        psCalls++;
+        return new Map();
+      },
+    );
+
+    await reader.readProcesses();
+    expect(psCalls).toBe(0);
+  });
+
+  it("keeps the osfacts frame when Darwin ps fails and publishes enrichment status", async () => {
+    const reading = parseSnapshotOutput(
+      "V\t2\nP\t42\t1\tserver\nU\t42\tcpu_time\tEACCES\nU\t42\tmem\tEACCES\n",
+    );
+    const reader = createOsfactsReader(
+      "/nix/store/osfacts/bin/osfacts",
+      "darwin",
+      "mac",
+      async () => reading,
+      async () => parseHostOutput(hostFixture),
+      () => 1_000,
+      async () => {
+        throw Object.assign(new Error("ps unavailable"), { code: "ENOENT" });
+      },
+    );
+
+    expect((await reader.readProcesses()).get(42)).toMatchObject({
+      cpuPct: 0,
+      rssBytes: null,
+      unreadable: [
+        { facet: "cpu_time", errno: "EACCES" },
+        { facet: "mem", errno: "EACCES" },
+      ],
+    });
+    expect([...(await reader.readSourceErrors()).values()]).toEqual(
+      expect.arrayContaining([
+        {
+          operation: "snapshot",
+          source: "/bin/ps",
+          facet: "cpu_time",
+          code: "ENOENT",
+        },
+        {
+          operation: "snapshot",
+          source: "/bin/ps",
+          facet: "mem",
+          code: "ENOENT",
+        },
+      ]),
+    );
+  });
+
+  it("recovers CPU and RSS when their whole osfacts sources fail", async () => {
+    const reading = parseSnapshotOutput(
+      "V\t2\nP\t42\t1\tserver\nE\ttask_info\tcpu_time\tEACCES\nE\ttask_info\tmem\tEACCES\n",
+    );
+    const reader = createOsfactsReader(
+      "/nix/store/osfacts/bin/osfacts",
+      "darwin",
+      "mac",
+      async () => reading,
+      async () => parseHostOutput(hostFixture),
+      () => 1_000,
+      async () =>
+        new Map([[42, { cpuPct: 11.5, rssBytes: 16_777_216 }]]),
+    );
+
+    expect((await reader.readProcesses()).get(42)).toMatchObject({
+      cpuPct: 11.5,
+      rssBytes: 16_777_216,
+    });
   });
 
   it("keeps the compact name while restoring argv with the historic 200-char cap", () => {

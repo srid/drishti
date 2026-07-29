@@ -25,24 +25,36 @@ const PUBLISHED_PROCESS_FACETS: readonly ProcessTableFacet[] = [
   "argv",
 ];
 
-export interface ProcessTableCellPresentation {
-  text: string;
-  warning: boolean;
-}
+/** One cell's qualification: native text, unreadable errno, or command-recovered
+ * value. Illegal combinations (warning + fallback) are unrepresentable. */
+export type ProcessTableCellPresentation =
+  | { kind: "plain"; text: string }
+  | { kind: "unreadable"; text: string }
+  | { kind: "fallback"; text: string; command: string };
 
-export interface UnreadableTableMarker {
-  glyph: "⊘";
+export interface TableMarker {
+  glyph: "⊘" | "↩";
   title: string;
   ariaLabel: string;
 }
 
 /** Compact table rows keep errno detail behind one quiet, discoverable mark.
  * Details and search continue to use the original errno text. */
-export function unreadableTableMarker(errno: string): UnreadableTableMarker {
+export function unreadableTableMarker(errno: string): TableMarker {
   return {
     glyph: "⊘",
     title: errno,
     ariaLabel: `Unreadable: ${errno}`,
+  };
+}
+
+/** A recovered value remains readable, while this quiet mark discloses that
+ * an external command supplied it. */
+export function fallbackTableMarker(command: string): TableMarker {
+  return {
+    glyph: "↩",
+    title: `Command fallback: ${command}`,
+    ariaLabel: `Value recovered using command fallback: ${command}`,
   };
 }
 
@@ -153,11 +165,13 @@ export function processTableCell(
   process: Process,
   facet: ProcessTableFacet,
   readableText: string,
-): { text: string; warning: boolean } {
+): ProcessTableCellPresentation {
   const blind = process.unreadable.find((fact) => fact.facet === facet);
-  return blind === undefined
-    ? { text: readableText, warning: false }
-    : { text: blind.errno, warning: true };
+  if (blind !== undefined) return { kind: "unreadable", text: blind.errno };
+  const fallback = process.fallbacks.find((fact) => fact.facet === facet);
+  return fallback === undefined
+    ? { kind: "plain", text: readableText }
+    : { kind: "fallback", text: readableText, command: fallback.command };
 }
 
 /** Thread count can be blind independently of state/nice. A broad status
@@ -185,8 +199,8 @@ export function processRowCell(
   const errno = fullyBlindErrno(process);
   if (errno !== null)
     return {
+      kind: "plain",
       text: facet === "proc" ? `unreadable · ${errno}` : "—",
-      warning: false,
     };
   return processTableCell(process, facet, readableText);
 }
@@ -199,8 +213,8 @@ export function processTableRowPresentation(
 ): ProcessTableRowPresentation {
   const errno = fullyBlindErrno(process);
   const plain = (text: string): ProcessTableCellPresentation => ({
+    kind: "plain",
     text: errno === null ? text : "—",
-    warning: false,
   });
   return {
     dimmed: errno !== null,
@@ -248,4 +262,27 @@ export function processRowUptime(
   toLocalTime: (remoteMs: number) => number | null,
 ): string {
   return formatProcessUptime(remoteStartedAtMs, nowMs, toLocalTime);
+}
+
+export interface ProcessInspectionNote {
+  text: string;
+  tone: "warn" | "quiet";
+}
+
+/** Process-level quality summary for the detail panel. Native means no
+ * unreadable and no command-recovered facets — never claim "all readable"
+ * when any fallback note exists. */
+export function processInspectionNotes(
+  process: Process,
+): ProcessInspectionNote[] {
+  return [
+    ...process.unreadable.map(({ facet, errno }) => ({
+      text: `${facet} blind (${errno})`,
+      tone: "warn" as const,
+    })),
+    ...process.fallbacks.map(({ facet, command }) => ({
+      text: `${facet} via ${command}`,
+      tone: "quiet" as const,
+    })),
+  ];
 }

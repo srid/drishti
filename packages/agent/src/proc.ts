@@ -1,9 +1,9 @@
 /** Cross-platform host observation through osfacts V2.
  *
- * osfacts is the only process, socket, CPU, memory, swap, uptime, network and
- * disk fact source. Node's os module is used only for host identity and OS
- * selection; there is no lsof/ps, /proc, sysctl, vm_stat, netstat or statfs
- * fallback here.
+ * osfacts is authoritative for process identity, sockets, and host telemetry.
+ * On Darwin, Apple's privileged ps recovers only per-process CPU/RSS facts
+ * osfacts explicitly marks unreadable; it never overwrites readable facts.
+ * Node's os module is used only for host identity and OS selection.
  */
 
 import { hostname, platform } from "node:os";
@@ -30,6 +30,12 @@ import {
   OsfactsSourceError,
   osfactsSourceStatus,
 } from "drishti-common/source-errors";
+import {
+  DARWIN_PS_PATH,
+  type ProcessUsage,
+  readDarwinProcessUsage,
+} from "./darwinPs";
+import { recoverUnreadableProcessUsage } from "./processUsageFallback";
 
 type RawSystemInfo = Omit<
   SystemInfo,
@@ -194,6 +200,7 @@ export function processesFromOsfacts(
       rssBytes: memory.get(row.pid) ?? null,
       startedAtMs: starts.get(row.pid) ?? null,
       listeners: [],
+      fallbacks: [],
       unreadable: unreadable.get(row.pid) ?? [],
     });
   }
@@ -212,6 +219,7 @@ export function processesFromOsfacts(
         rssBytes: memory.get(row.pid) ?? null,
         startedAtMs: starts.get(row.pid) ?? null,
         listeners: [],
+        fallbacks: [],
         unreadable: unreadable.get(row.pid) ?? [],
       });
   }
@@ -319,6 +327,7 @@ export function hostFromOsfacts(
 
 export type SnapshotHost = typeof snapshotHost;
 export type ReadHost = typeof readOsfactsHost;
+export type ReadDarwinProcessUsage = typeof readDarwinProcessUsage;
 
 /** One osfacts subprocess per fact family per cache window. The independently
  * polled surface collections share the same atomic V2 reading rather than
@@ -330,6 +339,7 @@ export function createOsfactsReader(
   readSnapshot: SnapshotHost = snapshotHost,
   readHost: ReadHost = readOsfactsHost,
   now: () => number = Date.now,
+  readDarwinUsage: ReadDarwinProcessUsage = readDarwinProcessUsage,
 ): ProcReader {
   const maxAgeMs = 1_000;
   let processCache:
@@ -343,17 +353,58 @@ export function createOsfactsReader(
     const takenMs = now();
     if (processCache && takenMs - processCache.takenMs < maxAgeMs)
       return processCache.promise;
-    const promise = readSnapshot(bin, {
-      procs: true,
-      ports: true,
-      mem: true,
-      startTime: true,
-      cpuTime: true,
-      uid: true,
-      cwd: true,
-      status: true,
-      argv: true,
-    }).then((reading) => {
+    // No capability gate: Darwin runs ps on every fresh process poll beside
+    // osfacts. The ps child budget is short so a hang cannot stall the frame;
+    // rejection keeps the osfacts frame and publishes enrichment status into
+    // the same sourceErrors receptacle osfacts partial failures use.
+    type NativeCensus = {
+      usage: Map<Pid, ProcessUsage>;
+      errors: SourceErrorFact[];
+    };
+    const nativeCensus: Promise<NativeCensus> =
+      os === "darwin"
+        ? readDarwinUsage()
+            .then(
+              (usage): NativeCensus => ({
+                usage,
+                errors: [],
+              }),
+            )
+            .catch((error: unknown): NativeCensus => {
+              const code = enrichmentFailureCode(error);
+              return {
+                usage: new Map(),
+                errors: [
+                  {
+                    operation: "snapshot",
+                    source: DARWIN_PS_PATH,
+                    facet: "cpu_time",
+                    code,
+                  },
+                  {
+                    operation: "snapshot",
+                    source: DARWIN_PS_PATH,
+                    facet: "mem",
+                    code,
+                  },
+                ],
+              };
+            })
+        : Promise.resolve({ usage: new Map(), errors: [] });
+    const promise = Promise.all([
+      readSnapshot(bin, {
+        procs: true,
+        ports: true,
+        mem: true,
+        startTime: true,
+        cpuTime: true,
+        uid: true,
+        cwd: true,
+        status: true,
+        argv: true,
+      }),
+      nativeCensus,
+    ]).then(([reading, census]) => {
       const current = new Map<Pid, number>(
         reading.cpuTimes.map(({ pid, cpuTimeUs }) => [pid, cpuTimeUs]),
       );
@@ -370,7 +421,22 @@ export function createOsfactsReader(
         cpuPct.set(pid, Math.round(pct * 10) / 10);
       }
       processBaseline = { takenMs, cpuTimes: current };
-      return processesFromOsfacts(reading, cpuPct);
+      const frame = processesFromOsfacts(reading, cpuPct);
+      // Recovery is a Darwin sequence step. Linux keeps the pure osfacts map.
+      const processes =
+        os === "darwin"
+          ? recoverUnreadableProcessUsage(
+              frame.processes,
+              census.usage,
+              frame.sourceErrors,
+              DARWIN_PS_PATH,
+            )
+          : frame.processes;
+      return {
+        ...frame,
+        processes,
+        sourceErrors: [...frame.sourceErrors, ...census.errors],
+      };
     });
     processCache = { takenMs, promise };
     return promise;
@@ -438,6 +504,20 @@ export function createOsfactsReader(
 
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+/** Prefer Node system-error codes (ENOENT, ETIMEDOUT) so the source-error
+ * banner names a stable failure; fall back to one token rather than free text. */
+function enrichmentFailureCode(error: unknown): string {
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof (error as { code: unknown }).code === "string" &&
+    (error as { code: string }).code.length > 0
+  )
+    return (error as { code: string }).code;
+  return "ENRICHMENT_FAILED";
 }
 
 export function osfactsBinPath(): string {
