@@ -266,9 +266,17 @@ function createPersistedSignal<T extends string>(
 function subscribeMetricHistory(host: string): {
   history: Accessor<MetricSample[]>;
   streamError: Accessor<Error | null>;
+  /** Typed agent-ring disposition — corrupt/unknown-version is never a silent empty chart. */
+  unavailable: Accessor<"unknown-version" | "corrupt" | null>;
 } {
   const ctl = new AbortController();
   onCleanup(() => ctl.abort());
+  // Track the typed unavailable disposition separately from transport errors:
+  // a corrupt/unknown-version ring must surface "unavailable", never "collecting…".
+  let disposition: "unknown-version" | "corrupt" | null = null;
+  const [unavailable, setUnavailable] = createSignal<
+    "unknown-version" | "corrupt" | null
+  >(null);
   const sub = createSubscription<MetricHistoryMsg, MetricSample[]>(
     () =>
       unenrolledStreamCall(
@@ -277,28 +285,47 @@ function subscribeMetricHistory(host: string): {
         { signal: ctl.signal },
       ),
     {
-      reduce: (prev, msg) =>
-        msg.kind === "snapshot"
-          ? msg.samples
-          : pushSample(prev, msg.sample, HISTORY_RETENTION_MS),
+      reduce: (prev, msg) => {
+        if (msg.kind === "snapshot") {
+          disposition = null;
+          setUnavailable(null);
+          return msg.samples;
+        }
+        if (msg.kind === "unavailable") {
+          disposition = msg.reason;
+          setUnavailable(msg.reason);
+          // Empty samples with a typed disposition — never silently empty.
+          return [];
+        }
+        // delta
+        if (disposition !== null) return prev;
+        return pushSample(prev, msg.sample, HISTORY_RETENTION_MS);
+      },
       initial: [],
       signal: ctl.signal,
     },
   );
-  return { history: () => sub() ?? [], streamError: () => sub.error() ?? null };
+  return {
+    history: () => sub() ?? [],
+    streamError: () => sub.error() ?? null,
+    unavailable: () => unavailable(),
+  };
 }
 
 // Overlay text for a sparkline with no drawable point yet — the one place that
-// distinguishes the two states an empty ring conflates: a feed that simply
-// hasn't produced its first sample ("collecting…") from one whose stream has
-// died ("unavailable"). Returns null once any sample exists, so the trace
+// distinguishes the three states an empty ring conflates: a feed that simply
+// hasn't produced its first sample ("collecting…"), a transport that died, or a
+// typed agent-ring disposition (corrupt / unknown-version) — both of the latter
+// render "unavailable". Returns null once any sample exists, so the trace
 // itself is what's shown.
 function sparklinePlaceholder(
   latest: MetricSample | null,
   error: Error | null,
+  unavailable: "unknown-version" | "corrupt" | null = null,
 ): string | null {
   if (latest !== null) return null;
-  return error ? "unavailable" : "collecting…";
+  if (error || unavailable !== null) return "unavailable";
+  return "collecting…";
 }
 
 // The metric series the history chart and fleet-card sparkline draw, in
@@ -985,7 +1012,9 @@ function HostCard(props: { host: string; onSelect: () => void }) {
 // budget so a 40px box is drawn from ~120 points, not the full 900-sample
 // ring.
 function HostCardSparkline(props: { host: string }) {
-  const { history, streamError } = subscribeMetricHistory(props.host);
+  const { history, streamError, unavailable } = subscribeMetricHistory(
+    props.host,
+  );
   const { latest, points } = projectHistory(
     history,
     () => windowMsFor(WIDEST_HISTORY_WINDOW),
@@ -1008,7 +1037,11 @@ function HostCardSparkline(props: { host: string }) {
       </div>
       <Sparkline
         points={points()}
-        placeholder={sparklinePlaceholder(latest(), streamError())}
+        placeholder={sparklinePlaceholder(
+          latest(),
+          streamError(),
+          unavailable(),
+        )}
         class="h-10"
       />
     </div>
@@ -1349,7 +1382,9 @@ function HostView(props: {
 
   // metricHistory owns its own teardown via this view's reactive owner —
   // see `subscribeMetricHistory` / `projectHistory`.
-  const { history, streamError } = subscribeMetricHistory(props.host);
+  const { history, streamError, unavailable } = subscribeMetricHistory(
+    props.host,
+  );
   const { latest: latestSample, points } = projectHistory(
     history,
     windowMs,
@@ -1403,6 +1438,7 @@ function HostView(props: {
               points={points()}
               latest={latestSample()}
               streamError={streamError()}
+              unavailable={unavailable()}
               windowKey={historyWindow()}
               onWindow={setHistoryWindow}
             />
@@ -2566,6 +2602,7 @@ function HistoryChart(props: {
   points: Record<MetricKey, string>;
   latest: MetricSample | null;
   streamError: Error | null;
+  unavailable: "unknown-version" | "corrupt" | null;
   windowKey: HistoryWindowKey;
   onWindow: (k: HistoryWindowKey) => void;
 }) {
@@ -2588,7 +2625,11 @@ function HistoryChart(props: {
       </div>
       <Sparkline
         points={props.points}
-        placeholder={sparklinePlaceholder(props.latest, props.streamError)}
+        placeholder={sparklinePlaceholder(
+          props.latest,
+          props.streamError,
+          props.unavailable,
+        )}
         class="h-14"
       />
     </MetricSection>

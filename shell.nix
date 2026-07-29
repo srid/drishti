@@ -15,11 +15,10 @@ pkgs.mkShell {
   };
 
   shellHook = ''
-    # Hydrate node_modules/@kolu/{surface,surface-remote,surface-map,surface-app,solid-pwa-install}
-    # from the nix store. Hydration strategy lives in scripts/hydrate-kolu-packages.sh
-    # — one script, three callers (this shellHook, the just `install`
-    # recipe, and the drishti build derivation's
-    # postBunNodeModulesInstallPhase).
+    # Hydrate node_modules/@kolu/* from the nix store. Hydration strategy
+    # lives in scripts/hydrate-kolu-packages.sh — one script, three callers
+    # (this shellHook, the just `install` recipe, and the drishti build
+    # derivation's postBunNodeModulesInstallPhase).
     if root=$(git rev-parse --show-toplevel 2>/dev/null); then
       (cd "$root" && sh scripts/hydrate-kolu-packages.sh \
         "$DRISHTI_KOLU_SURFACE" @kolu/surface \
@@ -29,6 +28,8 @@ pkgs.mkShell {
         "$DRISHTI_KOLU_LOG" @kolu/log \
         "$DRISHTI_KOLU_SURFACE_APP" @kolu/surface-app \
         "$DRISHTI_KOLU_SOLID_PWA_INSTALL" @kolu/solid-pwa-install \
+        "$DRISHTI_KOLU_SURFACE_DAEMON" @kolu/surface-daemon \
+        "$DRISHTI_KOLU_SURFACE_DAEMON_SUPERVISOR" @kolu/surface-daemon-supervisor \
         "$DRISHTI_OSFACTS_CLIENT" osfacts-client)
     fi
   '';

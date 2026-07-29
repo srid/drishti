@@ -37,6 +37,8 @@ install:
       "$DRISHTI_KOLU_LOG" @kolu/log \
       "$DRISHTI_KOLU_SURFACE_APP" @kolu/surface-app \
       "$DRISHTI_KOLU_SOLID_PWA_INSTALL" @kolu/solid-pwa-install \
+      "$DRISHTI_KOLU_SURFACE_DAEMON" @kolu/surface-daemon \
+      "$DRISHTI_KOLU_SURFACE_DAEMON_SUPERVISOR" @kolu/surface-daemon-supervisor \
       "$DRISHTI_OSFACTS_CLIENT" osfacts-client'
 
 # Pre-populate the nix store with crates.io tarballs that nixpkgs' fetchurl

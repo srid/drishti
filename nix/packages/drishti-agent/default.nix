@@ -25,6 +25,11 @@
 # Acceptance test (`just drv-stability`, also a CI node): a committed client
 # edit must leave `drishti-agent.drvPath` unchanged.
 #
+# UW3 meaning shift: once the agent is a durable daemon, an accidental
+# agent-drv change no longer costs only a cache miss — it costs a
+# fleet-wide daemon restart (every host drains and replaces). Treat
+# agent-side churn as a fleet event, not a quiet rebuild.
+#
 # `@kolu/surface` is hydrated post-install exactly as in the monitor build
 # (it is a Nix-store source, not a bun.lock entry). Because it's hydrated, its
 # support deps must be declared by consumers so the hoisted node_modules
@@ -34,7 +39,7 @@
 # server/peer-server deps the agent serves (@orpc/server, @orpc/client — the
 # latter pulled by peer-server's stdio-codec) live on drishti-agent. No agent-
 # reachable @kolu/surface entrypoint imports solid-js, so it is not declared.
-{ stdenv, lib, bun, bun2nix, kolu-surface, osfacts-client }:
+{ stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-daemon, osfacts-client }:
 let
   src = lib.fileset.toSource {
     root = ../../..;
@@ -98,6 +103,7 @@ stdenv.mkDerivation {
   postBunNodeModulesInstallPhase = ''
     sh scripts/hydrate-kolu-packages.sh \
       ${kolu-surface} @kolu/surface \
+      ${kolu-surface-daemon} @kolu/surface-daemon \
       ${osfacts-client} osfacts-client
   '';
 

@@ -3,7 +3,7 @@
  *
  * The browser subscribes to the same `surface` as the agent serves. The
  * parent doesn't re-define a different surface; it implements the agent
- * surface locally by *forwarding* every read to the remote stdio client.
+ * surface locally by *forwarding* every read to the remote client.
  * On a fresh subscriber, the parent:
  *
  *   1. Synchronously yields the parent's connection-state-aware
@@ -13,30 +13,20 @@
  *   3. Per-key process upserts/removes from the agent flow through to
  *      the framework's channels and on to the browser.
  *
- * The surface is strictly read-only — it carries no procedures, so the
- * parent only ever mirrors agent data inward; it never forwards a
- * mutation back to the host.
+ * UW3: the durable metric-history ring lives in the agent daemon. The parent
+ * pumps the agent's `metricHistory` stream into a local ring/bus and re-serves
+ * it to browsers. On link-down the parent does NOT clear the ring — reconnect
+ * re-seeds from the agent (which still holds the on-disk ring).
  *
- * R7 keystone (kolu #1505): the reconnect-mirror loop that used to live
- * here as `bridgeAgentToParent` is now `@kolu/surface-remote`'s
- * `pumpRemoteSurface` — lifted verbatim-in-shape from this file so
- * pulam-web's terminal-awareness server can share it. drishti keeps only
- * the surface-specific knowledge the pump deliberately doesn't hold: the
- * per-spawn sink (`makeSink`) that folds the agent's `system` / `cpuCores`
- * / `networkInterfaces` / `processesSnapshot` frames into the parent's
- * local surface, and the `liveProcedures` holder the `kill` forward reads.
- *
- * The router this file builds is now the ENTRY surface `@kolu/surface-map`
- * serves N times — `admin-router.ts`'s `serveHostMap` calls `buildRouter`
- * once per pool member and hands `directLink(router)` to the map as that
- * host's `linkFor`, replacing the `RPCHandler`-per-`?host=`-socket dispatch
- * this file used to feed directly.
+ * R7 keystone (kolu #1505): the reconnect-mirror loop is
+ * `@kolu/surface-remote`'s `pumpRemoteSurface`. drishti keeps only the
+ * surface-specific knowledge: the per-spawn sink (`makeSink`) and the
+ * `liveProcedures` holder the `kill` forward reads.
  */
 
 import {
   type CellStore,
   type Channel,
-  extendSurface,
   implementSurface,
   inMemoryChannel,
   inMemoryStore,
@@ -48,7 +38,7 @@ import {
   type Session,
   type SshProv,
 } from "@kolu/surface-remote";
-import { historySurface, mirroredAgentSurface } from "drishti-common/browser";
+import { mirroredAgentSurface } from "drishti-common/browser";
 import {
   type CoreId,
   type CpuCore,
@@ -67,18 +57,18 @@ import {
 } from "drishti-common";
 import { type Alerts, NO_ALERTS } from "drishti-common/alerts";
 import {
-  captureSample,
   HISTORY_RETENTION_MS,
   pushSample,
 } from "../common/history";
-import { type Logger, makeLogger } from "./log";
+import type { HostSession } from "./hostRegistry";
+import { makeLogger } from "./log";
 
 export interface BuildRouterOptions {
   /** The host this router bridges — used only to tag the bridge's log
    *  lines (`bridge:${host}`). The `Session` keeps its `host` private,
    *  so the registry (which has it) passes it in explicitly. */
   host: string;
-  session: Session<AgentClient<typeof surface.contract>, SshProv>;
+  session: HostSession;
 }
 
 /** Build the parent's oRPC router. The session's connection state
@@ -108,18 +98,15 @@ export function buildRouter(opts: BuildRouterOptions) {
   const sourceErrorCache = new Map<string, SourceErrorFact>();
   const coreCache = new Map<CoreId, CpuCore>();
   const netCache = new Map<IfaceName, NetInterface>();
-  // No browser snapshot bus: the whole-process-set protocol is the `processes`
-  // collection's `deltas` verb now. The pump mirrors the agent's process frames
-  // into `processCache` through the collection sink, and the framework re-serves
-  // that collection's coalesced deltas to the browser (SR5 — one protocol).
-  // Parent-owned metric-history ring. Sampled once per agent poll tick (see
-  // `recordSample`), bounded to the widest selectable window, and held for
-  // the life of this session — independent of any browser. A new browser
-  // subscriber is re-seeded from `historyRing` (full snapshot) then fed
-  // per-tick deltas via `historyBus`, so reloads and tab switches replay the
-  // whole history. Reassigned (not mutated) by `pushSample`; the stream
-  // source reads the current binding on subscribe.
+
+  // Parent-side re-serve of the agent's durable metric-history ring.
+  // Seeded/refreshed from the agent `metricHistory` stream frames via
+  // makeSink.streams — NOT sampled here from system ticks (the agent owns
+  // sampling + on-disk persistence). On link-down we keep the ring so a
+  // brief reconnect does not flash an empty chart; the next agent snapshot
+  // re-seeds authoritatively.
   let historyRing: MetricSample[] = [];
+  let historyUnavailable: "unknown-version" | "corrupt" | null = null;
   const historyBus: Channel<MetricHistoryMsg> =
     inMemoryChannel<MetricHistoryMsg>();
 
@@ -133,10 +120,9 @@ export function buildRouter(opts: BuildRouterOptions) {
     current: ProcedureForwarders<typeof surface.spec> | null;
   } = { current: null };
 
-  // Implements the agent surface (SR9: no `connection` cell — link health rides the
-  // host-map entry). The base primitives are forwarded/folded from the agent; the
-  // seeded local store the session pump writes — the agent's surface stays
-  // connection-free.
+  // Implements the agent surface (including durable metricHistory). The base
+  // primitives are forwarded/folded from the agent; the seeded local store is
+  // what the session pump writes.
   const runtime = implementSurface(mirroredAgentSurface, {
     cells: {
       system: { store: systemStore },
@@ -145,15 +131,6 @@ export function buildRouter(opts: BuildRouterOptions) {
     collections: {
       processes: {
         readAll: () => processCache,
-        // The framework's wrapped upsert/remove call these deps first
-        // and only then publish through the keyed channels. If we throw
-        // here (to "guard against browser writes"), the framework's own
-        // bridging path — `ctx.collections.processes.upsert(...)` from
-        // `reconcileProcesses` — also throws and the publish never fires.
-        // Browser-vs-server isn't a write-vs-read distinction inside the
-        // process; it's a wire-protocol distinction (the browser-facing
-        // contract simply doesn't expose `upsert` / `remove`). So these
-        // deps stay as the single in-process write seam.
         upsert: (key, value) => {
           processCache.set(key, value);
         },
@@ -198,14 +175,28 @@ export function buildRouter(opts: BuildRouterOptions) {
         },
       },
     },
-    // No `streams` on the mirrored surface: `processes` is served to the browser as
-    // a `deltas` collection (framework-coalesced, folded from the agent by the pump),
-    // and `metricHistory` is a PARENT-LOCAL member composed on via `extendSurface`
-    // below (its own `historyRuntime`), not a member of the mirrored agent surface.
-    // The browser-facing `kill` is a pure FORWARD: the parent owns no pids, so it
-    // relays to the agent through the live mirror's procedure stub (the R7 proof).
-    // No live link → an honest `{ ok: false }`, surfaced to the user; a stub call
-    // against a just-dropped link rejects and the rejection reaches the browser.
+    streams: {
+      metricHistory: {
+        // Yield the parent's current ring (or a typed unavailable) on
+        // subscribe, then forward each agent-driven frame.
+        source: async function* (_input, signal) {
+          if (historyUnavailable !== null) {
+            yield {
+              kind: "unavailable",
+              reason: historyUnavailable,
+            } satisfies MetricHistoryMsg;
+          } else {
+            yield {
+              kind: "snapshot",
+              samples: [...historyRing],
+            } satisfies MetricHistoryMsg;
+          }
+          for await (const msg of historyBus.subscribe(signal)) {
+            yield msg;
+          }
+        },
+      },
+    },
     procedures: {
       process: {
         kill: async ({ input }) => {
@@ -219,57 +210,56 @@ export function buildRouter(opts: BuildRouterOptions) {
     },
   });
 
-  // Compile-time guard for the least-privilege narrowing: the real
-  // runtime must satisfy the pump sink's write-only view. Stated here (not
-  // only implied by the `makeSink` closure below) so a refactor of that sink
-  // can't quietly drop the check — a surface collection rename surfaces as
-  // an error on this line.
+  // Compile-time guard for the least-privilege narrowing.
   const _pumpCtx: FragmentCtx = runtime;
   void _pumpCtx;
 
-  // Sample the metric ring once per agent system tick. Every series reads off
-  // the just-arrived `system` snapshot — CPU% is the agent-computed
-  // `system.cpuPct` (the single host-CPU mean), so the parent no longer
-  // re-averages `coreCache` (which is pumped on a separate leg and could lag
-  // the system tick by a frame). `pushSample` evicts points past the retention
-  // bound, and the delta goes to every live browser subscriber.
-  const recordSample = (system: SystemInfo): void => {
-    const sample = captureSample(Date.now(), system);
-    historyRing = pushSample(historyRing, sample, HISTORY_RETENTION_MS);
-    historyBus.publish({ kind: "delta", sample });
+  /** Fold one agent metricHistory frame into the parent's ring/bus. */
+  const applyHistoryFrame = (msg: MetricHistoryMsg): void => {
+    switch (msg.kind) {
+      case "snapshot": {
+        historyUnavailable = null;
+        historyRing = [...msg.samples];
+        historyBus.publish(msg);
+        return;
+      }
+      case "delta": {
+        // Deltas against an unavailable disposition would silently populate
+        // a chart that should stay typed-unavailable — refuse them.
+        if (historyUnavailable !== null) return;
+        historyRing = pushSample(
+          historyRing,
+          msg.sample,
+          HISTORY_RETENTION_MS,
+        );
+        historyBus.publish(msg);
+        return;
+      }
+      case "unavailable": {
+        // Typed disposition — never clear to an empty chart silently.
+        historyUnavailable = msg.reason;
+        historyRing = [];
+        historyBus.publish(msg);
+        return;
+      }
+      default: {
+        const _exhaustive: never = msg;
+        throw new Error(
+          `unreachable MetricHistoryMsg: ${JSON.stringify(_exhaustive)}`,
+        );
+      }
+    }
   };
 
   // ── Bridge remote agent surface → parent's local surface ──────────
-  // `pumpRemoteSurface` (R7 keystone) pins the session, then loops over
-  // each successive AgentClient the session produces — each time the agent
-  // process is respawned (after a transport drop), the pump fetches the new
-  // client and re-issues ONE `mirrorRemoteSurface` against the sink built
-  // below. The framework's `ClientRetryPlugin` is NOT load-bearing here:
-  // stdio links don't recover mid-stream (the underlying streams die with
-  // the process), so the only reliable recovery is to re-mirror on the
-  // *new* client. The pump's outer loop is what implements "reconnect →
-  // state reconciles, no ghosts"; drishti supplies only the per-spawn sink.
   void pumpRemoteSurface({
     source: surface,
-    session,
-    // Build the mirror sink for ONE freshly-spawned client. Called once per
-    // (re)spawn, so the per-client state below resets naturally each
-    // reconnect: the agent leads every (re)connect with a fresh `system`
-    // snapshot, so the first-frame handshake marker and the frame counter
-    // re-arm with the client. `seq` labels successive spawns (`#1`, `#2`, …)
-    // so the otherwise-identical per-reconnect log lines trace to a specific
-    // spawn — if the mirror against `#2` never yields a `system` frame while
-    // the agent logged `serving surface over stdio`, the handoff (not the
-    // remote) is where a stuck reconnect lives.
+    session: session as Session<AgentClient<typeof surface.contract>, SshProv>,
     makeSink: ({ seq }) => {
       let firstSystemFrame = true;
       const issuedAt = Date.now();
       return {
         cells: {
-          // The agent's `system` cell → the parent's. The first yield is also
-          // the connection handshake: it flips the session to `connected`
-          // (idempotent thereafter). Every tick is the parent's authoritative
-          // metric-history sampling point (it sees every tick, browser or not).
           system: (remoteSystem) => {
             if (firstSystemFrame) {
               firstSystemFrame = false;
@@ -279,30 +269,14 @@ export function buildRouter(opts: BuildRouterOptions) {
             }
             session.markConnected();
             runtime.ctx.cells.system.set(remoteSystem);
-            recordSample(remoteSystem);
+            // History sampling is the AGENT's job (durable ring). Parent
+            // only folds the agent's metricHistory stream (below).
           },
-          // The agent's `alerts` cell → the parent's. Wire-read-only downstream;
-          // the parent only ever mirrors the agent's derived value inward. The
-          // agent's own `equals` (`alertsEqual`) already gated the frame, so a
-          // frame arriving here is a genuine raise/clear worth re-publishing.
           alerts: (remoteAlerts) => {
             runtime.ctx.cells.alerts.set(remoteAlerts);
           },
         },
         collections: {
-          // Small-N per-key collections — the path the private collection
-          // engine drives (keys stream + per-key value streams). `coreCache` /
-          // `netCache` outlive the per-spawn sink (they're minted once above),
-          // so a core/iface that vanished while the ssh link was down would
-          // survive as a ghost row across the reconnect. `initialKeys` hands the
-          // fresh mirror this spawn's carry-over keys; its first `keys` frame
-          // prunes any the snapshot omits — no stale row, no empty flash
-          // (kolu #1661; mirrors surface-remote's reServeSurface).
-          // `processes` rides the SAME collection-sink path (SR5). Because it
-          // declares the `deltas` verb, the mirror folds the agent's ONE coalesced
-          // snapshot-then-delta stream into `runtime.ctx.collections.processes`
-          // (which writes `processCache` AND re-serves the browser its own coalesced
-          // deltas) — no parallel stream fold, no `applySnapshotMessage` reducer.
           processes: {
             upsert: (key, value) =>
               runtime.ctx.collections.processes.upsert(key, value),
@@ -336,65 +310,37 @@ export function buildRouter(opts: BuildRouterOptions) {
             initialKeys: () => new Set(netCache.keys()),
           },
         },
+        streams: {
+          // Seed/refresh the parent ring from the agent's durable history.
+          // On reconnect the agent re-sends a full snapshot — do not clear
+          // the ring on link-down (onLinkDown is intentionally a no-op for
+          // history).
+          metricHistory: {
+            input: {},
+            onFrame: (msg) => {
+              applyHistoryFrame(msg);
+            },
+          },
+        },
       };
     },
-    // Publish each spawn's forwarding stubs for the parent's `kill` handler;
-    // the pump clears them the instant the link dies, so a kill in the gap
-    // fails honestly rather than calling into a dead client.
     liveProcedures,
+    // Link-down: keep historyRing so a brief reconnect does not flash empty.
+    // The next agent snapshot re-seeds authoritatively.
+    onLinkDown: () => {
+      log("agent link down — keeping history ring until next agent snapshot");
+    },
     log,
   });
 
-  // `metricHistory` is PARENT-LOCAL policy — retention lives here, not on the agent
-  // (whose inert stub is gone, SR5). Serve it from its OWN runtime over the parent's
-  // ring/bus, then compose it FLAT onto the mirrored agent surface via `extendSurface`:
-  // the browser sees ONE surface with `metricHistory` beside the mirrored members, at
-  // byte-identical paths, with post-commit observation (the sampler feeds the ring off
-  // each mirrored `system` tick) instead of a second mirror.
-  // `historySurface` is the shared declaration (drishti-common/browser) so the
-  // browser types off the same combined surface the parent serves here.
-  const historyRuntime = implementSurface(historySurface, {
-    streams: {
-      metricHistory: {
-        // Yield the parent's current ring on subscribe (a reload / tab-switch
-        // replays the whole history), then forward each per-tick delta.
-        source: async function* (_input, signal) {
-          yield {
-            kind: "snapshot",
-            samples: [...historyRing],
-          } satisfies MetricHistoryMsg;
-          for await (const msg of historyBus.subscribe(signal)) {
-            yield msg;
-          }
-        },
-      },
-    },
-  });
-  const composed = extendSurface(
-    {
-      surface: mirroredAgentSurface,
-      router: runtime.router,
-      done: runtime.done,
-      close: runtime.close,
-    },
-    {
-      surface: historySurface,
-      router: historyRuntime.router,
-      done: historyRuntime.done,
-      close: historyRuntime.close,
-    },
-  );
-  return { router: composed.router, session };
+  return { router: runtime.router, session };
 }
 
 /** The write-side methods the pump sink is allowed to touch — a
  *  deliberate least-privilege narrowing of `implementSurface(...).ctx`,
  *  not the full ctx. The sink only ever mirrors remote data inward, so it
  *  gets `set` / `upsert` / `remove`; `readAll` and the underlying stores
- *  stay out of reach. This is a boundary, not a maintenance chore: the
- *  `_pumpCtx` guard above assigns the real runtime to this type, so a
- *  collection renamed or retyped on the surface becomes a compile error
- *  here rather than silent drift. */
+ *  stay out of reach. */
 type FragmentCtx = {
   ctx: {
     cells: {
@@ -425,9 +371,3 @@ type FragmentCtx = {
     };
   };
 };
-
-// The parent-side `applySnapshotMessage` reducer is gone (SR5): the mirror folds the
-// `processes` collection's `deltas` stream straight into
-// `runtime.ctx.collections.processes` via the pump's collection sink, with the same
-// snapshot-reconcile + carry-over pruning the framework already owns — one process
-// protocol, no hand-rolled parent reducer.

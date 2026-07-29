@@ -16,9 +16,10 @@ default:
 # the user invokes `just install` from a non-direnv terminal).
 #
 # The @kolu/* packages (surface, surface-remote, surface-map, surface-app,
-# solid-pwa-install) are sourced hermetically from the npins-pinned kolu tree:
-# the overlay extracts each as a nix-store path (nix/overlay.nix), nix/env.nix
-# exports it as $DRISHTI_KOLU_SURFACE{,_REMOTE,_MAP,_APP} /
+# solid-pwa-install, surface-daemon, surface-daemon-supervisor) are sourced
+# hermetically from the npins-pinned kolu tree: the overlay extracts each as a
+# nix-store path (nix/overlay.nix), nix/env.nix exports it as
+# $DRISHTI_KOLU_SURFACE{,_REMOTE,_MAP,_APP,_DAEMON,_DAEMON_SUPERVISOR} /
 # $DRISHTI_KOLU_SOLID_PWA_INSTALL, and this recipe copies it into
 # node_modules. The raw .ts is consumed directly (no build step).
 install:
@@ -31,6 +32,8 @@ install:
       "$DRISHTI_KOLU_LOG" @kolu/log \
       "$DRISHTI_KOLU_SURFACE_APP" @kolu/surface-app \
       "$DRISHTI_KOLU_SOLID_PWA_INSTALL" @kolu/solid-pwa-install \
+      "$DRISHTI_KOLU_SURFACE_DAEMON" @kolu/surface-daemon \
+      "$DRISHTI_KOLU_SURFACE_DAEMON_SUPERVISOR" @kolu/surface-daemon-supervisor \
       "$DRISHTI_OSFACTS_CLIENT" osfacts-client'
 
 # Boot the parent server. Defaults to localhost; pass any number of

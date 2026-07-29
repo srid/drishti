@@ -56,10 +56,10 @@ export function diskPct(system: SystemInfo): number {
 export type MetricKey = "cpu" | "mem" | "swap" | "disk";
 
 /** Project a live `system` snapshot to its per-metric percentages (0-100) — the
- *  ONE system→% projection, consumed by BOTH the parent's history sampler
- *  (`captureSample`) and the agent's alert fold. `cpu` is the agent's
- *  pre-computed `cpuPct`; `mem`/`disk` are the guarded shares above, so no tier
- *  re-derives the formula. */
+ *  ONE system→% projection, consumed by BOTH the agent daemon's history sampler
+ *  (`captureSample` in `drishti-common/history`) and the agent's alert fold.
+ *  `cpu` is the agent's pre-computed `cpuPct`; `mem`/`disk` are the guarded
+ *  shares above, so no tier re-derives the formula. */
 export function metricPercents(system: SystemInfo): Record<MetricKey, number> {
   return {
     cpu: system.cpuPct,

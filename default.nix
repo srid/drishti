@@ -74,6 +74,11 @@ let
     then resolvedPkgs.callPackage ./nix/packages/drishti-agent { bun2nix = b2n; }
     else throw "drishti agent build derivation needs `b2n` (lib.mkBun2nix output) — invoke via flake.nix";
 
+  # Identity env for the durable daemon (UW3). BUILD_ID flips iff the agent
+  # closure changes — the convergence kit's build-mismatch axis. COMMIT_HASH
+  # is the navigable git ref for UI/diagnostics. Off-nix both read as "" via
+  # readBakedIdentity("DRISHTI_AGENT").
+  drishtiAgentBuildId = builtins.hashString "sha256" (toString drishtiAgentBuilt);
   drishti-agent = resolvedPkgs.runCommand "drishti-agent"
     {
       nativeBuildInputs = [ resolvedPkgs.makeWrapper ];
@@ -82,7 +87,9 @@ let
     mkdir -p $out/bin
     makeWrapper ${resolvedPkgs.bun}/bin/bun $out/bin/drishti-agent \
       --add-flags "${drishtiAgentBuilt}/lib/drishti/packages/agent/src/main.ts" \
-      --set DRISHTI_OSFACTS_BIN "${resolvedPkgs.osfacts}/bin/osfacts"
+      --set DRISHTI_OSFACTS_BIN "${resolvedPkgs.osfacts}/bin/osfacts" \
+      --set DRISHTI_AGENT_BUILD_ID "${drishtiAgentBuildId}" \
+      --set DRISHTI_AGENT_COMMIT_HASH "${rev}"
   '';
 
   drishti-client = resolvedPkgs.runCommand "drishti-client"
@@ -110,6 +117,11 @@ let
           `# cell and the client's shellCommit() agree — the freshness rail` \
           `# reads one consistent commit.` \
           --set ${stamp.envVar} "${rev}" \
+          `# Expected agent build identity for convergeAdmit (UW3). Same hash` \
+          `# the agent wrapper bakes; multi-arch remotes may mismatch and` \
+          `# ride adopt-stale after the drain budget (onGiveUp).` \
+          --set DRISHTI_AGENT_BUILD_ID "${drishtiAgentBuildId}" \
+          --set DRISHTI_AGENT_COMMIT_HASH "${rev}" \
           `# DRISHTI_AGENT_DRVS_JSON: {system -> drvPath} JSON map. flake.nix` \
           `# pre-evaluates one entry per system in its 'systems' list; the` \
           `# server picks the right entry at runtime via 'uname -ms' on each` \

@@ -1,0 +1,114 @@
+/**
+ * Durable on-disk metric-history ring for the agent daemon.
+ *
+ * File shape: `{ v: number, samples: MetricSample[] }` at
+ * `~/.local/state/drishti/history.ring.json` (via `daemonHome.file(...)`).
+ *
+ * Dispositions are TYPED — never a silently empty chart on a corrupt or
+ * unknown-version ring:
+ *   - missing file → honest empty (`ok` with `[]`)
+ *   - unknown `v`  → leave the file alone, return `unavailable`/`unknown-version`
+ *   - garbage/truncated → rename aside to `history.ring.json.corrupt-<ts>`
+ *     (NEVER delete), return `unavailable`/`corrupt`
+ *
+ * Writes are atomic (temp in same dir + rename).
+ */
+
+import {
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import {
+  MetricSampleSchema,
+  type MetricSample,
+} from "drishti-common";
+import { z } from "zod";
+
+/** On-disk ring schema version. Bump only with a reader migration path. */
+export const HISTORY_RING_VERSION = 1;
+
+/** File basename under the daemon home. */
+export const HISTORY_RING_FILE = "history.ring.json";
+
+const RingFileSchema = z.object({
+  v: z.number().int(),
+  samples: z.array(MetricSampleSchema),
+});
+
+export type HistoryRingLoad =
+  | { kind: "ok"; samples: MetricSample[] }
+  | {
+      kind: "unavailable";
+      reason: "unknown-version" | "corrupt";
+      samples: [];
+    };
+
+/** Load a history ring from `path`. Missing file is honest empty. Unknown
+ *  version leaves the file alone. Garbage is moved aside, never deleted. */
+export function loadHistoryRing(path: string): HistoryRingLoad {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      return { kind: "ok", samples: [] };
+    }
+    // Unreadable for other reasons (EACCES, …) is corrupt disposition: we
+    // cannot safely interpret the file, and must not silently empty the chart.
+    moveCorruptAside(path);
+    return { kind: "unavailable", reason: "corrupt", samples: [] };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    moveCorruptAside(path);
+    return { kind: "unavailable", reason: "corrupt", samples: [] };
+  }
+
+  const shape = RingFileSchema.safeParse(parsed);
+  if (!shape.success) {
+    moveCorruptAside(path);
+    return { kind: "unavailable", reason: "corrupt", samples: [] };
+  }
+
+  if (shape.data.v !== HISTORY_RING_VERSION) {
+    // Unknown version: leave the file alone so a future reader (or the
+    // writer that produced it) can still use it. Report typed unavailability.
+    return { kind: "unavailable", reason: "unknown-version", samples: [] };
+  }
+
+  return { kind: "ok", samples: shape.data.samples };
+}
+
+/** Atomic write: temp in the same directory, then rename over the target. */
+export function saveHistoryRing(
+  path: string,
+  samples: readonly MetricSample[],
+): void {
+  const dir = dirname(path);
+  const tmp = join(dir, `.history.ring.json.${process.pid}.${Date.now()}.tmp`);
+  const body = JSON.stringify({
+    v: HISTORY_RING_VERSION,
+    samples: [...samples],
+  } satisfies z.infer<typeof RingFileSchema>);
+  writeFileSync(tmp, body, { encoding: "utf8", mode: 0o600 });
+  renameSync(tmp, path);
+}
+
+/** Move a corrupt ring aside. NEVER deletes — a future autopsy may need it. */
+function moveCorruptAside(path: string): void {
+  const aside = `${path}.corrupt-${Date.now()}`;
+  try {
+    renameSync(path, aside);
+  } catch (err) {
+    // If the rename itself fails (race, permissions), leave the original
+    // in place rather than delete — fail-loud via the typed unavailable
+    // return; the caller already has the disposition.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+  }
+}

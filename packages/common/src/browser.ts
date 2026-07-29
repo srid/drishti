@@ -2,14 +2,14 @@
  * App-only (browser + parent re-serve) surface bits. This is the ONLY
  * drishti-common module that imports `@kolu/surface-remote` — kept off the
  * agent-shared `./surface.ts` so the agent (whose scoped build hydrates only
- * `@kolu/surface`) never loads the parent-only provisioning lib at runtime.
- * Exposed as the `drishti-common/browser` subpath; the agent imports
- * `drishti-common` (`./surface.ts`) and never reaches this file.
+ * `@kolu/surface` + `@kolu/surface-daemon`) never loads the parent-only
+ * provisioning lib at runtime. Exposed as the `drishti-common/browser`
+ * subpath; the agent imports `drishti-common` (`./surface.ts`) and never
+ * reaches this file.
  */
 
-import { defineSurface, defineSurfaceWithPolicy } from "@kolu/surface/define";
-import { z } from "zod";
-import { MetricHistoryMessage, surface } from "./surface";
+import { defineSurfaceWithPolicy } from "@kolu/surface/define";
+import { surface } from "./surface";
 
 /** drishti's app-owned client-error-policy union (SR11, fork-A) — the OPAQUE,
  *  app-typed value the framework threads to the app's registered `onClientError`
@@ -25,29 +25,20 @@ export type ClientErrorPolicy = { kind: "log"; label: string };
  *  here — link health rides the host-map entry's fine `connection` payload (the ONE
  *  authority; see `hostMap.ts`'s `connection: ConnectionInfoSchema` + `admin-router.ts`'s
  *  `serveHostMap` `connection.project`), which the client derives the word from off the
- *  SAME entry it reads the dot. `metricHistory` is NOT here — it moved to parent-local
- *  policy (SR5), composed on via `extendSurface` (see app/server/router.ts). */
+ *  SAME entry it reads the dot. `metricHistory` is a first-class agent-surface stream
+ *  (UW3 — the durable ring lives in the agent daemon); the parent re-serves it. */
 export const mirroredAgentSurface = surface;
 
-/** The parent-LOCAL metric-history member — retention lives on the parent, not the
- *  agent (whose inert stub is gone, SR5). The parent serves it from its own runtime
- *  and composes it onto {@link mirroredAgentSurface} via `extendSurface`; declared
- *  HERE so BOTH the parent (serves it) and the browser (types off `browserSurface`)
- *  reference ONE declaration. */
-export const historySurface = defineSurface({
-  streams: {
-    metricHistory: {
-      inputSchema: z.object({}),
-      outputSchema: MetricHistoryMessage,
-    },
-  },
-});
+/** @deprecated Prefer `surface.spec.streams` — metricHistory is on the agent surface
+ *  itself since UW3. Kept as an alias so older import sites typecheck during the
+ *  transition; equals the agent surface's streams map. */
+export const historySurface = {
+  spec: { streams: surface.spec.streams },
+} as const;
 
-/** The COMBINED surface the BROWSER consumes — the mirrored agent members PLUS the
- *  parent-local `metricHistory` — exactly what the parent's
- *  `extendSurface(mirroredAgentSurface, historyRuntime)` serves. The browser's client
- *  types off THIS, so it reaches every member the parent serves at the same flat
- *  paths, byte-identical. (A flat spec merge, mirroring `extendSurface`'s own merge.) */
+/** The COMBINED surface the BROWSER consumes — the agent members (including
+ *  durable `metricHistory`) exactly as the parent re-serves them. The browser's
+ *  client types off THIS, so it reaches every member at the same flat paths. */
 export const browserSurface = defineSurfaceWithPolicy<ClientErrorPolicy>()({
   cells: {
     ...mirroredAgentSurface.spec.cells,
@@ -78,7 +69,10 @@ export const browserSurface = defineSurfaceWithPolicy<ClientErrorPolicy>()({
     sourceErrors: {
       ...mirroredAgentSurface.spec.collections.sourceErrors,
       client: {
-        onError: { kind: "log", label: "source errors subscription failed" },
+        onError: {
+          kind: "log",
+          label: "source errors subscription failed",
+        },
       },
     },
     cpuCores: {
@@ -88,12 +82,15 @@ export const browserSurface = defineSurfaceWithPolicy<ClientErrorPolicy>()({
     networkInterfaces: {
       ...mirroredAgentSurface.spec.collections.networkInterfaces,
       client: {
-        onError: { kind: "log", label: "networkInterfaces subscription failed" },
+        onError: {
+          kind: "log",
+          label: "networkInterfaces subscription failed",
+        },
       },
     },
   },
   procedures: mirroredAgentSurface.spec.procedures,
-  streams: historySurface.spec.streams,
+  streams: mirroredAgentSurface.spec.streams,
 });
 
 // The connection-cell types + gate-closed default, re-exported here (not from the
