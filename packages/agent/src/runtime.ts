@@ -1,7 +1,8 @@
 /**
  * Module-private agent surface runtime (W7.2).
  * Imported by main.ts and fixtures/highContractMain.ts only.
- * Not a package public API — agent package has no exports map entry for this.
+ * Not a package public API — packages/agent/package.json `exports` does not
+ * list this module (W8.3). In-repo relative imports (fixtures) still work.
  */
 
 import { ORPCError } from "@orpc/client";

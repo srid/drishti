@@ -194,11 +194,36 @@ export function captureDrainPersistFailure(
  *  generic over the provisioning phase, so we intersect the daemon members
  *  onto the `SshProv`-narrowed base `Session` for `onState`/`currentState`
  *  (otherwise `"probing"` / `"provisioning"` become unspellable). */
+/**
+ * Structured terminal outcome of the last dial/admit attempt (W8.1 / W8.2).
+ * Projected by drishti on the HostSession so e2e can assert kinds/fields
+ * without reading free-form Error.message strings from pin().
+ */
+export type HostSessionOutcome =
+  | { readonly kind: "replaced"; readonly axis: "build" | "contract" }
+  | {
+      readonly kind: "refused";
+      readonly anomalyKind: ConvergenceAnomaly["kind"];
+    }
+  | { readonly kind: "adopted" }
+  | {
+      readonly kind: "adopted-stale";
+      readonly anomalyKind: ConvergenceAnomaly["kind"];
+    }
+  | {
+      readonly kind: "resolve-failed";
+      /** Discriminant of ResolveDrvError.resolution.kind */
+      readonly resolutionKind: ResolveDrvError["resolution"]["kind"];
+    };
+
 export type HostSession = Omit<
   DaemonSession<AgentAppClient, DrishtiConvergence>,
   "onState" | "currentState"
 > &
-  Pick<Session<AgentAppClient, SshProv>, "onState" | "currentState">;
+  Pick<Session<AgentAppClient, SshProv>, "onState" | "currentState"> & {
+    /** Last structured dial/admit outcome (W8.1 / W8.2). */
+    outcome: () => HostSessionOutcome | null;
+  };
 
 /** The pool `serveHostMap` consumes directly. */
 export type HostPool = RemotePool<HostSession, undefined> & PoolControls;
@@ -314,6 +339,12 @@ export function awaitExitViaProcessOracle(
  * Admit factory: probe identity, run convergeAdmit, bind active on adopt.
  * Internal — bound by the production makeSession assembly (W4.1 dial e2e).
  */
+function replacedAxis(reason: string): "build" | "contract" {
+  // Framework reason strings from convergeAdmit (kolu surface-daemon-supervisor).
+  if (reason.includes("newer contract")) return "contract";
+  return "build";
+}
+
 function makeAgentAdmit(args: {
   combinedByScopedClient: WeakMap<AgentAppClient, ActiveCombined>;
   /** Budget is minted on first drv resolve (when system is known). */
@@ -321,6 +352,7 @@ function makeAgentAdmit(args: {
   getConvergence: () => DrishtiConvergence | null;
   setConvergence: (c: DrishtiConvergence | null) => void;
   setActiveCombined: (a: ActiveCombined | null) => void;
+  setOutcome: (o: HostSessionOutcome) => void;
 }): Admit<AgentAppClient> {
   return async (scopedClient): Promise<AdmitVerdict> => {
     const active = args.combinedByScopedClient.get(scopedClient);
@@ -381,11 +413,16 @@ function makeAgentAdmit(args: {
           args.setConvergence(null);
         }
         args.setActiveCombined(active);
+        args.setOutcome({ kind: "adopted" });
         return { kind: "adopt" };
       }
       case "adopt-stale": {
         args.setConvergence(verdict.anomaly);
         args.setActiveCombined(active);
+        args.setOutcome({
+          kind: "adopted-stale",
+          anomalyKind: verdict.anomaly.kind,
+        });
         return { kind: "adopt" };
       }
       case "replaced": {
@@ -395,6 +432,11 @@ function makeAgentAdmit(args: {
           drainCapture.failure,
         );
         args.setConvergence(projected);
+        // W8.2: structured replaced verdict as session data (not pin Error.message).
+        args.setOutcome({
+          kind: "replaced",
+          axis: replacedAxis(verdict.reason),
+        });
         return { kind: "replaced", reason: verdict.reason };
       }
       case "refuse": {
@@ -402,6 +444,10 @@ function makeAgentAdmit(args: {
         // refused session instead of throwing on null.
         args.setConvergence(verdict.anomaly);
         args.setActiveCombined(active);
+        args.setOutcome({
+          kind: "refused",
+          anomalyKind: verdict.anomaly.kind,
+        });
         return {
           kind: "refuse",
           state: { error: verdict.error, cause: "remote" },
@@ -428,6 +474,7 @@ function attachDaemonSession(args: {
   setConvergence: (c: DrishtiConvergence | null) => void;
   getActiveCombined: () => ActiveCombined | null;
   setActiveCombined: (a: ActiveCombined | null) => void;
+  getOutcome: () => HostSessionOutcome | null;
 }): HostSession {
   const { base } = args;
 
@@ -466,6 +513,7 @@ function attachDaemonSession(args: {
 
   return Object.assign(base, {
     convergence: () => args.getConvergence(),
+    outcome: () => args.getOutcome(),
     preservation: { children: "die" as const },
     // Minimal renew on drainAndAwaitExit; result projects persist failure (W3.2).
     renew: async () => {
@@ -571,6 +619,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
       buildEntry: (host) => {
         let convergence: DrishtiConvergence | null = null;
         let activeCombined: ActiveCombined | null = null;
+        let outcome: HostSessionOutcome | null = null;
         const combinedByScopedClient = new WeakMap<
           AgentAppClient,
           ActiveCombined
@@ -579,6 +628,13 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         const budget = createConnectorDrainBudget(
           drishtiAgentConvergencePolicy(expectedBuildId),
         );
+        const OFF_NIX_RESOLUTION = {
+          kind: "unavailable" as const,
+          failureCause: "remote" as const,
+          terminal: false as const,
+        };
+        const OFF_NIX_MSG =
+          "off-nix pool: no agent derivation (can't-judge path has no resolveDrvPath)";
         const inner = sshConnector<AgentDaemonContract>({
           host,
           binary: "drishti-agent",
@@ -596,14 +652,12 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
               .filter((e): e is [string, string] => e[1] !== undefined),
           ),
           resolveDrvPath: async () => {
-            throw new ResolveDrvError(
-              "off-nix pool: no agent derivation (can't-judge path has no resolveDrvPath)",
-              {
-                kind: "unavailable",
-                failureCause: "remote",
-                terminal: false,
-              },
-            );
+            // W8.1: project resolution KIND before the connector wraps the throw.
+            outcome = {
+              kind: "resolve-failed",
+              resolutionKind: OFF_NIX_RESOLUTION.kind,
+            };
+            throw new ResolveDrvError(OFF_NIX_MSG, OFF_NIX_RESOLUTION);
           },
         });
         const rawConnector: Connector<AgentAppClient, SshProv> = async (ctx) => {
@@ -634,6 +688,9 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
           setActiveCombined: (a) => {
             activeCombined = a;
           },
+          setOutcome: (o) => {
+            outcome = o;
+          },
         });
         const base = makeSession<AgentAppClient, SshProv>({
           connectOnce: rawConnector,
@@ -652,6 +709,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
           setActiveCombined: (a) => {
             activeCombined = a;
           },
+          getOutcome: () => outcome,
         });
         return { session, handler: undefined };
       },
@@ -683,6 +741,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
       // Arm-local convergence state (closures, not class fields).
       let convergence: DrishtiConvergence | null = null;
       let activeCombined: ActiveCombined | null = null;
+      let outcome: HostSessionOutcome | null = null;
       const combinedByScopedClient = new WeakMap<
         AgentAppClient,
         ActiveCombined
@@ -777,6 +836,9 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         setActiveCombined: (a) => {
           activeCombined = a;
         },
+        setOutcome: (o) => {
+          outcome = o;
+        },
       });
 
       const base = makeSession<AgentAppClient, SshProv>({
@@ -802,6 +864,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         setActiveCombined: (a) => {
           activeCombined = a;
         },
+        getOutcome: () => outcome,
       });
 
       return { session, handler: undefined };

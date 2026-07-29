@@ -103,36 +103,23 @@ describe("buildHostPool discriminated construction (W4.7)", () => {
       expect(drishtiAgentConvergencePolicy("").baked.build).toEqual({
         kind: "off-nix",
       });
-      // W7.4: exact off-nix ResolveDrvError unavailable message (not any error).
-      const OFF_NIX_MSG =
-        "off-nix pool: no agent derivation (can't-judge path has no resolveDrvPath)";
-      let pinErr: unknown = null;
+      // W8.1: assert structured resolution KIND (not message match).
       try {
         await session!.pin();
-      } catch (e) {
-        pinErr = e;
+      } catch {
+        // resolve fails; outcome is projected on the session
       }
-      if (pinErr !== null) {
-        expect(pinErr).toBeInstanceOf(Error);
-        expect((pinErr as Error).message).toBe(OFF_NIX_MSG);
-      } else {
-        // Async failure path: wait for disconnected/failed with exact error.
-        const deadline = Date.now() + 10_000;
-        let st = session!.currentState();
-        while (Date.now() < deadline) {
-          st = session!.currentState();
-          if (
-            (st.phase === "failed" || st.phase === "disconnected") &&
-            "error" in st &&
-            typeof st.error === "string" &&
-            st.error.length > 0
-          ) {
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 50));
-        }
-        expect(st.phase === "failed" || st.phase === "disconnected").toBe(true);
-        expect("error" in st ? st.error : "").toBe(OFF_NIX_MSG);
+      const deadline = Date.now() + 10_000;
+      let out = session!.outcome();
+      while (Date.now() < deadline) {
+        out = session!.outcome();
+        if (out?.kind === "resolve-failed") break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(out).not.toBeNull();
+      expect(out!.kind).toBe("resolve-failed");
+      if (out !== null && out.kind === "resolve-failed") {
+        expect(out.resolutionKind).toBe("unavailable");
       }
       await pool.destroyAll();
     } finally {
@@ -279,6 +266,12 @@ describe("W5.2 standing drained-with-persist-failure after adopt", () => {
     expect(src).toMatch(
       /case "adopt":\s*\{[\s\S]*?drained-with-persist-failure[\s\S]*?setActiveCombined\(active\)/,
     );
+    // Standing guard must be the NEGATIVE check (only clear when NOT standing).
+    const adoptBlock = src.match(/case "adopt":\s*\{([\s\S]*?)return \{ kind: "adopt" \}/);
+    expect(adoptBlock).not.toBeNull();
+    expect(adoptBlock![1]).toMatch(
+      /standing\?\.kind !== "drained-with-persist-failure"/,
+    );
     // Mutation: raw fireDrain without wrapper is absent from admit path.
     const admitBlock = src.match(
       /function makeAgentAdmit[\s\S]*?^\}/m,
@@ -305,5 +298,21 @@ describe("W5.2 standing drained-with-persist-failure after adopt", () => {
     expect(src).toMatch(
       /const projected = convergenceFromDrainPersistFailure\([\s\S]*?\)\s*;\s*if \(projected !== null\)[\s\S]*?else \{[\s\S]*?setConvergence\(null\)/,
     );
+  });
+});
+
+describe("W8.2 production projects replaced verdict as session data", () => {
+  it("replaced arm setOutcome kind replaced + axis (source pin)", () => {
+    const src = require("node:fs").readFileSync(
+      require("node:path").join(import.meta.dir, "hostRegistry.ts"),
+      "utf8",
+    );
+    const block = src.match(/case "replaced":\s*\{([\s\S]*?)return \{ kind: "replaced"/);
+    expect(block).not.toBeNull();
+    expect(block![1]).toMatch(
+      /setOutcome\(\{\s*kind:\s*"replaced",\s*axis:\s*replacedAxis/,
+    );
+    expect(src).toMatch(/function replacedAxis\(/);
+    expect(src).toMatch(/return "build"/);
   });
 });

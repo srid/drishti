@@ -361,10 +361,7 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
       expect(typeof session!.renew).toBe("function");
       expect(typeof session!.convergence).toBe("function");
 
-      // W7.5: structured terminal outcomes across the session boundary.
-      // Build-axis `replaced` does NOT cross pin() as typed data (kolu session
-      // throws Error(reason) only) — typed proof is prevGone + phase connected
-      // + surface history. No message-prefix matching.
+      // W8.2: structured admit verdict projected on HostSession.outcome().
       type HistClient = {
         surface: {
           metricHistory: {
@@ -377,10 +374,27 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
           };
         };
       };
+      let firstPinRejected = false;
       try {
         await session!.pin();
       } catch {
-        // replaced path rejects pin; structured evidence is process/phase below
+        firstPinRejected = true;
+      }
+      // First pin must reject (replaced) — not a silent success that drains later.
+      expect(firstPinRejected).toBe(true);
+
+      // Wait for outcome projection (set during admit before pin rejects).
+      const outDeadline = Date.now() + 10_000;
+      let out = session!.outcome();
+      while (Date.now() < outDeadline) {
+        out = session!.outcome();
+        if (out?.kind === "replaced") break;
+        await delay(50);
+      }
+      expect(out).not.toBeNull();
+      expect(out!.kind).toBe("replaced");
+      if (out !== null && out.kind === "replaced") {
+        expect(out.axis).toBe("build");
       }
 
       // Previous resident MUST be gone (unconditional drain took the pid).
@@ -542,6 +556,12 @@ describe("W6.4 real refuse + renew via production pool", () => {
       // Exact kind — no five-way alternatives, no message matching.
       expect(anomaly).not.toBeNull();
       expect(anomaly!.kind).toBe("skew-refused");
+      // W8.2: structured refuse outcome on the session.
+      const refuseOut = session.outcome();
+      expect(refuseOut?.kind).toBe("refused");
+      if (refuseOut?.kind === "refused") {
+        expect(refuseOut.anomalyKind).toBe("skew-refused");
+      }
 
       const admin = buildAdminRouter({ pool });
       // biome-ignore lint/suspicious/noExplicitAny: oRPC router
@@ -625,5 +645,14 @@ describe("W4.1 / W4.4 production assembly confinement", () => {
     const block = m![1]!;
     expect(block).toMatch(/setActiveCombined\(\s*active\s*\)/);
     expect(block).not.toMatch(/setActiveCombined\(\s*null\s*\)/);
+  });
+
+  it("W8.2 e2e asserts structured replaced outcome (source pin of pin)", () => {
+    // The build-axis e2e must assert outcome().kind === "replaced" + axis build,
+    // not only process death / phase / history (W8.2 ruling).
+    const e2e = readFileSync(join(import.meta.dir, "windowParent.e2e.test.ts"), "utf8");
+    expect(e2e).toMatch(/firstPinRejected/);
+    expect(e2e).toMatch(/out!\.kind\)\.toBe\("replaced"\)/);
+    expect(e2e).toMatch(/out\.axis\)\.toBe\("build"\)/);
   });
 });
