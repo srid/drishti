@@ -21,3 +21,6 @@ state/
 # Per-worktree review-debate scratch (lens-debate / codex-debate engines) — never commit
 .lens-debate/
 .codex-debate/
+
+# /agent-debate skill: per-worktree scratch (verdicts, rebuttals)
+.agent-debate/
