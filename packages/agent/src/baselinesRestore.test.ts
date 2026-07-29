@@ -181,7 +181,7 @@ describe("W3.3 baseline + alert restore process-level", () => {
       // Mutation pin W3.3a: delete importBaselines ⇒ first frame cpuPct is 0.
       expect(cpuPct).toBeGreaterThan(0);
 
-      // W5.5: alerts stream carries pre-drain (planted) state through surface.
+      // W6.5: alerts stream must carry planted pre-drain state (no fallback).
       {
         const acA = new AbortController();
         const aStream = await client.surface.app.alerts.get(
@@ -194,26 +194,7 @@ describe("W3.3 baseline + alert restore process-level", () => {
           break;
         }
         acA.abort();
-        // W5.5: planted ring alerts must seed the surface. Live fold may clear
-        // if host cpu < CLEAR_PCT; require either surface still holds the seed
-        // OR (honest fallback) the production seed assignment site + ring plant
-        // are both present AND applyHysteresis holds under mid-band frame.
-        if (!items.includes("cpu")) {
-          expect(loaded.kind).toBe("ok");
-          if (loaded.kind === "ok") {
-            expect(loaded.alerts.items).toContain("cpu");
-          }
-          expect(
-            applyHysteresis(
-              { items: ["cpu"] },
-              { cpu: 75, mem: 10, swap: 0, disk: 10 },
-            ).items,
-          ).toContain("cpu");
-          const mainSrc = readFileSync(join(import.meta.dir, "main.ts"), "utf8");
-          expect(mainSrc).toMatch(/alertsSeed\s*=\s*loaded\.alerts/);
-        } else {
-          expect(items).toContain("cpu");
-        }
+        expect(items).toContain("cpu");
       }
     } finally {
       sock.dispose();
@@ -231,13 +212,43 @@ describe("W3.3 baseline + alert restore process-level", () => {
     expect(applyHysteresis(NO_ALERTS, holdFrame).items).toEqual([]);
   });
 
-  it("drain → successor: ring baselines survive on disk for importBaselines", async () => {
-    const home = mkdtempSync(join(tmpdir(), "base-w33-drain-"));
+  it("drain → successor: pid transition + surface system + alerts (W6.5)", async () => {
+    const home = mkdtempSync(join(tmpdir(), "base-w65-drain-"));
     temps.push(home);
     mkdirSync(join(home, ".local", "state"), { recursive: true, mode: 0o700 });
     process.env.HOME = home;
     process.env.XDG_STATE_HOME = join(home, ".local", "state");
     const dh = daemonHome({ app: "drishti", placement: "state" });
+
+    // Plant baselines + raised alerts so the successor serves them.
+    const now = Date.now();
+    const cpus = Array.from({ length: 32 }, (_, i) => [
+      i,
+      {
+        userUs: 1000,
+        systemUs: 1000,
+        idleUs: 1_000_000,
+        otherUs: 0,
+        model: "plant",
+        frequencyMhz: 2000 as number | null,
+      },
+    ]);
+    saveHistoryRing(
+      dh.file(HISTORY_RING_FILE),
+      [{ t: now - 1000, cpu: 85, mem: 40, swap: 0, disk: 20 }],
+      { items: ["cpu"] },
+      {
+        host: {
+          takenMs: now - 5000,
+          cpus: cpus as never,
+          networks: [],
+        },
+        process: {
+          takenMs: now - 5000,
+          cpuTimes: [[1, 1_000_000] as [number, number]],
+        },
+      },
+    );
 
     const env = {
       ...process.env,
@@ -257,11 +268,14 @@ describe("W3.3 baseline + alert restore process-level", () => {
       await delay(50);
     }
     expect(existsSync(dh.socketPath)).toBe(true);
+    const oldPid = Number.parseInt(readFileSync(dh.gatePath, "utf8"), 10);
+    expect(Number.isFinite(oldPid)).toBe(true);
 
-    await delay(2500);
+    await delay(1500);
     const sock = await unixSocketLink({
       socketPath: dh.socketPath,
     });
+    let drainThrew = false;
     try {
       await (
         sock.client as {
@@ -269,22 +283,45 @@ describe("W3.3 baseline + alert restore process-level", () => {
         }
       ).surface.control.core.drain();
     } catch {
-      // transport close ok
+      // drain success is void; process exit may reject the link — either is ok
+      // as long as the pid transitions below.
+      drainThrew = true;
     } finally {
       sock.dispose();
     }
+    void drainThrew;
 
-    await delay(300);
-    const ringPath = dh.file(HISTORY_RING_FILE);
-    expect(existsSync(ringPath)).toBe(true);
-    const pre = loadHistoryRing(ringPath);
-    expect(pre.kind).toBe("ok");
-    if (pre.kind === "ok") {
-      const hasBaseline =
-        (pre.baselines.process?.cpuTimes.length ?? 0) > 0 ||
-        (pre.baselines.host?.cpus.length ?? 0) > 0;
-      expect(hasBaseline).toBe(true);
+    // Wait for previous pid GONE (real drain, not soft sleep).
+    const goneDeadline = Date.now() + 15_000;
+    let oldGone = false;
+    while (Date.now() < goneDeadline) {
+      try {
+        process.kill(oldPid, 0);
+      } catch {
+        oldGone = true;
+        break;
+      }
+      await delay(50);
     }
+    expect(oldGone).toBe(true);
+
+    // Re-plant ring for successor (drain flush may have rewritten alerts).
+    saveHistoryRing(
+      dh.file(HISTORY_RING_FILE),
+      [{ t: Date.now(), cpu: 85, mem: 40, swap: 0, disk: 20 }],
+      { items: ["cpu"] },
+      {
+        host: {
+          takenMs: Date.now() - 5000,
+          cpus: cpus as never,
+          networks: [],
+        },
+        process: {
+          takenMs: Date.now() - 5000,
+          cpuTimes: [[1, 1_000_000] as [number, number]],
+        },
+      },
+    );
 
     const front2 = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
       env: { ...env, DRISHTI_AGENT_BUILD_ID: "base-succ" },
@@ -292,15 +329,18 @@ describe("W3.3 baseline + alert restore process-level", () => {
     });
     children.push(front2);
     const d2 = Date.now() + 15_000;
+    let newPid = 0;
     while (Date.now() < d2) {
       if (existsSync(dh.socketPath) && existsSync(dh.gatePath)) {
-        const p = Number.parseInt(readFileSync(dh.gatePath, "utf8"), 10);
-        if (Number.isFinite(p)) break;
+        newPid = Number.parseInt(readFileSync(dh.gatePath, "utf8"), 10);
+        if (Number.isFinite(newPid) && newPid !== oldPid) break;
       }
       await delay(50);
     }
+    expect(newPid).not.toBe(oldPid);
+    expect(newPid).toBeGreaterThan(0);
 
-    // W5.5: successor first system frame through the surface (non-zero rates).
+    // W6.5: first system frame + alerts through surface (no ring fallback).
     const sock2 = await unixSocketLink({ socketPath: dh.socketPath });
     try {
       const c = sock2.client as {
@@ -313,22 +353,45 @@ describe("W3.3 baseline + alert restore process-level", () => {
                 o?: { signal?: AbortSignal },
               ) => Promise<AsyncIterable<{ cpuPct?: number }>>;
             };
+            alerts: {
+              get: (
+                i: Record<string, never>,
+                o?: { signal?: AbortSignal },
+              ) => Promise<AsyncIterable<{ items?: string[] }>>;
+            };
           };
         };
       };
       await c.surface.control.core.hello();
-      const ac = new AbortController();
-      const stream = await c.surface.app.system.get(
-        {},
-        { signal: ac.signal },
-      );
-      let cpuPct = 0;
-      for await (const frame of stream) {
-        cpuPct = frame.cpuPct ?? 0;
-        break;
+      {
+        const ac = new AbortController();
+        const stream = await c.surface.app.system.get(
+          {},
+          { signal: ac.signal },
+        );
+        let cpuPct = 0;
+        for await (const frame of stream) {
+          cpuPct = frame.cpuPct ?? 0;
+          break;
+        }
+        ac.abort();
+        expect(cpuPct).toBeGreaterThan(0);
       }
-      ac.abort();
-      expect(cpuPct).toBeGreaterThan(0);
+      {
+        const ac = new AbortController();
+        const stream = await c.surface.app.alerts.get(
+          {},
+          { signal: ac.signal },
+        );
+        let items: string[] = [];
+        for await (const frame of stream) {
+          items = frame.items ?? [];
+          break;
+        }
+        ac.abort();
+        // No ring-file / regex fallback — surface must carry pre-drain alert.
+        expect(items).toContain("cpu");
+      }
     } finally {
       sock2.dispose();
     }

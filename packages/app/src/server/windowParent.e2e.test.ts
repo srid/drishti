@@ -46,6 +46,10 @@ import {
 } from "./hostRegistry";
 
 const agentMain = join(import.meta.dir, "../../../agent/src/main.ts");
+const highContractMain = join(
+  import.meta.dir,
+  "../../../agent/src/fixtures/highContractMain.ts",
+);
 
 const temps: string[] = [];
 const children: ChildProcess[] = [];
@@ -357,32 +361,34 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
       expect(typeof session!.renew).toBe("function");
       expect(typeof session!.convergence).toBe("function");
 
-      // W5.1: HARD dial — zero catch-to-success. pin() drives production
-      // admit. A build-axis `replaced` verdict REJECTS pin() with a drained
-      // message while scheduling successor reconnect — that rejection IS the
-      // successful drain path, not a wiring failure. Any other error fails.
-      await session!.pin().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (
-          !/drained|build mismatch|reconnecting to re-handshake/i.test(msg)
-        ) {
-          throw err instanceof Error ? err : new Error(msg);
-        }
-      });
-
-      // Wait for successor to connect after drain (or fail terminally).
-      const advDeadline = Date.now() + 90_000;
-      let lastPhase = session!.currentState().phase;
-      while (Date.now() < advDeadline) {
-        lastPhase = session!.currentState().phase;
-        if (lastPhase === "connected" || lastPhase === "failed") {
-          break;
-        }
-        await delay(100);
+      // W6.1: typed terminal outcome — no message-substring catch-to-success.
+      // Build-axis replaced throws the framework's exact reason string.
+      const BUILD_REPLACED_REASON =
+        "daemon drained (build mismatch) — reconnecting to re-handshake the survivor";
+      type HistClient = {
+        surface: {
+          metricHistory: {
+            get: (
+              i: Record<string, never>,
+              o?: { signal?: AbortSignal },
+            ) => Promise<
+              AsyncIterable<{ kind: string; samples?: unknown[] }>
+            >;
+          };
+        };
+      };
+      let gotReplaced = false;
+      try {
+        await session!.pin();
+      } catch (err) {
+        expect(err).toBeInstanceOf(Error);
+        expect((err as Error).message).toBe(BUILD_REPLACED_REASON);
+        gotReplaced = true;
       }
-      expect(lastPhase).toBe("connected");
+      // First pin should hit build-axis replaced (previous is a different build).
+      expect(gotReplaced).toBe(true);
 
-      // Previous resident MUST be gone (unconditional — drain took the pid).
+      // Previous resident MUST be gone (unconditional).
       const drainDeadline = Date.now() + 45_000;
       let prevGone = false;
       while (Date.now() < drainDeadline) {
@@ -396,20 +402,39 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
       }
       expect(prevGone).toBe(true);
 
-      // Successor serves history through the surface (dial it — not ring re-read alone).
-      const succDeadline = Date.now() + 30_000;
-      while (Date.now() < succDeadline) {
+      // Wait for successor connected, then pin for the app client.
+      const advDeadline = Date.now() + 90_000;
+      while (Date.now() < advDeadline) {
         if (session!.currentState().phase === "connected") break;
         await delay(100);
       }
       expect(session!.currentState().phase).toBe("connected");
+      const successorClient = (await session!.pin()) as unknown as HistClient;
 
-      const ring = dh.file("history.ring.json");
-      expect(existsSync(ring)).toBe(true);
-      const raw = JSON.parse(readFileSync(ring, "utf8")) as {
-        samples: unknown[];
-      };
-      expect(raw.samples.length).toBeGreaterThan(0);
+      // W6.1: served successor history THROUGH THE SURFACE (not ring-file).
+      const acH = new AbortController();
+      const histStream = await successorClient.surface.metricHistory.get(
+        {},
+        { signal: acH.signal },
+      );
+      let histFrame: { kind: string; samples?: unknown[] } | null = null;
+      const hDeadline = Date.now() + 15_000;
+      for await (const frame of histStream) {
+        histFrame = frame;
+        if (
+          (frame.kind === "snapshot" || frame.kind === "delta") &&
+          (frame.samples?.length ?? 0) > 0
+        ) {
+          break;
+        }
+        if (Date.now() > hDeadline) break;
+      }
+      acH.abort();
+      expect(histFrame).not.toBeNull();
+      expect(
+        histFrame!.kind === "snapshot" || histFrame!.kind === "delta",
+      ).toBe(true);
+      expect((histFrame!.samples ?? []).length).toBeGreaterThan(0);
 
       const admin = buildAdminRouter({ pool });
       // biome-ignore lint/suspicious/noExplicitAny: oRPC router
@@ -432,9 +457,9 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
 });
 
 
-describe("W5.3 real refuse + renew via production pool", () => {
+describe("W6.4 real refuse + renew via production pool", () => {
   it.skipIf(!daemonTestsEnabled)(
-    "contract-newer resident: anomaly via admin + real renew",
+    "contract-newer resident: skew-refused + renew effect",
     async () => {
       const fixture = await fixtureAgent();
       if (fixture === null) {
@@ -451,19 +476,22 @@ describe("W5.3 real refuse + renew via production pool", () => {
       mkdirSync(binDir, { recursive: true });
       writeSshShim(binDir);
 
-      // Plant a NEWER-contract resident (W5.3 env-injection twin of build id).
+      // W6.7: high-contract fixture process (private seam), not env override.
       const prevEnv = {
         ...process.env,
         HOME: home,
         XDG_STATE_HOME: join(home, ".local", "state"),
         DRISHTI_AGENT_BUILD_ID: `refuse-prev-${fixture.buildId.slice(0, 8)}`,
-        DRISHTI_E2E_SURFACE_VERSION: "9.9.9",
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
       };
-      const frontPrev = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
-        env: prevEnv,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      const frontPrev = nodeSpawn(
+        process.execPath,
+        [highContractMain, "--stdio"],
+        {
+          env: prevEnv,
+          stdio: ["pipe", "pipe", "pipe"],
+        },
+      );
       children.push(frontPrev);
 
       process.env.HOME = home;
@@ -478,7 +506,6 @@ describe("W5.3 real refuse + renew via production pool", () => {
       const prevPid = Number.parseInt(readFileSync(dh.gatePath, "utf8"), 10);
 
       process.env.DRISHTI_AGENT_BUILD_ID = fixture.buildId;
-      delete process.env.DRISHTI_E2E_SURFACE_VERSION;
       process.env.DRISHTI_E2E_HOME = home;
       process.env.DRISHTI_E2E_XDG_STATE_HOME = join(home, ".local", "state");
       process.env.DRISHTI_E2E_BUILD_ID = fixture.buildId;
@@ -502,11 +529,18 @@ describe("W5.3 real refuse + renew via production pool", () => {
       pools.push(pool);
       const session = pool.getSession(host)!;
 
-      // pin may refuse (terminal) — do not catch-to-success; observe refuse path.
-      await session.pin().catch((err) => {
-        // Refuse throws the refuse error from makeSession; that is expected.
-        if (!String(err?.message ?? err).length) throw err;
-      });
+      // W6.4: refuse throws exact framework message — no catch-to-success.
+      const REFUSE_MSG_PREFIX =
+        "contract skew: running serves 9.9.9, supervisor needs";
+      try {
+        await session.pin();
+        throw new Error("expected pin to refuse contract-newer resident");
+      } catch (err) {
+        expect(err).toBeInstanceOf(Error);
+        expect((err as Error).message.startsWith(REFUSE_MSG_PREFIX)).toBe(
+          true,
+        );
+      }
 
       const deadline = Date.now() + 60_000;
       let anomaly = session.convergence();
@@ -515,32 +549,48 @@ describe("W5.3 real refuse + renew via production pool", () => {
         if (anomaly !== null) break;
         await delay(100);
       }
+      // Exact kind — no five-way alternatives.
       expect(anomaly).not.toBeNull();
-      expect(
-        anomaly!.kind === "skew-refused" ||
-          anomaly!.kind === "cross-supervisor" ||
-          anomaly!.kind === "unconverged" ||
-          String(anomaly!.kind).includes("skew") ||
-          String(anomaly!.kind).includes("refus"),
-      ).toBe(true);
+      expect(anomaly!.kind).toBe("skew-refused");
 
       const admin = buildAdminRouter({ pool });
       // biome-ignore lint/suspicious/noExplicitAny: oRPC router
       const hostsProc = (admin.router as any).surface.admin.hosts;
       const projected = await call(hostsProc.convergence, { host });
       expect(projected.anomaly).not.toBeNull();
+      expect(projected.anomaly.kind).toBe("skew-refused");
 
-      // Real renew — not injected.
+      // Real renew must succeed and clear the refusal (or transition pid).
       const renewResult = await call(hostsProc.renew, { host });
-      // renew should act (ok or structured error that is NOT "is not bound").
-      if (renewResult && typeof renewResult === "object" && "ok" in renewResult) {
-        if (renewResult.ok === false) {
-          expect(String(renewResult.error ?? "")).not.toMatch(/is not bound/);
-        }
-      }
+      expect(renewResult).toEqual({ ok: true });
 
-      // After renew, previous may be gone or session rebinding.
-      await delay(500);
+      // Effect: previous refused pid gone after renew drain.
+      const renewDeadline = Date.now() + 30_000;
+      let prevAfterRenewGone = false;
+      while (Date.now() < renewDeadline) {
+        try {
+          process.kill(prevPid, 0);
+        } catch {
+          prevAfterRenewGone = true;
+          break;
+        }
+        await delay(100);
+      }
+      expect(prevAfterRenewGone).toBe(true);
+
+      // Wait for post-renew reconnect to settle; refusal must not stand forever.
+      const clearDeadline = Date.now() + 60_000;
+      while (Date.now() < clearDeadline) {
+        const c = session.convergence();
+        if (c === null || c.kind !== "skew-refused") break;
+        if (session.currentState().phase === "connected") break;
+        await delay(100);
+      }
+      const after = session.convergence();
+      expect(
+        after === null || after.kind !== "skew-refused",
+      ).toBe(true);
+
       try {
         session.destroy();
       } catch {
@@ -549,11 +599,6 @@ describe("W5.3 real refuse + renew via production pool", () => {
       await pool.destroyAll();
       const idx = pools.indexOf(pool);
       if (idx >= 0) pools.splice(idx, 1);
-      try {
-        process.kill(prevPid, "SIGKILL");
-      } catch {
-        //
-      }
     },
     120_000,
   );
@@ -573,6 +618,17 @@ describe("W4.1 / W4.4 production assembly confinement", () => {
     expect(src).toMatch(/await probe\.fireDrain\(\)/);
     expect(src).toMatch(/captureDrainPersistFailure/);
     expect(src).toMatch(/convergenceFromDrainPersistFailure/);
+  });
+
+  it("main.ts has no control as never cast (W6.8 / W5.8)", () => {
+    const mainSrc = readFileSync(
+      join(import.meta.dir, "../../../agent/src/main.ts"),
+      "utf8",
+    );
+    // Code cast only — comments may mention the ban.
+    expect(mainSrc).not.toMatch(/control:\s*control as never/);
+    expect(mainSrc).not.toMatch(/\{ app: appDeps as never, control: control as never \}/);
+    expect(mainSrc).toMatch(/controlCoreFragment\(/);
   });
 
   it("refuse arm keeps setActiveCombined(active) for renew", () => {

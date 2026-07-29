@@ -1,6 +1,9 @@
 /**
- * W4.2: final flush failure is typed on the drain throw AND a degraded
- * stream frame is visible to a subscriber that joins AFTER the fail.
+ * W6.2: final flush failure is typed on the drain throw AND a degraded
+ * stream frame is proven by:
+ *   1) a live subscriber that consumed a pre-failure frame first, then
+ *   2) a post-failure subscriber that MUST connect and MUST read degraded.
+ * Null frames / swallowed connect failures are test failures.
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -69,9 +72,34 @@ afterEach(async () => {
   await delay(50);
 });
 
-describe("W4.2 flush failure — stream degraded after fail + drain throw", () => {
-  it("injected write failure: drain throws DRISHTI_PERSIST_FAILED and post-fail stream is degraded", async () => {
-    const home = mkdtempSync(join(tmpdir(), "flush-w42-"));
+type HistoryClient = {
+  surface: {
+    app: {
+      metricHistory: {
+        get: (
+          i: Record<string, never>,
+          o?: { signal?: AbortSignal },
+        ) => Promise<
+          AsyncIterable<{
+            kind: string;
+            reason?: string;
+            samples?: unknown[];
+          }>
+        >;
+      };
+    };
+    control: {
+      core: {
+        hello: () => Promise<unknown>;
+        drain: () => Promise<void>;
+      };
+    };
+  };
+};
+
+describe("W6.2 flush failure — degraded frame binds publish mutation", () => {
+  it("pre-frame consumed, drain throws, post-fail subscriber READs degraded", async () => {
+    const home = mkdtempSync(join(tmpdir(), "flush-w62-"));
     temps.push(home);
     mkdirSync(join(home, ".local", "state"), { recursive: true, mode: 0o700 });
     process.env.HOME = home;
@@ -82,7 +110,7 @@ describe("W4.2 flush failure — stream degraded after fail + drain throw", () =
       ...process.env,
       HOME: home,
       XDG_STATE_HOME: join(home, ".local", "state"),
-      DRISHTI_AGENT_BUILD_ID: "flush-w42",
+      DRISHTI_AGENT_BUILD_ID: "flush-w62",
     };
     const front = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
       env,
@@ -96,79 +124,47 @@ describe("W4.2 flush failure — stream degraded after fail + drain throw", () =
       await delay(50);
     }
     expect(existsSync(dh.socketPath)).toBe(true);
-
     if (front.stdin === null || front.stdout === null) {
       throw new Error("no stdio");
     }
     const client = stdioLink<typeof agentDaemonContract>({
       read: front.stdout,
       write: front.stdin,
-    }) as {
-      surface: {
-        app: {
-          metricHistory: {
-            get: (
-              i: Record<string, never>,
-              o?: { signal?: AbortSignal },
-            ) => Promise<
-              AsyncIterable<{
-                kind: string;
-                reason?: string;
-                samples?: unknown[];
-              }>
-            >;
-          };
-        };
-        control: {
-          core: {
-            hello: () => Promise<unknown>;
-            drain: () => Promise<void>;
-          };
-        };
-      };
-    };
+    }) as HistoryClient;
 
     await client.surface.control.core.hello();
 
-    // Wait for ok traffic first.
-    {
-      const ac = new AbortController();
-      const stream = await client.surface.app.metricHistory.get(
-        {},
-        { signal: ac.signal },
-      );
-      const d = Date.now() + 12_000;
-      for await (const frame of stream) {
-        if (frame.kind === "snapshot" || frame.kind === "delta") break;
-        if (Date.now() > d) break;
-      }
-      ac.abort();
-    }
-
-    // Make ring writes fail.
-    chmodSync(dh.dir, 0o500);
-
-    // W5.4: open stream BEFORE failing flush so the degraded publish is observed
-    // (late subscribe can read historyView without the publish event).
+    // Open LIVE stream and consume an initial pre-failure frame FIRST.
     const acLive = new AbortController();
-    const liveStreamP = client.surface.app.metricHistory.get(
+    const liveStream = await client.surface.app.metricHistory.get(
       {},
       { signal: acLive.signal },
     );
     const liveFrames: { kind: string; reason?: string }[] = [];
+    let sawPreFailure = false;
     const liveReader = (async () => {
-      try {
-        const stream = await liveStreamP;
-        for await (const frame of stream) {
-          liveFrames.push(frame);
-          if (frame.kind === "degraded") break;
+      for await (const frame of liveStream) {
+        liveFrames.push(frame);
+        if (!sawPreFailure) {
+          // First frame must be pre-failure (snapshot/delta/ok path).
+          expect(frame.kind).not.toBe("degraded");
+          sawPreFailure = true;
+          continue;
         }
-      } catch {
-        // process exit after degraded
+        if (frame.kind === "degraded") break;
       }
     })();
 
-    // Drain via socket — must throw DRISHTI_PERSIST_FAILED (void on success).
+    // Wait until the pre-failure frame is actually consumed.
+    const preDeadline = Date.now() + 12_000;
+    while (!sawPreFailure && Date.now() < preDeadline) {
+      await delay(20);
+    }
+    expect(sawPreFailure).toBe(true);
+
+    // Make ring writes fail, then drain.
+    chmodSync(dh.dir, 0o500);
+
     const sock = await unixSocketLink<typeof agentDaemonContract>({
       socketPath: dh.socketPath,
     });
@@ -182,19 +178,14 @@ describe("W4.2 flush failure — stream degraded after fail + drain throw", () =
       ).surface.control.core.drain();
       throw new Error("expected drain to throw on persist failure");
     } catch (err) {
-      const e = err as { code?: string; data?: unknown; message?: string };
+      const e = err as { code?: string; data?: unknown };
       drainCode = e.code ?? null;
       drainData = e.data ?? null;
       if (e.code !== "DRISHTI_PERSIST_FAILED") {
-        if (
-          !String(e.message ?? "").includes("DRISHTI_PERSIST_FAILED") &&
-          e.code !== "DRISHTI_PERSIST_FAILED"
-        ) {
-          throw Object.assign(
-            new Error(`unexpected drain error: ${e.message ?? e}`),
-            { cause: err },
-          );
-        }
+        throw Object.assign(
+          new Error(`unexpected drain error code: ${e.code}`),
+          { cause: err },
+        );
       }
     } finally {
       sock.dispose();
@@ -203,58 +194,50 @@ describe("W4.2 flush failure — stream degraded after fail + drain throw", () =
     expect(drainCode).toBe("DRISHTI_PERSIST_FAILED");
     expect(drainData).toMatchObject({ persistFailed: true });
 
-    // Also subscribe AFTER fail (brief requires it) while process still alive.
+    // Wait for live subscriber to observe degraded publish.
+    const liveDegDeadline = Date.now() + 3_000;
+    while (
+      !liveFrames.some((f) => f.kind === "degraded") &&
+      Date.now() < liveDegDeadline
+    ) {
+      await delay(20);
+    }
+
+    // Post-failure subscriber MUST connect and MUST read a frame (W6.2).
+    // No catch-to-null: connect failure fails the test.
     chmodSync(dh.dir, 0o700);
-    await delay(20);
+    await delay(30);
     const sock2 = await unixSocketLink<typeof agentDaemonContract>({
       socketPath: dh.socketPath,
-    }).catch(() => null);
+    });
     let postFrame: { kind: string; reason?: string } | null = null;
-    if (sock2) {
-      try {
-        const ac2 = new AbortController();
-        const stream2 = await (
-          sock2.client as unknown as {
-            surface: {
-              app: {
-                metricHistory: {
-                  get: (
-                    i: Record<string, never>,
-                    o?: { signal?: AbortSignal },
-                  ) => Promise<
-                    AsyncIterable<{ kind: string; reason?: string }>
-                  >;
-                };
-              };
-            };
-          }
-        ).surface.app.metricHistory.get({}, { signal: ac2.signal });
-        const d2 = Date.now() + 1_500;
-        for await (const frame of stream2) {
-          postFrame = frame;
-          if (frame.kind === "degraded") break;
-          if (Date.now() > d2) break;
-        }
-        ac2.abort();
-      } catch {
-        //
-      } finally {
-        sock2.dispose();
+    try {
+      const ac2 = new AbortController();
+      const stream2 = await (
+        sock2.client as unknown as HistoryClient
+      ).surface.app.metricHistory.get({}, { signal: ac2.signal });
+      const d2 = Date.now() + 2_000;
+      for await (const frame of stream2) {
+        postFrame = frame;
+        if (frame.kind === "degraded") break;
+        if (Date.now() > d2) break;
       }
+      ac2.abort();
+    } finally {
+      sock2.dispose();
     }
 
     acLive.abort();
-    await Promise.race([liveReader, delay(500)]);
+    await Promise.race([liveReader, delay(300)]);
 
-    // W5.4: the LIVE subscriber must see the publishHistory degraded event.
-    // Late-subscribe historyView alone must NOT be enough (that would let
-    // deleting publishHistory still pass).
+    // Live path: publishHistory must deliver degraded after pre-failure frame.
     const liveDegraded = liveFrames.find((f) => f.kind === "degraded");
-    expect(liveDegraded).not.toBeUndefined();
+    expect(liveDegraded).toBeDefined();
     expect(liveDegraded!.reason).toBe("persist-failed");
-    // Also require a post-fail subscribe path when the process is still up.
-    if (postFrame !== null) {
-      expect(postFrame.kind).toBe("degraded");
-    }
+
+    // Post-fail path: null is a FAILURE (no optional branch).
+    expect(postFrame).not.toBeNull();
+    expect(postFrame!.kind).toBe("degraded");
+    expect(postFrame!.reason).toBe("persist-failed");
   }, 60_000);
 });

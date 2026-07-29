@@ -83,8 +83,14 @@ describe("buildHostPool discriminated construction (W4.7)", () => {
     void _bad;
   });
 
-  it("off-nix with hosts constructs can't-judge sessions (W5.6)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pool-w47h-"));
+  it("off-nix with hosts: constructs + can't-judge policy; dial has no provision path (W6.6)", async () => {
+    // HONEST SHRINK (W6.6): sshConnector always requires resolveDrvPath success
+    // before dial. Off-nix intentionally throws unavailable at resolve — so pin
+    // never reaches admit/can't-judge on the wire. What IS real:
+    //   (1) pool constructs sessions for hosts
+    //   (2) empty binder build is can't-judge (policy unit)
+    //   (3) pin fails at resolve (no silent dial)
+    const dir = mkdtempSync(join(tmpdir(), "pool-w66off-"));
     try {
       writeFileSync(join(dir, "hosts.json"), JSON.stringify({ hosts: [] }));
       const pool = buildHostPool({
@@ -93,11 +99,26 @@ describe("buildHostPool discriminated construction (W4.7)", () => {
       });
       const session = pool.getSession("localhost");
       expect(session).toBeDefined();
-      // Policy binder empty ⇒ can't-judge (off-nix).
       const { drishtiAgentConvergencePolicy } = await import("./hostRegistry");
       expect(drishtiAgentConvergencePolicy("").baked.build).toEqual({
         kind: "off-nix",
       });
+      // Pin must not silently succeed without a derivation.
+      let pinErr: unknown = null;
+      try {
+        await session!.pin();
+      } catch (e) {
+        pinErr = e;
+      }
+      // Either throws or fails the session — never a clean connected adopt
+      // with a provisioned agent.
+      if (pinErr === null) {
+        // Wait briefly — may fail async
+        await new Promise((r) => setTimeout(r, 2000));
+        expect(session!.currentState().phase).not.toBe("connected");
+      } else {
+        expect(pinErr).toBeTruthy();
+      }
       await pool.destroyAll();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -115,12 +136,12 @@ describe("buildHostPool discriminated construction (W4.7)", () => {
     void _x;
   });
 
-  it("missing system at real pool resolve crashes (W5.6)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pool-w56miss-"));
+  it("missing system fails through REAL pool resolve with a host (W6.6)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pool-w66miss-"));
     try {
       writeFileSync(join(dir, "hosts.json"), JSON.stringify({ hosts: [] }));
       const pool = buildHostPool({
-        initialHosts: [],
+        initialHosts: ["localhost"],
         hostsFile: join(dir, "hosts.json"),
         buildIdBySystem: { "aarch64-linux": "only-arm" },
         resolveDrvPath: async () => ({
@@ -131,16 +152,25 @@ describe("buildHostPool discriminated construction (W4.7)", () => {
           system: "x86_64-linux",
         }),
       });
-      // Drive resolve via expectProvisionedBuildId through the production helper
-      // path used at resolveDrvPath time in buildEntry.
-      expect(() =>
-        expectProvisionedBuildId({
-          system: "x86_64-linux",
-          buildIdBySystem: { "aarch64-linux": "only-arm" },
-          fallbackBuildId: "",
-          provisioning: true,
-        }),
-      ).toThrow(/missing BUILD_ID for system/);
+      const session = pool.getSession("localhost");
+      expect(session).toBeDefined();
+      // Production buildEntry calls expectProvisionedBuildId at resolve time.
+      let err: unknown = null;
+      try {
+        await session!.pin();
+      } catch (e) {
+        err = e;
+      }
+      // Must surface the missing BUILD_ID failure (thrown from resolve path).
+      const msg = err instanceof Error ? err.message : String(err ?? "");
+      // pin may wrap; also accept failed phase with the error in state
+      if (err === null) {
+        const st = session!.currentState();
+        expect(st.phase === "failed" || st.phase === "disconnected").toBe(true);
+        expect(JSON.stringify(st)).toMatch(/missing BUILD_ID|BUILD_ID for system/);
+      } else {
+        expect(msg).toMatch(/missing BUILD_ID|BUILD_ID for system|x86_64-linux/);
+      }
       await pool.destroyAll();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -236,5 +266,16 @@ describe("W5.2 standing drained-with-persist-failure after adopt", () => {
       error: "EACCES",
     });
     expect(projected?.kind).toBe("drained-with-persist-failure");
+  });
+
+  it("successful renew clears standing (production source W6.3)", () => {
+    const src = require("node:fs").readFileSync(
+      require("node:path").join(import.meta.dir, "hostRegistry.ts"),
+      "utf8",
+    );
+    // renew success path must setConvergence(null)
+    expect(src).toMatch(
+      /const projected = convergenceFromDrainPersistFailure\([\s\S]*?\)\s*;\s*if \(projected !== null\)[\s\S]*?else \{[\s\S]*?setConvergence\(null\)/,
+    );
   });
 });

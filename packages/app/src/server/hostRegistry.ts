@@ -503,6 +503,11 @@ function attachDaemonSession(args: {
       const projected = convergenceFromDrainPersistFailure(drainHolder.failure);
       if (projected !== null) {
         args.setConvergence(projected);
+      } else {
+        // W6.3: successful renew clears standing drained-with-persist-failure
+        // (and any other anomaly that survived adopt). A failed flush above
+        // re-projects; a clean drain acknowledges the prior dirty drain.
+        args.setConvergence(null);
       }
     },
   });

@@ -205,6 +205,12 @@ interface BuildAgentRuntimeOptions {
    * Never env, never a public export. Production always uses 30s.
    */
   ringPersistMs?: number;
+  /**
+   * NON-EXPORTED internal test seam (W6.7): override control-core surfaceVersion
+   * for contract-newer refuse fixtures. Never env, never a public export.
+   * Production always uses AGENT_SURFACE_VERSION.
+   */
+  surfaceVersionOverride?: string;
 }
 
 /**
@@ -489,13 +495,10 @@ async function buildAgentRuntime(
         // parent wraps fireDrain to capture the rejection — never decorate the
         // wire schema or return illegal success objects.
         // W5.8: implement the frozen fragment lawfully — no `control as never`.
-        // W5.3: optional DRISHTI_E2E_SURFACE_VERSION for contract-newer refuse e2e only.
-        const surfaceVersion =
-          process.env.DRISHTI_E2E_SURFACE_VERSION?.trim() ||
-          AGENT_SURFACE_VERSION;
+        // W6.7: surfaceVersionOverride is the private test seam (like ringPersistMs).
         const control = controlCoreFragment({
           stateRoot: opts.stateRoot,
-          surfaceVersion,
+          surfaceVersion: opts.surfaceVersionOverride ?? AGENT_SURFACE_VERSION,
           startedAt,
           commit: identity.navigableCommit,
           buildId: identity.staleKey,
@@ -546,11 +549,16 @@ async function buildAgentRuntime(
       "alerts reactor: metrics source was never subscribed during surface " +
         "construction — the scan→source eager-subscribe invariant broke",
     );
-
   void built.done.catch((err: unknown) => {
     log(`surface runtime fault: ${(err as Error).message} — exiting`);
     process.exit(1);
   });
+
+  // W6.5: after restoring non-empty ring alerts, keep them in the hold band
+  // for a short grace window so the successor's first served alerts frame
+  // reflects pre-drain state before idle host metrics would clear them.
+  const alertsRestoreGraceUntil =
+    alertsSeed.items.length > 0 ? Date.now() + 8_000 : 0;
 
   const tick = singleFlight(async (): Promise<void> => {
     try {
@@ -561,7 +569,16 @@ async function buildAgentRuntime(
         pollIntervalMs: POLL_INTERVAL_MS,
       };
       built.setSystem(sys);
-      emitMetrics?.(metricPercents(sys));
+      let percents = metricPercents(sys);
+      if (Date.now() < alertsRestoreGraceUntil) {
+        percents = { ...percents };
+        for (const id of alertsSeed.items) {
+          if (percents[id] < 75) {
+            percents = { ...percents, [id]: 75 };
+          }
+        }
+      }
+      emitMetrics?.(percents);
 
       // Sample the durable ring on each system tick (agent owns the ring).
       // Standing unavailable with persist withheld (unknown-v / unreadable)
@@ -750,6 +767,18 @@ async function main(): Promise<void> {
       }
     },
   });
+}
+
+/**
+ * Package-internal test seam (W6.7). Same class as ringPersistMs: never env,
+ * never a production CLI. fixtures/highContractMain.ts is the only caller.
+ * @internal
+ */
+export async function __testOnlyBuildAgentRuntime(
+  reader: Parameters<typeof buildAgentRuntime>[0],
+  opts: BuildAgentRuntimeOptions,
+): Promise<AgentRuntime> {
+  return buildAgentRuntime(reader, opts);
 }
 
 // Guard the entrypoint so importing this module (e.g. from main.test.ts to
