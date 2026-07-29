@@ -4,7 +4,6 @@
  */
 import type { Component, JSX } from "solid-js";
 import { Show } from "solid-js";
-// Show used by chip nudge + FleetDaemonStatusChip quiet-when-healthy gate.
 import type { DaemonStatus } from "../common/daemonStatus";
 import {
   type DaemonChipPresentation,
