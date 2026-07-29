@@ -11,12 +11,15 @@
  */
 
 export {
+  type HistoryView,
   type HistoryWindowKey,
+  type MetricHistoryUnavailableReason,
   type MetricKey,
   captureSample,
   CHART_MAX_POINTS,
   DEFAULT_HISTORY_WINDOW,
   downsample,
+  foldHistoryView,
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
   isHistoryWindowKey,

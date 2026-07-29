@@ -56,7 +56,6 @@ import {
   type CoreId,
   type CpuCore,
   type MetricHistoryMsg,
-  type MetricSample,
   type SystemInfo,
   surface,
 } from "drishti-common";
@@ -67,6 +66,7 @@ import {
 } from "drishti-common/alerts";
 import {
   captureSample,
+  type HistoryView,
   HISTORY_RETENTION_MS,
   pushSample,
 } from "drishti-common/history";
@@ -200,21 +200,11 @@ export async function buildAgentRuntime(
   };
 
   // ── Durable history ring ──────────────────────────────────────────────
-  let historyRing: MetricSample[] = [];
-  let historyDisposition:
-    | { kind: "ok" }
-    | { kind: "unavailable"; reason: "unknown-version" | "corrupt" } = {
-    kind: "ok",
-  };
+  let historyView: HistoryView = { kind: "ok", samples: [] };
   if (opts.ringPath !== undefined) {
     const loaded = loadHistoryRing(opts.ringPath);
-    if (loaded.kind === "ok") {
-      historyRing = loaded.samples;
-    } else {
-      historyDisposition = {
-        kind: "unavailable",
-        reason: loaded.reason,
-      };
+    historyView = loaded;
+    if (loaded.kind === "unavailable") {
       log(
         `history ring unavailable (${loaded.reason}) at ${opts.ringPath} — chart will report typed unavailability`,
       );
@@ -228,9 +218,9 @@ export async function buildAgentRuntime(
     // Only persist a healthy ring. An unavailable disposition must not
     // overwrite an unknown-version file with an empty v=1 ring (that would
     // silently destroy a future-compatible file the reader left alone).
-    if (historyDisposition.kind !== "ok") return;
+    if (historyView.kind !== "ok") return;
     try {
-      saveHistoryRing(opts.ringPath, historyRing);
+      saveHistoryRing(opts.ringPath, historyView.samples);
     } catch (err) {
       log(`history ring flush failed: ${(err as Error).message}`);
     }
@@ -304,15 +294,15 @@ export async function buildAgentRuntime(
         ): AsyncIterable<MetricHistoryMsg> {
           liveConnections += 1;
           try {
-            if (historyDisposition.kind === "unavailable") {
+            if (historyView.kind === "unavailable") {
               yield {
                 kind: "unavailable",
-                reason: historyDisposition.reason,
+                reason: historyView.reason,
               } satisfies MetricHistoryMsg;
             } else {
               yield {
                 kind: "snapshot",
-                samples: [...historyRing],
+                samples: [...historyView.samples],
               } satisfies MetricHistoryMsg;
             }
             for await (const msg of historyBus.subscribe(signal)) {
@@ -399,9 +389,16 @@ export async function buildAgentRuntime(
       emitMetrics?.(metricPercents(sys));
 
       // Sample the durable ring on each system tick (agent owns the ring).
-      if (historyDisposition.kind === "ok") {
+      if (historyView.kind === "ok") {
         const sample = captureSample(Date.now(), sys);
-        historyRing = pushSample(historyRing, sample, HISTORY_RETENTION_MS);
+        historyView = {
+          kind: "ok",
+          samples: pushSample(
+            historyView.samples,
+            sample,
+            HISTORY_RETENTION_MS,
+          ),
+        };
         historyBus.publish({ kind: "delta", sample });
       }
     } catch (err) {

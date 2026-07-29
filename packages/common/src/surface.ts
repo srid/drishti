@@ -348,6 +348,15 @@ export const MetricSampleSchema = z.object({
   disk: z.number(),
 });
 
+/** Typed reasons a metric-history ring cannot be served. Single source for
+ *  the wire schema, HistoryView, and historyRing load dispositions. */
+export const MetricHistoryUnavailableReasons = [
+  "unknown-version",
+  "corrupt",
+] as const;
+export type MetricHistoryUnavailableReason =
+  (typeof MetricHistoryUnavailableReasons)[number];
+
 /** Snapshot-then-delta `Stream<>` for the per-host metric-history ring.
  *  A new subscriber gets the agent daemon's entire ring in one `snapshot`
  *  frame, then one `delta` per poll tick. The ring lives in the agent
@@ -367,7 +376,7 @@ export const MetricHistoryMessage = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("unavailable"),
-    reason: z.enum(["unknown-version", "corrupt"]),
+    reason: z.enum(MetricHistoryUnavailableReasons),
   }),
 ]);
 

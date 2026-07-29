@@ -11,8 +11,54 @@
  * silently empty chart.
  */
 
-import type { MetricSample, SystemInfo } from "./surface";
+import type {
+  MetricHistoryMsg,
+  MetricHistoryUnavailableReason,
+  MetricSample,
+  SystemInfo,
+} from "./surface";
 import { type MetricKey, metricPercents } from "./metrics";
+
+export type { MetricHistoryUnavailableReason };
+
+/** Folded metric-history state shared by agent, parent, and browser.
+ *  `unavailable` is a typed disposition — never a silently empty chart. */
+export type HistoryView =
+  | { kind: "ok"; samples: MetricSample[] }
+  | {
+      kind: "unavailable";
+      reason: MetricHistoryUnavailableReason;
+      samples: [];
+    };
+
+/** Fold one snapshot/delta/unavailable frame into a HistoryView. Pure:
+ *  deltas against an unavailable disposition leave the state unchanged
+ *  (do not silently populate a typed-unavailable chart). */
+export function foldHistoryView(
+  state: HistoryView,
+  msg: MetricHistoryMsg,
+  retentionMs: number,
+): HistoryView {
+  switch (msg.kind) {
+    case "snapshot":
+      return { kind: "ok", samples: [...msg.samples] };
+    case "delta": {
+      if (state.kind === "unavailable") return state;
+      return {
+        kind: "ok",
+        samples: pushSample(state.samples, msg.sample, retentionMs),
+      };
+    }
+    case "unavailable":
+      return { kind: "unavailable", reason: msg.reason, samples: [] };
+    default: {
+      const _exhaustive: never = msg;
+      throw new Error(
+        `unreachable MetricHistoryMsg: ${JSON.stringify(_exhaustive)}`,
+      );
+    }
+  }
+}
 
 /** The series the chart draws — the shared metric vocabulary, re-exported so
  *  consumers keep importing it from this history module. */

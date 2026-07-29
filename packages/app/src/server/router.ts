@@ -45,7 +45,6 @@ import {
   DEFAULT_SYSTEM,
   type IfaceName,
   type MetricHistoryMsg,
-  type MetricSample,
   type NetInterface,
   type Pid,
   type Process,
@@ -57,8 +56,9 @@ import {
 } from "drishti-common";
 import { type Alerts, NO_ALERTS } from "drishti-common/alerts";
 import {
+  type HistoryView,
+  foldHistoryView,
   HISTORY_RETENTION_MS,
-  pushSample,
 } from "../common/history";
 import type { HostSession } from "./hostRegistry";
 import { makeLogger } from "./log";
@@ -105,8 +105,7 @@ export function buildRouter(opts: BuildRouterOptions) {
   // sampling + on-disk persistence). On link-down we keep the ring so a
   // brief reconnect does not flash an empty chart; the next agent snapshot
   // re-seeds authoritatively.
-  let historyRing: MetricSample[] = [];
-  let historyUnavailable: "unknown-version" | "corrupt" | null = null;
+  let historyView: HistoryView = { kind: "ok", samples: [] };
   const historyBus: Channel<MetricHistoryMsg> =
     inMemoryChannel<MetricHistoryMsg>();
 
@@ -180,15 +179,15 @@ export function buildRouter(opts: BuildRouterOptions) {
         // Yield the parent's current ring (or a typed unavailable) on
         // subscribe, then forward each agent-driven frame.
         source: async function* (_input, signal) {
-          if (historyUnavailable !== null) {
+          if (historyView.kind === "unavailable") {
             yield {
               kind: "unavailable",
-              reason: historyUnavailable,
+              reason: historyView.reason,
             } satisfies MetricHistoryMsg;
           } else {
             yield {
               kind: "snapshot",
-              samples: [...historyRing],
+              samples: [...historyView.samples],
             } satisfies MetricHistoryMsg;
           }
           for await (const msg of historyBus.subscribe(signal)) {
@@ -216,39 +215,12 @@ export function buildRouter(opts: BuildRouterOptions) {
 
   /** Fold one agent metricHistory frame into the parent's ring/bus. */
   const applyHistoryFrame = (msg: MetricHistoryMsg): void => {
-    switch (msg.kind) {
-      case "snapshot": {
-        historyUnavailable = null;
-        historyRing = [...msg.samples];
-        historyBus.publish(msg);
-        return;
-      }
-      case "delta": {
-        // Deltas against an unavailable disposition would silently populate
-        // a chart that should stay typed-unavailable — refuse them.
-        if (historyUnavailable !== null) return;
-        historyRing = pushSample(
-          historyRing,
-          msg.sample,
-          HISTORY_RETENTION_MS,
-        );
-        historyBus.publish(msg);
-        return;
-      }
-      case "unavailable": {
-        // Typed disposition — never clear to an empty chart silently.
-        historyUnavailable = msg.reason;
-        historyRing = [];
-        historyBus.publish(msg);
-        return;
-      }
-      default: {
-        const _exhaustive: never = msg;
-        throw new Error(
-          `unreachable MetricHistoryMsg: ${JSON.stringify(_exhaustive)}`,
-        );
-      }
-    }
+    const prev = historyView;
+    historyView = foldHistoryView(historyView, msg, HISTORY_RETENTION_MS);
+    // Deltas against an unavailable disposition are refused by the fold —
+    // do not publish them onto the browser bus either.
+    if (msg.kind === "delta" && prev.kind === "unavailable") return;
+    historyBus.publish(msg);
   };
 
   // ── Bridge remote agent surface → parent's local surface ──────────

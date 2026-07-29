@@ -52,6 +52,7 @@ import {
   formatListenerAddress,
   type IfaceName,
   type MetricHistoryMsg,
+  type MetricHistoryUnavailableReason,
   type MetricSample,
   type NetInterface,
   type Pid,
@@ -141,13 +142,14 @@ import {
   CHART_MAX_POINTS,
   DEFAULT_HISTORY_WINDOW,
   downsample,
+  foldHistoryView,
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
+  type HistoryView,
   type HistoryWindowKey,
   isHistoryWindowKey,
   type MetricKey,
   polylinePoints,
-  pushSample,
   SPARKLINE_MAX_POINTS,
   WIDEST_HISTORY_WINDOW,
   windowMsFor,
@@ -267,17 +269,13 @@ function subscribeMetricHistory(host: string): {
   history: Accessor<MetricSample[]>;
   streamError: Accessor<Error | null>;
   /** Typed agent-ring disposition — corrupt/unknown-version is never a silent empty chart. */
-  unavailable: Accessor<"unknown-version" | "corrupt" | null>;
+  unavailable: Accessor<MetricHistoryUnavailableReason | null>;
 } {
   const ctl = new AbortController();
   onCleanup(() => ctl.abort());
-  // Track the typed unavailable disposition separately from transport errors:
-  // a corrupt/unknown-version ring must surface "unavailable", never "collecting…".
-  let disposition: "unknown-version" | "corrupt" | null = null;
-  const [unavailable, setUnavailable] = createSignal<
-    "unknown-version" | "corrupt" | null
-  >(null);
-  const sub = createSubscription<MetricHistoryMsg, MetricSample[]>(
+  // ONE fold for snapshot/delta/unavailable — same HistoryView as agent + parent.
+  // Typed disposition lives on the view; no parallel disposition field.
+  const sub = createSubscription<MetricHistoryMsg, HistoryView>(
     () =>
       unenrolledStreamCall(
         hostStreams(host).metricHistory.unenrolled,
@@ -285,30 +283,18 @@ function subscribeMetricHistory(host: string): {
         { signal: ctl.signal },
       ),
     {
-      reduce: (prev, msg) => {
-        if (msg.kind === "snapshot") {
-          disposition = null;
-          setUnavailable(null);
-          return msg.samples;
-        }
-        if (msg.kind === "unavailable") {
-          disposition = msg.reason;
-          setUnavailable(msg.reason);
-          // Empty samples with a typed disposition — never silently empty.
-          return [];
-        }
-        // delta
-        if (disposition !== null) return prev;
-        return pushSample(prev, msg.sample, HISTORY_RETENTION_MS);
-      },
-      initial: [],
+      reduce: (prev, msg) => foldHistoryView(prev, msg, HISTORY_RETENTION_MS),
+      initial: { kind: "ok", samples: [] },
       signal: ctl.signal,
     },
   );
   return {
-    history: () => sub() ?? [],
+    history: () => sub()?.samples ?? [],
     streamError: () => sub.error() ?? null,
-    unavailable: () => unavailable(),
+    unavailable: () => {
+      const view = sub();
+      return view?.kind === "unavailable" ? view.reason : null;
+    },
   };
 }
 
@@ -321,7 +307,7 @@ function subscribeMetricHistory(host: string): {
 function sparklinePlaceholder(
   latest: MetricSample | null,
   error: Error | null,
-  unavailable: "unknown-version" | "corrupt" | null = null,
+  unavailable: MetricHistoryUnavailableReason | null = null,
 ): string | null {
   if (latest !== null) return null;
   if (error || unavailable !== null) return "unavailable";
@@ -2602,7 +2588,7 @@ function HistoryChart(props: {
   points: Record<MetricKey, string>;
   latest: MetricSample | null;
   streamError: Error | null;
-  unavailable: "unknown-version" | "corrupt" | null;
+  unavailable: MetricHistoryUnavailableReason | null;
   windowKey: HistoryWindowKey;
   onWindow: (k: HistoryWindowKey) => void;
 }) {

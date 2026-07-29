@@ -22,8 +22,10 @@ import {
 import { dirname, join } from "node:path";
 import {
   MetricSampleSchema,
+  type MetricHistoryUnavailableReason,
   type MetricSample,
 } from "drishti-common";
+import type { HistoryView } from "drishti-common/history";
 import { z } from "zod";
 
 /** On-disk ring schema version. Bump only with a reader migration path. */
@@ -37,13 +39,8 @@ const RingFileSchema = z.object({
   samples: z.array(MetricSampleSchema),
 });
 
-export type HistoryRingLoad =
-  | { kind: "ok"; samples: MetricSample[] }
-  | {
-      kind: "unavailable";
-      reason: "unknown-version" | "corrupt";
-      samples: [];
-    };
+/** Load disposition — same shape as HistoryView (ok ring or typed unavailable). */
+export type HistoryRingLoad = HistoryView;
 
 /** Load a history ring from `path`. Missing file is honest empty. Unknown
  *  version leaves the file alone. Garbage is moved aside, never deleted. */
@@ -59,7 +56,7 @@ export function loadHistoryRing(path: string): HistoryRingLoad {
     // Unreadable for other reasons (EACCES, …) is corrupt disposition: we
     // cannot safely interpret the file, and must not silently empty the chart.
     moveCorruptAside(path);
-    return { kind: "unavailable", reason: "corrupt", samples: [] };
+    return unavailable("corrupt");
   }
 
   let parsed: unknown;
@@ -67,19 +64,19 @@ export function loadHistoryRing(path: string): HistoryRingLoad {
     parsed = JSON.parse(raw);
   } catch {
     moveCorruptAside(path);
-    return { kind: "unavailable", reason: "corrupt", samples: [] };
+    return unavailable("corrupt");
   }
 
   const shape = RingFileSchema.safeParse(parsed);
   if (!shape.success) {
     moveCorruptAside(path);
-    return { kind: "unavailable", reason: "corrupt", samples: [] };
+    return unavailable("corrupt");
   }
 
   if (shape.data.v !== HISTORY_RING_VERSION) {
     // Unknown version: leave the file alone so a future reader (or the
     // writer that produced it) can still use it. Report typed unavailability.
-    return { kind: "unavailable", reason: "unknown-version", samples: [] };
+    return unavailable("unknown-version");
   }
 
   return { kind: "ok", samples: shape.data.samples };
@@ -98,6 +95,12 @@ export function saveHistoryRing(
   } satisfies z.infer<typeof RingFileSchema>);
   writeFileSync(tmp, body, { encoding: "utf8", mode: 0o600 });
   renameSync(tmp, path);
+}
+
+function unavailable(
+  reason: MetricHistoryUnavailableReason,
+): HistoryRingLoad {
+  return { kind: "unavailable", reason, samples: [] };
 }
 
 /** Move a corrupt ring aside. NEVER deletes — a future autopsy may need it. */
