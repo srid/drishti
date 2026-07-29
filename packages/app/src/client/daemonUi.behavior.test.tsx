@@ -41,6 +41,10 @@ const glanceSrc = readFileSync(
 );
 const tabSrc = readFileSync(join(import.meta.dir, "TabStrip.tsx"), "utf8");
 const appSrc = readFileSync(join(import.meta.dir, "App.tsx"), "utf8");
+const chipSrc = readFileSync(
+  join(import.meta.dir, "DaemonStatusChip.tsx"),
+  "utf8",
+);
 
 /** Minimal EntryState lens for glance placements (no live hostMap). */
 function fakeEntryState(
@@ -435,17 +439,47 @@ describe("U3.2 store binding — FleetDaemonStatusChip", () => {
     expect(opened).toBe("host-a");
   });
 
-  it("QUIET WHEN HEALTHY: clean connected host has no glance chip", () => {
-    // Assertion, not accident — healthy must not paint a green "running" pill.
+  it("healthy: glyph present + dialog reachable + no loud chip", async () => {
+    // Loud chip is quiet when healthy; glyph is the durable dialog entry.
     expect(chipGlanceVisible(chipFromDaemonStatus(cleanHealthy))).toBe(false);
-    const store = mockStore({ byHost: { "host-ok": cleanHealthy } });
+    let opened: string | undefined;
+    const store = mockStore({
+      byHost: { "host-ok": cleanHealthy },
+      onSetDialogHost: (h) => {
+        opened = h ?? undefined;
+      },
+    });
     render(() => (
       <DaemonStatusCtx.Provider value={store}>
         <FleetDaemonStatusChip host="host-ok" />
       </DaemonStatusCtx.Provider>
     ));
+    expect(screen.getByTestId("daemon-dialog-glyph")).toBeTruthy();
     expect(screen.queryByTestId("daemon-status-chip")).toBeNull();
     expect(screen.queryByTestId("daemon-status-chip-label")).toBeNull();
+    await fireEvent.click(screen.getByTestId("daemon-dialog-glyph"));
+    expect(opened).toBe("host-ok");
+  });
+
+  it("anomaly: loud chip present and opens dialog", async () => {
+    let opened: string | undefined;
+    const store = mockStore({
+      byHost: { "host-a": bootRefused },
+      onSetDialogHost: (h) => {
+        opened = h ?? undefined;
+      },
+    });
+    render(() => (
+      <DaemonStatusCtx.Provider value={store}>
+        <FleetDaemonStatusChip host="host-a" />
+      </DaemonStatusCtx.Provider>
+    ));
+    expect(screen.getByTestId("daemon-dialog-glyph")).toBeTruthy();
+    expect(screen.getByTestId("daemon-status-chip-label").textContent).toBe(
+      "boot refused",
+    );
+    await fireEvent.click(screen.getByTestId("daemon-status-chip"));
+    expect(opened).toBe("host-a");
   });
 
   it("status={null} binding fails rendered assertion (mutation target)", () => {
@@ -520,11 +554,15 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
     expect(selected).toBe(1);
   });
 
-  it("TabHostGlance: healthy host has no chip (quiet-when-healthy)", () => {
+  it("TabHostGlance healthy: glyph present + dialog reachable + no loud chip", async () => {
+    let opened: string | undefined;
     const store = mockStore({
       byHost: { "tab-ok": status({ phase: "connected" }) },
+      onSetDialogHost: (h) => {
+        opened = h ?? undefined;
+      },
     });
-    render(() => (
+    const { container } = render(() => (
       <DaemonStatusCtx.Provider value={store}>
         <TabHostGlance
           host="tab-ok"
@@ -537,7 +575,12 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
         />
       </DaemonStatusCtx.Provider>
     ));
+    assertNoNestedButtons(container as HTMLElement);
+    expect(screen.getByTestId("daemon-dialog-glyph")).toBeTruthy();
     expect(screen.queryByTestId("daemon-status-chip")).toBeNull();
+    expect(screen.queryByTestId("daemon-status-chip-label")).toBeNull();
+    await fireEvent.click(screen.getByTestId("daemon-dialog-glyph"));
+    expect(opened).toBe("tab-ok");
   });
 
   it("HostCardGlance: select + chip sibling controls, distinct actions", async () => {
@@ -573,6 +616,55 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
     expect(selected).toBe(1);
   });
 
+  it("HostCardGlance healthy: glyph present + dialog reachable + no loud chip", async () => {
+    let opened: string | undefined;
+    const store = mockStore({
+      byHost: { "card-ok": status({ phase: "connected" }) },
+      onSetDialogHost: (h) => {
+        opened = h ?? undefined;
+      },
+    });
+    const { container } = render(() => (
+      <DaemonStatusCtx.Provider value={store}>
+        <HostCardGlance
+          host="card-ok"
+          connectionPhase="connected"
+          alertCount={0}
+          entryState={fakeEntryState("connected")}
+          onSelect={() => {}}
+        >
+          <div>metrics</div>
+        </HostCardGlance>
+      </DaemonStatusCtx.Provider>
+    ));
+    assertNoNestedButtons(container as HTMLElement);
+    expect(screen.getByTestId("daemon-dialog-glyph")).toBeTruthy();
+    expect(screen.queryByTestId("daemon-status-chip")).toBeNull();
+    await fireEvent.click(screen.getByTestId("daemon-dialog-glyph"));
+    expect(opened).toBe("card-ok");
+  });
+
+  it("anomaly glance surfaces paint the loud chip", () => {
+    const store = mockStore({ byHost: { "tab-bad": bootRefused } });
+    render(() => (
+      <DaemonStatusCtx.Provider value={store}>
+        <TabHostGlance
+          host="tab-bad"
+          active={false}
+          connectionKind="failed"
+          alertCount={0}
+          entryState={fakeEntryState("failed")}
+          onSelect={() => {}}
+          onClose={() => {}}
+        />
+      </DaemonStatusCtx.Provider>
+    ));
+    expect(screen.getByTestId("daemon-dialog-glyph")).toBeTruthy();
+    expect(screen.getByTestId("daemon-status-chip-label").textContent).toBe(
+      "boot refused",
+    );
+  });
+
   it("production call sites mount the glance components (not inlined nests)", () => {
     expect(tabSrc).toMatch(/TabHostGlance/);
     expect(appSrc).toMatch(/HostCardGlance/);
@@ -581,5 +673,8 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
     expect(glanceSrc).toMatch(
       /<\/button>\s*<FleetDaemonStatusChip\s+host=\{props\.host\}\s*\/>/,
     );
+    // Glyph is the durable healthy-path dialog entry (header + fleet).
+    expect(appSrc).toMatch(/DaemonDialogGlyph/);
+    expect(chipSrc).toMatch(/data-testid="daemon-dialog-glyph"/);
   });
 });

@@ -44,14 +44,16 @@ export type DaemonChipPresentation = {
 };
 
 /**
- * Glance surfaces (tabs / fleet cards): QUIET WHEN HEALTHY (kaval shape).
+ * LOUD status chip on glance surfaces: QUIET WHEN HEALTHY (kaval shape).
  *
  * The connection label already paints connected / failed / disconnected /
- * probing. The daemon chip appears ONLY when it adds information beyond
- * that label — not a second green "running" pill beside "connected", and
- * not a second "link failed"/"failed" pair.
+ * probing. The LOUD daemon chip (status text) appears ONLY when it adds
+ * information beyond that label — not a second green "running" pill beside
+ * "connected", and not a second "link failed"/"failed" pair.
  *
- * Dialog always has full detail on demand (this gate is glance-only).
+ * Dialog entry is separate: the always-present DaemonDialogGlyph (no status
+ * text) opens the dialog even when this gate is false. This function gates
+ * the loud chip only.
  */
 export function chipGlanceVisible(p: DaemonChipPresentation): boolean {
   switch (p.kind) {

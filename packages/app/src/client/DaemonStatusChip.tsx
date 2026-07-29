@@ -1,5 +1,11 @@
 /**
- * Per-host daemon status chip — kaval-style glance status.
+ * Per-host daemon status chip + always-present dialog glyph (kaval shape).
+ *
+ * - Loud status chip: anomaly-only on glance surfaces (quiet when healthy —
+ *   no second green "running" pill beside the connection label).
+ * - Glyph: ALWAYS present on host entries so the daemon dialog stays reachable
+ *   when the loud chip is hidden. No status text; no connection-label duplicate.
+ *
  * Presentation from chipFromDaemonStatus only (no string parsing).
  */
 import type { Component, JSX } from "solid-js";
@@ -12,6 +18,41 @@ import {
   chipGlanceVisible,
 } from "./daemonStatusPresentation";
 import { useDaemonStatusStore } from "./daemonStatusStore";
+
+/**
+ * Subtle always-present dialog entry — icon only, no status text.
+ * Sibling of host selection (U3.4: never nested in another button).
+ */
+export const DaemonDialogGlyph: Component<{
+  onClick?: () => void;
+  /** Accessible name / tooltip — never a status word. */
+  title?: string;
+}> = (props) => (
+  <button
+    type="button"
+    data-testid="daemon-dialog-glyph"
+    class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+    title={props.title ?? "Daemon details"}
+    aria-label={props.title ?? "Daemon details"}
+    onClick={(e) => {
+      e.stopPropagation();
+      props.onClick?.();
+    }}
+  >
+    {/* Hex ring — reads as "daemon/identity", not a connection phase. */}
+    <svg
+      viewBox="0 0 16 16"
+      class="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.5"
+      aria-hidden="true"
+    >
+      <path d="M8 1.5 13.5 4.5v7L8 14.5 2.5 11.5v-7L8 1.5Z" />
+      <circle cx="8" cy="8" r="1.75" fill="currentColor" stroke="none" />
+    </svg>
+  </button>
+);
 
 export const DaemonStatusChip: Component<{
   status: DaemonStatus | null | undefined;
@@ -53,22 +94,27 @@ export const DaemonStatusChip: Component<{
 };
 
 /**
- * Fleet-bound chip — reads status + dialog open from the shared store.
+ * Fleet-bound glance control: ALWAYS glyph (dialog entry) + LOUD chip only
+ * when it adds daemon-only fact beyond the connection label (kaval).
  * Used as a SIBLING of host-selection controls (U3.4: never nested in a button).
- * QUIET WHEN HEALTHY (kaval): omitted when chip would only repeat connection.
- * MUTATION: status={null} here fails the rendered binding test (U3.2).
+ * MUTATION: drop the glyph ⇒ healthy fleet has no dialog entry (human review red).
+ * MUTATION: status={null} on the loud chip path fails the rendered binding test.
  */
 export const FleetDaemonStatusChip: Component<{ host: string }> = (props) => {
   const store = useDaemonStatusStore();
   const status = () => store.byHost()[props.host] ?? null;
-  const visible = () => chipGlanceVisible(chipFromDaemonStatus(status()));
+  const open = () => store.setDialogHost(props.host);
+  const loud = () => chipGlanceVisible(chipFromDaemonStatus(status()));
   return (
-    <Show when={visible()}>
-      <DaemonStatusChip
-        status={status()}
-        onClick={() => store.setDialogHost(props.host)}
-      />
-    </Show>
+    <span
+      class="inline-flex items-center gap-1"
+      data-testid="fleet-daemon-glance"
+    >
+      <DaemonDialogGlyph onClick={open} />
+      <Show when={loud()}>
+        <DaemonStatusChip status={status()} onClick={open} />
+      </Show>
+    </span>
   );
 };
 

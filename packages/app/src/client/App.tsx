@@ -73,7 +73,8 @@ import {
   convergenceBannerVisible,
 } from "./convergenceProjection";
 import { DaemonDialog } from "./DaemonDialog";
-import { DaemonStatusChip } from "./DaemonStatusChip";
+import { DaemonDialogGlyph, DaemonStatusChip } from "./DaemonStatusChip";
+import { chipFromDaemonStatus, chipGlanceVisible } from "./daemonStatusPresentation";
 import { HostCardGlance } from "./daemonHostGlance";
 import type { DaemonStatus } from "../common/daemonStatus";
 import {
@@ -1628,10 +1629,16 @@ function Header(props: {
             <HostDot state={props.entryState} />
             {props.phase}
           </span>
-          <DaemonStatusChip
-            status={props.daemonStatus}
-            onClick={props.onDaemonClick}
-          />
+          {/* Glyph always opens dialog; loud chip only for daemon-only facts. */}
+          <DaemonDialogGlyph onClick={props.onDaemonClick} />
+          <Show
+            when={chipGlanceVisible(chipFromDaemonStatus(props.daemonStatus))}
+          >
+            <DaemonStatusChip
+              status={props.daemonStatus}
+              onClick={props.onDaemonClick}
+            />
+          </Show>
           <span class="text-gray-500">
             {props.count} {props.count === 1 ? "process" : "processes"}
           </span>

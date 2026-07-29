@@ -49,8 +49,9 @@ describe("App.tsx daemon status UI confinement (U2.2 / U2.7)", () => {
     expect(appSrc).toMatch(
       /DaemonDialog[\s\S]{0,400}onRenew=\{\(\)\s*=>\s*\{[\s\S]*daemonStore\.renew/,
     );
-    // Header binds chip to selected-host status; fleet card uses HostCardGlance
-    // (production placement with store-bound FleetDaemonStatusChip inside).
+    // Header: always-present glyph + loud chip only when glance-visible;
+    // fleet card uses HostCardGlance (store-bound FleetDaemonStatusChip).
+    expect(appSrc).toMatch(/DaemonDialogGlyph/);
     expect(appSrc).toMatch(
       /DaemonStatusChip[\s\S]{0,80}status=\{props\.daemonStatus\}/,
     );
