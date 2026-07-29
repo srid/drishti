@@ -1,13 +1,20 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type SharedArtifact,
   daemonHome,
 } from "@kolu/surface-daemon";
-import { createSharedArtifactWatchdog } from "@kolu/surface-daemon/upgrade-window.testlib";
-import { HISTORY_RING_FILE, HISTORY_RING_VERSION } from "./historyRing";
+import {
+  createSharedArtifactWatchdog,
+  executeVersionDispositionProof,
+} from "@kolu/surface-daemon/upgrade-window.testlib";
+import {
+  HISTORY_RING_FILE,
+  HISTORY_RING_VERSION,
+  loadHistoryRing,
+} from "./historyRing";
 
 /**
  * Consumer-side inventory: framework gate+socket artifacts (from
@@ -42,7 +49,7 @@ function drishtiArtifacts(home: {
 }
 
 describe("drishti shared-artifact registry", () => {
-  it("registers gate, socket, and history ring with disposition coverage", () => {
+  it("registers gate, socket, and history ring with disposition coverage", async () => {
     const prev = process.env.HOME;
     const tmp = mkdtempSync(join(tmpdir(), "drishti-artifacts-"));
     try {
@@ -57,25 +64,55 @@ describe("drishti shared-artifact registry", () => {
       expect(ids).toContain("drishti-socket");
       expect(ids).toContain("history-ring");
 
+      const ring = registry.find((a) => a.id === "history-ring");
+      if (ring === undefined) throw new Error("history-ring missing");
+      expect(ring.versionField).toBe("v");
+      expect(ring.coveredByTest).toBe("historyRing.test.ts");
+      expect(HISTORY_RING_VERSION).toBe(1);
+
+      // UW2 tightened versionField coverage: naming a suite is not enough —
+      // execute a real v+1 plant → readback → typed disposition.
+      const ringPath = home.file(HISTORY_RING_FILE);
+      const newerVersion = HISTORY_RING_VERSION + 1;
+      const versionProof = await executeVersionDispositionProof({
+        artifact: ring,
+        newerVersion: String(newerVersion),
+        plant: () => {
+          writeFileSync(
+            ringPath,
+            JSON.stringify({
+              v: newerVersion,
+              samples: [{ t: 1, cpu: 0, mem: 0, swap: 0, disk: 0 }],
+            }),
+          );
+        },
+        readPlantedVersion: () => {
+          const parsed = JSON.parse(readFileSync(ringPath, "utf8")) as {
+            v: number;
+          };
+          return String(parsed.v);
+        },
+        observeDisposition: () => {
+          const loaded = loadHistoryRing(ringPath);
+          expect(loaded.kind).toBe("unavailable");
+          if (loaded.kind === "unavailable") {
+            expect(loaded.reason).toBe("unknown-version");
+          }
+          // Unknown version leaves the file alone.
+          expect(readFileSync(ringPath, "utf8")).toContain(`"v":${newerVersion}`);
+        },
+      });
+
       const watchdog = createSharedArtifactWatchdog(registry);
       watchdog.assertInventory(["drishti-gate", "drishti-socket", "history-ring"]);
 
-      // Disposition coverage: only history-ring requires a planted v+1 suite
-      // (gate/socket are framework-emitted and covered upstream). Logs skipped.
       const gaps = watchdog.coverageGaps(
         new Set(["historyRing.test.ts", "artifacts.test.ts"]),
+        [versionProof],
       );
-      // gate/socket have coveredByTest: null → reported as gaps unless role=log.
-      // Framework-emitted entries begin null until a consumer attaches coverage;
-      // we only assert the history ring is covered.
       expect(
         gaps.filter((g) => g.startsWith("history-ring")),
       ).toEqual([]);
-
-      const ring = registry.find((a) => a.id === "history-ring");
-      expect(ring?.versionField).toBe("v");
-      expect(ring?.coveredByTest).toBe("historyRing.test.ts");
-      expect(HISTORY_RING_VERSION).toBe(1);
     } finally {
       if (prev === undefined) delete process.env.HOME;
       else process.env.HOME = prev;
