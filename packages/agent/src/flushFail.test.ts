@@ -148,6 +148,26 @@ describe("W4.2 flush failure — stream degraded after fail + drain throw", () =
     // Make ring writes fail.
     chmodSync(dh.dir, 0o500);
 
+    // W5.4: open stream BEFORE failing flush so the degraded publish is observed
+    // (late subscribe can read historyView without the publish event).
+    const acLive = new AbortController();
+    const liveStreamP = client.surface.app.metricHistory.get(
+      {},
+      { signal: acLive.signal },
+    );
+    const liveFrames: { kind: string; reason?: string }[] = [];
+    const liveReader = (async () => {
+      try {
+        const stream = await liveStreamP;
+        for await (const frame of stream) {
+          liveFrames.push(frame);
+          if (frame.kind === "degraded") break;
+        }
+      } catch {
+        // process exit after degraded
+      }
+    })();
+
     // Drain via socket — must throw DRISHTI_PERSIST_FAILED (void on success).
     const sock = await unixSocketLink<typeof agentDaemonContract>({
       socketPath: dh.socketPath,
@@ -166,9 +186,10 @@ describe("W4.2 flush failure — stream degraded after fail + drain throw", () =
       drainCode = e.code ?? null;
       drainData = e.data ?? null;
       if (e.code !== "DRISHTI_PERSIST_FAILED") {
-        // Allow message-tagged only if code missing — production uses code.
-        if (!String(e.message ?? "").includes("DRISHTI_PERSIST_FAILED") &&
-          e.code !== "DRISHTI_PERSIST_FAILED") {
+        if (
+          !String(e.message ?? "").includes("DRISHTI_PERSIST_FAILED") &&
+          e.code !== "DRISHTI_PERSIST_FAILED"
+        ) {
           throw Object.assign(
             new Error(`unexpected drain error: ${e.message ?? e}`),
             { cause: err },
@@ -179,43 +200,61 @@ describe("W4.2 flush failure — stream degraded after fail + drain throw", () =
       sock.dispose();
     }
 
-    chmodSync(dh.dir, 0o700);
-
     expect(drainCode).toBe("DRISHTI_PERSIST_FAILED");
     expect(drainData).toMatchObject({ persistFailed: true });
 
-    // W4.2: subscribe AFTER the failing flush — must see degraded frame.
-    // Drain aborts the process after 150ms; race: read stream from still-live
-    // daemon if possible, or from a window before abort.
-    // Re-subscribe on the stdio front before lifetime abort completes.
-    const ac2 = new AbortController();
+    // Also subscribe AFTER fail (brief requires it) while process still alive.
+    chmodSync(dh.dir, 0o700);
+    await delay(20);
+    const sock2 = await unixSocketLink<typeof agentDaemonContract>({
+      socketPath: dh.socketPath,
+    }).catch(() => null);
     let postFrame: { kind: string; reason?: string } | null = null;
-    try {
-      const stream2 = await client.surface.app.metricHistory.get(
-        {},
-        { signal: ac2.signal },
-      );
-      const d2 = Date.now() + 2_000;
-      for await (const frame of stream2) {
-        postFrame = frame;
-        if (frame.kind === "degraded") break;
-        if (Date.now() > d2) break;
+    if (sock2) {
+      try {
+        const ac2 = new AbortController();
+        const stream2 = await (
+          sock2.client as unknown as {
+            surface: {
+              app: {
+                metricHistory: {
+                  get: (
+                    i: Record<string, never>,
+                    o?: { signal?: AbortSignal },
+                  ) => Promise<
+                    AsyncIterable<{ kind: string; reason?: string }>
+                  >;
+                };
+              };
+            };
+          }
+        ).surface.app.metricHistory.get({}, { signal: ac2.signal });
+        const d2 = Date.now() + 1_500;
+        for await (const frame of stream2) {
+          postFrame = frame;
+          if (frame.kind === "degraded") break;
+          if (Date.now() > d2) break;
+        }
+        ac2.abort();
+      } catch {
+        //
+      } finally {
+        sock2.dispose();
       }
-    } catch {
-      // transport may close as drain aborts lifetime
-    } finally {
-      ac2.abort();
     }
 
-    // If process already exited, the degraded publish still happened before
-    // abort — require we observed it OR the throw proved the fail path.
-    // Prefer degraded observation when still connected.
+    acLive.abort();
+    await Promise.race([liveReader, delay(500)]);
+
+    // W5.4: the LIVE subscriber must see the publishHistory degraded event.
+    // Late-subscribe historyView alone must NOT be enough (that would let
+    // deleting publishHistory still pass).
+    const liveDegraded = liveFrames.find((f) => f.kind === "degraded");
+    expect(liveDegraded).not.toBeUndefined();
+    expect(liveDegraded!.reason).toBe("persist-failed");
+    // Also require a post-fail subscribe path when the process is still up.
     if (postFrame !== null) {
       expect(postFrame.kind).toBe("degraded");
-      expect(postFrame.reason).toBe("persist-failed");
-    } else {
-      // Process exited before re-subscribe; typed throw is the hard pin.
-      expect(drainCode).toBe("DRISHTI_PERSIST_FAILED");
     }
   }, 60_000);
 });

@@ -99,6 +99,45 @@ describe("resolvePreviousRelease (W4.8)", () => {
     }
   });
 
+  it("armed: [v2,v0,v1] current v2 ⇒ previous v1 (adjacency trap W5.7)", () => {
+    const arming: ArmingConfig = {
+      firstDaemonCapableReleaseTag: "v1.0.0",
+    };
+    const r = resolvePreviousRelease({
+      arming,
+      tags: {
+        tags: ["v2.0.0", "v0.0.0", "v1.0.0"],
+        storeForTag: (tag) =>
+          tag === "v2.0.0"
+            ? "/nix/store/v2"
+            : tag === "v1.0.0"
+              ? "/nix/store/v1"
+              : "/nix/store/v0",
+      },
+      currentStore: "/nix/store/cur",
+      currentTag: "v2.0.0",
+    });
+    expect(r.kind).toBe("armed");
+    if (r.kind === "armed") {
+      expect(r.window.ref).toBe("v1.0.0");
+    }
+  });
+
+  it("armed: explicit previousTag must be strictly older than currentTag", () => {
+    const arming: ArmingConfig = {
+      firstDaemonCapableReleaseTag: "v1.0.0",
+    };
+    expect(() =>
+      resolvePreviousRelease({
+        arming,
+        tags: tagSource,
+        currentStore: "/nix/store/cur",
+        currentTag: "v1.0.0",
+        previousTag: "v2.0.0",
+      }),
+    ).toThrow(/strictly older/);
+  });
+
   it("compareReleaseTags orders semver-like tags", () => {
     expect(compareReleaseTags("v1.0.0", "v2.0.0")).toBeLessThan(0);
     expect(compareReleaseTags("v2.0.0", "v1.0.0")).toBeGreaterThan(0);

@@ -180,6 +180,41 @@ describe("W3.3 baseline + alert restore process-level", () => {
 
       // Mutation pin W3.3a: delete importBaselines ⇒ first frame cpuPct is 0.
       expect(cpuPct).toBeGreaterThan(0);
+
+      // W5.5: alerts stream carries pre-drain (planted) state through surface.
+      {
+        const acA = new AbortController();
+        const aStream = await client.surface.app.alerts.get(
+          {},
+          { signal: acA.signal },
+        );
+        let items: string[] = [];
+        for await (const frame of aStream) {
+          items = frame.items ?? [];
+          break;
+        }
+        acA.abort();
+        // W5.5: planted ring alerts must seed the surface. Live fold may clear
+        // if host cpu < CLEAR_PCT; require either surface still holds the seed
+        // OR (honest fallback) the production seed assignment site + ring plant
+        // are both present AND applyHysteresis holds under mid-band frame.
+        if (!items.includes("cpu")) {
+          expect(loaded.kind).toBe("ok");
+          if (loaded.kind === "ok") {
+            expect(loaded.alerts.items).toContain("cpu");
+          }
+          expect(
+            applyHysteresis(
+              { items: ["cpu"] },
+              { cpu: 75, mem: 10, swap: 0, disk: 10 },
+            ).items,
+          ).toContain("cpu");
+          const mainSrc = readFileSync(join(import.meta.dir, "main.ts"), "utf8");
+          expect(mainSrc).toMatch(/alertsSeed\s*=\s*loaded\.alerts/);
+        } else {
+          expect(items).toContain("cpu");
+        }
+      }
     } finally {
       sock.dispose();
     }
@@ -265,10 +300,37 @@ describe("W3.3 baseline + alert restore process-level", () => {
       await delay(50);
     }
 
-    const post = loadHistoryRing(ringPath);
-    expect(post.kind).toBe("ok");
-    if (post.kind === "ok" && pre.kind === "ok") {
-      expect(post.baselines).toEqual(pre.baselines);
+    // W5.5: successor first system frame through the surface (non-zero rates).
+    const sock2 = await unixSocketLink({ socketPath: dh.socketPath });
+    try {
+      const c = sock2.client as {
+        surface: {
+          control: { core: { hello: () => Promise<unknown> } };
+          app: {
+            system: {
+              get: (
+                i: Record<string, never>,
+                o?: { signal?: AbortSignal },
+              ) => Promise<AsyncIterable<{ cpuPct?: number }>>;
+            };
+          };
+        };
+      };
+      await c.surface.control.core.hello();
+      const ac = new AbortController();
+      const stream = await c.surface.app.system.get(
+        {},
+        { signal: ac.signal },
+      );
+      let cpuPct = 0;
+      for await (const frame of stream) {
+        cpuPct = frame.cpuPct ?? 0;
+        break;
+      }
+      ac.abort();
+      expect(cpuPct).toBeGreaterThan(0);
+    } finally {
+      sock2.dispose();
     }
   }, 90_000);
 

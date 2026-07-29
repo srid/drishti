@@ -96,40 +96,44 @@ export function resolvePreviousRelease(args: {
     };
   }
 
+  const currentTag = args.currentTag;
+  if (currentTag === null || currentTag === undefined || currentTag === "") {
+    throw new Error(
+      `previous-release resolver is armed at ${armedAt} but currentTag is missing — cannot order a predecessor`,
+    );
+  }
+  if (!isPreviousReleaseTag(currentTag)) {
+    throw new Error(
+      `current tag ${JSON.stringify(currentTag)} is not a release tag shape`,
+    );
+  }
+
   let previousTag = args.previousTag ?? null;
   if (previousTag === null || previousTag === undefined || previousTag === "") {
-    const currentTag = args.currentTag;
-    if (currentTag === null || currentTag === undefined || currentTag === "") {
-      throw new Error(
-        `previous-release resolver is armed at ${armedAt} but currentTag is missing — cannot order a predecessor`,
-      );
-    }
-    if (!isPreviousReleaseTag(currentTag)) {
-      throw new Error(
-        `current tag ${JSON.stringify(currentTag)} is not a release tag shape`,
-      );
-    }
-    // Latest release tag strictly older than current.
-    // Prefer newest-first list position after current; fall back to compare.
+    // W5.7: ALWAYS order by compareReleaseTags — never trust list adjacency.
     const releaseTags = args.tags.tags.filter((t) => isPreviousReleaseTag(t));
-    const curIdx = releaseTags.indexOf(currentTag);
-    if (curIdx >= 0 && curIdx + 1 < releaseTags.length) {
-      // Newest-first: the next entry is the immediate predecessor.
-      previousTag = releaseTags[curIdx + 1]!;
-    } else {
-      // Current not in list, or no successor entry — pick max strictly older.
-      let best: string | null = null;
-      for (const t of releaseTags) {
-        if (compareReleaseTags(t, currentTag) >= 0) continue;
-        if (best === null || compareReleaseTags(t, best) > 0) best = t;
-      }
-      previousTag = best;
+    let best: string | null = null;
+    for (const t of releaseTags) {
+      if (compareReleaseTags(t, currentTag) >= 0) continue;
+      if (best === null || compareReleaseTags(t, best) > 0) best = t;
+    }
+    previousTag = best;
+  } else {
+    if (!isPreviousReleaseTag(previousTag)) {
+      throw new Error(
+        `previous-release tag ${JSON.stringify(previousTag)} is not a release tag shape`,
+      );
+    }
+    if (compareReleaseTags(previousTag, currentTag) >= 0) {
+      throw new Error(
+        `previous-release tag ${JSON.stringify(previousTag)} is not strictly older than currentTag ${JSON.stringify(currentTag)}`,
+      );
     }
   }
 
   if (previousTag === null || previousTag === "") {
     throw new Error(
-      `previous-release resolver is armed at ${armedAt} but no previous tag strictly older than ${JSON.stringify(args.currentTag)} could be resolved`,
+      `previous-release resolver is armed at ${armedAt} but no previous tag strictly older than ${JSON.stringify(currentTag)} could be resolved`,
     );
   }
   if (!isPreviousReleaseTag(previousTag)) {

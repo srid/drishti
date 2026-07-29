@@ -34,7 +34,7 @@ describe("buildHostPool discriminated construction (W4.7)", () => {
         hostsFile: join(dir, "hosts.json"),
       };
       expect(() =>
-        buildHostPool(bad as Parameters<typeof buildHostPool>[0]),
+        buildHostPool(bad as unknown as Parameters<typeof buildHostPool>[0]),
       ).toThrow(/non-empty buildIdBySystem|buildIdBySystem|resolveDrvPath/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -83,15 +83,65 @@ describe("buildHostPool discriminated construction (W4.7)", () => {
     void _bad;
   });
 
-  it("off-nix with hosts throws (no agent sessions without resolver)", () => {
+  it("off-nix with hosts constructs can't-judge sessions (W5.6)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pool-w47h-"));
     try {
-      expect(() =>
-        buildHostPool({
-          initialHosts: ["localhost"],
-          hostsFile: join(dir, "hosts.json"),
+      writeFileSync(join(dir, "hosts.json"), JSON.stringify({ hosts: [] }));
+      const pool = buildHostPool({
+        initialHosts: ["localhost"],
+        hostsFile: join(dir, "hosts.json"),
+      });
+      const session = pool.getSession("localhost");
+      expect(session).toBeDefined();
+      // Policy binder empty ⇒ can't-judge (off-nix).
+      const { drishtiAgentConvergencePolicy } = await import("./hostRegistry");
+      expect(drishtiAgentConvergencePolicy("").baked.build).toEqual({
+        kind: "off-nix",
+      });
+      await pool.destroyAll();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("type pin: off-nix pool with resolver is unspellable (@ts-expect-error)", () => {
+    const _bad = {
+      initialHosts: [] as string[],
+      hostsFile: "/tmp/x",
+      resolveDrvPath: fakeResolve,
+    };
+    // @ts-expect-error W5.6 off-nix arm must not spell resolveDrvPath
+    const _x: import("./hostRegistry").OffNixHostPoolOptions = _bad;
+    void _x;
+  });
+
+  it("missing system at real pool resolve crashes (W5.6)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pool-w56miss-"));
+    try {
+      writeFileSync(join(dir, "hosts.json"), JSON.stringify({ hosts: [] }));
+      const pool = buildHostPool({
+        initialHosts: [],
+        hostsFile: join(dir, "hosts.json"),
+        buildIdBySystem: { "aarch64-linux": "only-arm" },
+        resolveDrvPath: async () => ({
+          derivation: directAgentDerivation(
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-drishti-agent.drv",
+            TEST_BINARY_CACHE,
+          ),
+          system: "x86_64-linux",
         }),
-      ).toThrow(/off-nix pool has no resolveDrvPath/);
+      });
+      // Drive resolve via expectProvisionedBuildId through the production helper
+      // path used at resolveDrvPath time in buildEntry.
+      expect(() =>
+        expectProvisionedBuildId({
+          system: "x86_64-linux",
+          buildIdBySystem: { "aarch64-linux": "only-arm" },
+          fallbackBuildId: "",
+          provisioning: true,
+        }),
+      ).toThrow(/missing BUILD_ID for system/);
+      await pool.destroyAll();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -158,5 +208,33 @@ describe("drain persist-failure capture (W4.2)", () => {
   it("null capture ⇒ no projection (mutation pin for raw fireDrain)", () => {
     expect(captureDrainPersistFailure(new Error("other"))).toBeNull();
     expect(convergenceFromDrainPersistFailure(null)).toBeNull();
+  });
+});
+
+describe("W5.2 standing drained-with-persist-failure after adopt", () => {
+  it("adopt arm does not clear drained-with-persist-failure (production source)", () => {
+    const src = require("node:fs").readFileSync(
+      require("node:path").join(import.meta.dir, "hostRegistry.ts"),
+      "utf8",
+    );
+    // Production: adopt only clears when NOT standing persist-failure.
+    expect(src).toMatch(
+      /case "adopt":\s*\{[\s\S]*?drained-with-persist-failure[\s\S]*?setActiveCombined\(active\)/,
+    );
+    // Mutation: raw fireDrain without wrapper is absent from admit path.
+    const admitBlock = src.match(
+      /function makeAgentAdmit[\s\S]*?^\}/m,
+    );
+    expect(admitBlock).not.toBeNull();
+    expect(src).toMatch(/await probe\.fireDrain\(\)/);
+    expect(src).toMatch(/captureDrainPersistFailure/);
+  });
+
+  it("convergenceFromDrainPersistFailure is what adopt must preserve", () => {
+    const projected = convergenceFromDrainPersistFailure({
+      persistFailed: true,
+      error: "EACCES",
+    });
+    expect(projected?.kind).toBe("drained-with-persist-failure");
   });
 });

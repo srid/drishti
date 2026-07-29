@@ -488,45 +488,37 @@ async function buildAgentRuntime(
         // flush failure throws typed ORPCError (data carries the failure). The
         // parent wraps fireDrain to capture the rejection — never decorate the
         // wire schema or return illegal success objects.
-        const controlBase = controlCoreFragment({
+        // W5.8: implement the frozen fragment lawfully — no `control as never`.
+        // W5.3: optional DRISHTI_E2E_SURFACE_VERSION for contract-newer refuse e2e only.
+        const surfaceVersion =
+          process.env.DRISHTI_E2E_SURFACE_VERSION?.trim() ||
+          AGENT_SURFACE_VERSION;
+        const control = controlCoreFragment({
           stateRoot: opts.stateRoot,
-          surfaceVersion: AGENT_SURFACE_VERSION,
+          surfaceVersion,
           startedAt,
           commit: identity.navigableCommit,
           buildId: identity.staleKey,
           onDrain: async () => {
-            // Placeholder — body below owns flush + throw.
+            const flush = flushRing();
+            setTimeout(() => {
+              void opts.onDrain?.(flush);
+            }, 150);
+            if (!flush.ok) {
+              throw new ORPCError("DRISHTI_PERSIST_FAILED", {
+                message: flush.error,
+                data: {
+                  persistFailed: true as const,
+                  error: flush.error,
+                },
+              });
+            }
           },
         });
-        const control = {
-          procedures: {
-            core: {
-              hello: controlBase.procedures.core.hello,
-              drain: async (): Promise<void> => {
-                const flush = flushRing();
-                // Defer lifetime abort so the drain RPC (or error) can leave
-                // the process first.
-                setTimeout(() => {
-                  void opts.onDrain?.(flush);
-                }, 150);
-                if (!flush.ok) {
-                  throw new ORPCError("DRISHTI_PERSIST_FAILED", {
-                    message: flush.error,
-                    data: {
-                      persistFailed: true as const,
-                      error: flush.error,
-                    },
-                  });
-                }
-                // void success — frozen control-core output is empty.
-              },
-            },
-          },
-        };
         const runtime = implementSurfaces(
           { app: surface, control: controlCoreSurface },
           {},
-          { app: appDeps as never, control: control as never },
+          { app: appDeps as never, control },
         );
         // W4: flush must read live hysteresis, not only the boot seed.
         readAlerts = () => runtime.ctx.app.cells.alerts.get() as Alerts;

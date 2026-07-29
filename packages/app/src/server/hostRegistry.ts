@@ -53,6 +53,7 @@ import {
   type ResolveDrvPathContext,
   type RemotePool,
   type Session,
+  ResolveDrvError,
   sshConnector,
   type SshProv,
 } from "@kolu/surface-remote";
@@ -233,7 +234,8 @@ export type ProvisioningHostPoolOptions = {
 export type OffNixHostPoolOptions = {
   initialHosts: readonly string[];
   hostsFile: string;
-  // intentionally no resolveDrvPath — off-nix has no agent provision path
+  /** Discriminant: off-nix arm must not spell a resolver (W5.6). */
+  resolveDrvPath?: never;
 };
 
 export type HostPoolOptions =
@@ -316,6 +318,7 @@ function makeAgentAdmit(args: {
   combinedByScopedClient: WeakMap<AgentAppClient, ActiveCombined>;
   /** Budget is minted on first drv resolve (when system is known). */
   getBudget: () => ReturnType<typeof createConnectorDrainBudget>;
+  getConvergence: () => DrishtiConvergence | null;
   setConvergence: (c: DrishtiConvergence | null) => void;
   setActiveCombined: (a: ActiveCombined | null) => void;
 }): Admit<AgentAppClient> {
@@ -372,7 +375,11 @@ function makeAgentAdmit(args: {
 
     switch (verdict.kind) {
       case "adopt": {
-        args.setConvergence(null);
+        // W5.2: drained-with-persist-failure STANDS across successor adopt.
+        const standing = args.getConvergence();
+        if (standing?.kind !== "drained-with-persist-failure") {
+          args.setConvergence(null);
+        }
         args.setActiveCombined(active);
         return { kind: "adopt" };
       }
@@ -551,20 +558,101 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
   // W4.7: discriminated union — provisioning is "has resolveDrvPath", never
   // an offNix boolean override.
   if (!isProvisioningPool(opts)) {
-    if (opts.initialHosts.length > 0) {
-      throw new Error(
-        "buildHostPool: off-nix pool has no resolveDrvPath and cannot host agent sessions",
-      );
-    }
-    // Empty off-nix pool: membership only, no connector assembly.
+    // W5.6: off-nix pool with hosts constructs real sessions under the
+    // can't-judge binder (empty build id). No resolveDrvPath.
+    const fallbackBuildId = process.env.DRISHTI_AGENT_BUILD_ID ?? "";
     return buildRemotePool<HostSession, undefined>({
-      initialHosts: [],
-      buildEntry: () => {
-        throw new Error("buildHostPool: off-nix pool has no buildEntry");
+      initialHosts: opts.initialHosts,
+      buildEntry: (host) => {
+        let convergence: DrishtiConvergence | null = null;
+        let activeCombined: ActiveCombined | null = null;
+        const combinedByScopedClient = new WeakMap<
+          AgentAppClient,
+          ActiveCombined
+        >();
+        const expectedBuildId = fallbackBuildId;
+        const budget = createConnectorDrainBudget(
+          drishtiAgentConvergencePolicy(expectedBuildId),
+        );
+        const inner = sshConnector<AgentDaemonContract>({
+          host,
+          binary: "drishti-agent",
+          localEnv: Object.fromEntries(
+            (
+              [
+                "HOME",
+                "PATH",
+                "XDG_STATE_HOME",
+                "DRISHTI_OSFACTS_BIN",
+                "DRISHTI_AGENT_BUILD_ID",
+              ] as const
+            )
+              .map((k): [string, string | undefined] => [k, process.env[k]])
+              .filter((e): e is [string, string] => e[1] !== undefined),
+          ),
+          resolveDrvPath: async () => {
+            throw new ResolveDrvError(
+              "off-nix pool: no agent derivation (can't-judge path has no resolveDrvPath)",
+              {
+                kind: "unavailable",
+                failureCause: "remote",
+                terminal: false,
+              },
+            );
+          },
+        });
+        const rawConnector: Connector<AgentAppClient, SshProv> = async (ctx) => {
+          const conn = await inner(ctx);
+          const processExit = conn.closed.then(
+            (info: ClosedInfo) => {
+              if (info.kind !== "exit") return NEVER_EXITS;
+            },
+            () => NEVER_EXITS,
+          );
+          const active: ActiveCombined = {
+            client: conn.client,
+            dispose: conn.teardown,
+            processExit,
+            signal: ctx.signal,
+          };
+          const scopedClient = scopeAgentApp(conn.client);
+          combinedByScopedClient.set(scopedClient, active);
+          return { ...conn, client: scopedClient };
+        };
+        const admit = makeAgentAdmit({
+          combinedByScopedClient,
+          getBudget: () => budget,
+          getConvergence: () => convergence,
+          setConvergence: (c) => {
+            convergence = c;
+          },
+          setActiveCombined: (a) => {
+            activeCombined = a;
+          },
+        });
+        const base = makeSession<AgentAppClient, SshProv>({
+          connectOnce: rawConnector,
+          initialConnection: "probing",
+          connectTimeoutMs: CONNECT_TIMEOUT_MS,
+          admit,
+          label: `host:${host}`,
+        });
+        const session = attachDaemonSession({
+          base,
+          getConvergence: () => convergence,
+          setConvergence: (c) => {
+            convergence = c;
+          },
+          getActiveCombined: () => activeCombined,
+          setActiveCombined: (a) => {
+            activeCombined = a;
+          },
+        });
+        return { session, handler: undefined };
       },
       controls: {
-        reconnect: () => {},
-        recheck: () => {},
+        reconnect: (s) => s.reconnect(),
+        recheck: (s) => s.recheck(),
       },
       persist: (hosts) => saveHosts(opts.hostsFile, hosts),
       log: (line) => log(line),
@@ -677,6 +765,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
           }
           return budget;
         },
+        getConvergence: () => convergence,
         setConvergence: (c) => {
           convergence = c;
         },

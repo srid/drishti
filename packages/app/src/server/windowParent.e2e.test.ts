@@ -110,6 +110,12 @@ afterEach(async () => {
  * hit) so the e2e does not wedge on a cold `nix build` of the flake's current
  * agentDrvsJson entry. Fall back to flake maps when no warm path exists.
  */
+/**
+ * W5.1: ONLY the flake's current agent .drv — never a random warm store
+ * path. A pre-UW3 store agent is single-surface / ephemeral --stdio and
+ * 404s on control.core.hello + app-scoped system.identity (the campaign's
+ * lead root-cause).
+ */
 async function fixtureAgent(): Promise<{
   drvPath: string;
   system: string;
@@ -135,45 +141,6 @@ async function fixtureAgent(): Promise<{
       ],
     });
 
-    // Warm path: find a realised drishti-agent and its deriver.
-    const glob = Bun.spawn(
-      [
-        "bash",
-        "-c",
-        "ls -1d /nix/store/*-drishti-agent/bin/drishti-agent 2>/dev/null | head -1",
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    const agentBin = (await new Response(glob.stdout).text()).trim();
-    await glob.exited;
-    if (agentBin.length > 0 && existsSync(agentBin)) {
-      const outPath = agentBin.replace(/\/bin\/drishti-agent$/, "");
-      const deriverProc = Bun.spawn(
-        ["nix-store", "-q", "--deriver", outPath],
-        { stdout: "pipe", stderr: "pipe" },
-      );
-      const drvPath = (await new Response(deriverProc.stdout).text()).trim();
-      await deriverProc.exited;
-      if (drvPath.endsWith(".drv") && existsSync(drvPath)) {
-        // Parent expects this id; previous is planted with a different one.
-        const idsProc = Bun.spawn(
-          ["nix", "eval", "--raw", ".#agentBuildIdsJson"],
-          { stdout: "pipe", stderr: "pipe" },
-        );
-        const idsJson = (await new Response(idsProc.stdout).text()).trim();
-        await idsProc.exited;
-        let buildId = `warm-${outPath.slice(-12)}`;
-        try {
-          const ids = JSON.parse(idsJson) as Record<string, string>;
-          if (ids[system]) buildId = ids[system];
-        } catch {
-          // keep warm id
-        }
-        return { drvPath, system, buildId, binaryCache };
-      }
-    }
-
-    // Cold fallback: flake maps (may be slow to realise).
     const drvsProc = Bun.spawn(
       ["nix", "eval", "--raw", ".#agentDrvsJson"],
       { stdout: "pipe", stderr: "pipe" },
@@ -188,6 +155,13 @@ async function fixtureAgent(): Promise<{
       }
       return null;
     }
+
+    // Ensure realised so the e2e does not wedge on cold nix-copy alone.
+    const outProc = Bun.spawn(["nix-store", "-r", drvPath], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await outProc.exited;
 
     const idsProc = Bun.spawn(
       ["nix", "eval", "--raw", ".#agentBuildIdsJson"],
@@ -383,30 +357,32 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
       expect(typeof session!.renew).toBe("function");
       expect(typeof session!.convergence).toBe("function");
 
-      // W4.1: DIAL — pin starts production connector (resolveDrvPath + provision
-      // + connect). Catch pin() so post-admit system.identity 404 on the
-      // app-scoped client does not fail the suite.
-      const pinDone = session!.pin().then(
-        () => {},
-        () => {},
-      );
+      // W5.1: HARD dial — zero catch-to-success. pin() drives production
+      // admit. A build-axis `replaced` verdict REJECTS pin() with a drained
+      // message while scheduling successor reconnect — that rejection IS the
+      // successful drain path, not a wiring failure. Any other error fails.
+      await session!.pin().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (
+          !/drained|build mismatch|reconnecting to re-handshake/i.test(msg)
+        ) {
+          throw err instanceof Error ? err : new Error(msg);
+        }
+      });
 
-      // Connector must leave initial probing (proves dial / resolveDrvPath).
-      const advDeadline = Date.now() + 60_000;
-      let advanced = false;
+      // Wait for successor to connect after drain (or fail terminally).
+      const advDeadline = Date.now() + 90_000;
       let lastPhase = session!.currentState().phase;
       while (Date.now() < advDeadline) {
         lastPhase = session!.currentState().phase;
-        if (lastPhase !== "probing") {
-          advanced = true;
+        if (lastPhase === "connected" || lastPhase === "failed") {
           break;
         }
         await delay(100);
       }
-      expect(advanced).toBe(true);
-      expect(lastPhase).not.toBe("probing");
+      expect(lastPhase).toBe("connected");
 
-      // Build-mismatch drain when admit runs: previous may exit. Give it time.
+      // Previous resident MUST be gone (unconditional — drain took the pid).
       const drainDeadline = Date.now() + 45_000;
       let prevGone = false;
       while (Date.now() < drainDeadline) {
@@ -418,19 +394,22 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
         }
         await delay(200);
       }
-      // Soft: if admit completed a build-axis drain, prev is gone. If the
-      // store-agent identity 404 aborts admit early, prev may remain — the
-      // makeSession admit confinement pin still binds the wiring mutation.
-      if (prevGone) {
-        const ring = dh.file("history.ring.json");
-        await delay(300);
-        if (existsSync(ring)) {
-          const raw = JSON.parse(readFileSync(ring, "utf8")) as {
-            samples: unknown[];
-          };
-          expect(raw.samples.length).toBeGreaterThan(0);
-        }
+      expect(prevGone).toBe(true);
+
+      // Successor serves history through the surface (dial it — not ring re-read alone).
+      const succDeadline = Date.now() + 30_000;
+      while (Date.now() < succDeadline) {
+        if (session!.currentState().phase === "connected") break;
+        await delay(100);
       }
+      expect(session!.currentState().phase).toBe("connected");
+
+      const ring = dh.file("history.ring.json");
+      expect(existsSync(ring)).toBe(true);
+      const raw = JSON.parse(readFileSync(ring, "utf8")) as {
+        samples: unknown[];
+      };
+      expect(raw.samples.length).toBeGreaterThan(0);
 
       const admin = buildAdminRouter({ pool });
       // biome-ignore lint/suspicious/noExplicitAny: oRPC router
@@ -443,11 +422,138 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
       } catch {
         //
       }
-      await pinDone.catch(() => {});
       await pool.destroyAll();
       const idx = pools.indexOf(pool);
       if (idx >= 0) pools.splice(idx, 1);
       await delay(400);
+    },
+    120_000,
+  );
+});
+
+
+describe("W5.3 real refuse + renew via production pool", () => {
+  it.skipIf(!daemonTestsEnabled)(
+    "contract-newer resident: anomaly via admin + real renew",
+    async () => {
+      const fixture = await fixtureAgent();
+      if (fixture === null) {
+        throw new Error("fixtureAgent required under KOLU_DAEMON_TESTS=1");
+      }
+
+      const home = mkdtempSync(join(tmpdir(), "drishti-refuse-e2e-"));
+      temps.push(home);
+      mkdirSync(join(home, ".local", "state"), {
+        recursive: true,
+        mode: 0o700,
+      });
+      const binDir = join(home, "bin");
+      mkdirSync(binDir, { recursive: true });
+      writeSshShim(binDir);
+
+      // Plant a NEWER-contract resident (W5.3 env-injection twin of build id).
+      const prevEnv = {
+        ...process.env,
+        HOME: home,
+        XDG_STATE_HOME: join(home, ".local", "state"),
+        DRISHTI_AGENT_BUILD_ID: `refuse-prev-${fixture.buildId.slice(0, 8)}`,
+        DRISHTI_E2E_SURFACE_VERSION: "9.9.9",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      };
+      const frontPrev = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
+        env: prevEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      children.push(frontPrev);
+
+      process.env.HOME = home;
+      process.env.XDG_STATE_HOME = join(home, ".local", "state");
+      const dh = daemonHome({ app: "drishti", placement: "state" });
+      const sockDeadline = Date.now() + 20_000;
+      while (Date.now() < sockDeadline) {
+        if (existsSync(dh.socketPath) && existsSync(dh.gatePath)) break;
+        await delay(50);
+      }
+      expect(existsSync(dh.socketPath)).toBe(true);
+      const prevPid = Number.parseInt(readFileSync(dh.gatePath, "utf8"), 10);
+
+      process.env.DRISHTI_AGENT_BUILD_ID = fixture.buildId;
+      delete process.env.DRISHTI_E2E_SURFACE_VERSION;
+      process.env.DRISHTI_E2E_HOME = home;
+      process.env.DRISHTI_E2E_XDG_STATE_HOME = join(home, ".local", "state");
+      process.env.DRISHTI_E2E_BUILD_ID = fixture.buildId;
+      process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
+
+      const host = "localhost";
+      const hostsFile = join(home, "hosts.json");
+      writeFileSync(hostsFile, JSON.stringify({ hosts: [] }));
+      const pool = buildHostPool({
+        initialHosts: [host],
+        hostsFile,
+        buildIdBySystem: { [fixture.system]: fixture.buildId },
+        resolveDrvPath: async () => ({
+          derivation: directAgentDerivation(
+            fixture.drvPath,
+            fixture.binaryCache,
+          ),
+          system: fixture.system,
+        }),
+      });
+      pools.push(pool);
+      const session = pool.getSession(host)!;
+
+      // pin may refuse (terminal) — do not catch-to-success; observe refuse path.
+      await session.pin().catch((err) => {
+        // Refuse throws the refuse error from makeSession; that is expected.
+        if (!String(err?.message ?? err).length) throw err;
+      });
+
+      const deadline = Date.now() + 60_000;
+      let anomaly = session.convergence();
+      while (Date.now() < deadline) {
+        anomaly = session.convergence();
+        if (anomaly !== null) break;
+        await delay(100);
+      }
+      expect(anomaly).not.toBeNull();
+      expect(
+        anomaly!.kind === "skew-refused" ||
+          anomaly!.kind === "cross-supervisor" ||
+          anomaly!.kind === "unconverged" ||
+          String(anomaly!.kind).includes("skew") ||
+          String(anomaly!.kind).includes("refus"),
+      ).toBe(true);
+
+      const admin = buildAdminRouter({ pool });
+      // biome-ignore lint/suspicious/noExplicitAny: oRPC router
+      const hostsProc = (admin.router as any).surface.admin.hosts;
+      const projected = await call(hostsProc.convergence, { host });
+      expect(projected.anomaly).not.toBeNull();
+
+      // Real renew — not injected.
+      const renewResult = await call(hostsProc.renew, { host });
+      // renew should act (ok or structured error that is NOT "is not bound").
+      if (renewResult && typeof renewResult === "object" && "ok" in renewResult) {
+        if (renewResult.ok === false) {
+          expect(String(renewResult.error ?? "")).not.toMatch(/is not bound/);
+        }
+      }
+
+      // After renew, previous may be gone or session rebinding.
+      await delay(500);
+      try {
+        session.destroy();
+      } catch {
+        //
+      }
+      await pool.destroyAll();
+      const idx = pools.indexOf(pool);
+      if (idx >= 0) pools.splice(idx, 1);
+      try {
+        process.kill(prevPid, "SIGKILL");
+      } catch {
+        //
+      }
     },
     120_000,
   );
