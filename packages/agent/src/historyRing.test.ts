@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { MetricSample } from "drishti-common";
@@ -123,5 +130,40 @@ describe("loadHistoryRing / saveHistoryRing", () => {
       n.includes(".corrupt-"),
     );
     expect(siblings.length).toBe(1);
+  });
+
+  it("returns unreadable (not corrupt) for an unreadable file and leaves it alone", () => {
+    // F13: never-judged bytes must not be move-aside'd or later overwritten
+    // by a resumed flush. chmod 0 makes the open fail with EACCES.
+    const dir = tempDir();
+    dirs.push(dir);
+    const path = join(dir, "history.ring.json");
+    const planted = JSON.stringify({
+      v: HISTORY_RING_VERSION,
+      samples: [sample(99)],
+    });
+    writeFileSync(path, planted, "utf8");
+    chmodSync(path, 0o000);
+
+    try {
+      const loaded = loadHistoryRing(path);
+      expect(loaded).toEqual({
+        kind: "unavailable",
+        reason: "unreadable",
+        samples: [],
+      });
+      // File still at the original path (no .corrupt-* sibling).
+      chmodSync(path, 0o600);
+      expect(readFileSync(path, "utf8")).toBe(planted);
+      expect(
+        readdirSync(dir).filter((n) => n.includes(".corrupt-")).length,
+      ).toBe(0);
+    } finally {
+      try {
+        chmodSync(path, 0o600);
+      } catch {
+        // best-effort restore so afterEach can rm
+      }
+    }
   });
 });

@@ -61,10 +61,10 @@ export function loadHistoryRing(path: string): HistoryRingLoad {
       return { kind: "ok", samples: [] };
     }
     // Unreadable (EACCES, transient EIO/EMFILE, …): typed unavailable without
-    // move-aside — we never judged the bytes, so renaming would orphan a
-    // possibly healthy ring on a transient fd blip.
+    // move-aside — we never judged the bytes. Caller must NOT resume
+    // persistence over the still-present file (F13: that would clobber it).
     log(`read failed (${code ?? "unknown"}): ${(err as Error).message}`);
-    return unavailable("corrupt");
+    return unavailable("unreadable");
   }
 
   let parsed: unknown;

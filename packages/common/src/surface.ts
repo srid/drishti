@@ -353,6 +353,8 @@ export const MetricSampleSchema = z.object({
 export const MetricHistoryUnavailableReasons = [
   "unknown-version",
   "corrupt",
+  /** Bytes never judged (EACCES/EIO/…); file left in place — do not overwrite. */
+  "unreadable",
 ] as const;
 export type MetricHistoryUnavailableReason =
   (typeof MetricHistoryUnavailableReasons)[number];

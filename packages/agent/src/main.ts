@@ -224,16 +224,23 @@ export async function buildAgentRuntime(
       historyView = loaded;
     } else {
       bootIncident = { kind: "unavailable", reason: loaded.reason };
-      log(
-        `history ring unavailable (${loaded.reason}) at ${opts.ringPath} — reporting once, then ${loaded.reason === "unknown-version" ? "sampling in-memory only (persist withheld)" : "resuming a fresh ring (corrupt file already moved aside)"}`,
-      );
-      if (loaded.reason === "unknown-version") {
-        // Leave the on-disk future-version file alone; sample in memory only.
+      if (
+        loaded.reason === "unknown-version" ||
+        loaded.reason === "unreadable"
+      ) {
+        // File still present and never judged (or future-version) — sample
+        // in memory only; never flush over it (F13 / F4).
         persistWithheld = true;
         historyView = { kind: "ok", samples: [] };
+        log(
+          `history ring unavailable (${loaded.reason}) at ${opts.ringPath} — reporting once, then sampling in-memory only (persist withheld; file left alone)`,
+        );
       } else {
-        // Corrupt: file was moved aside — free path, start a fresh ok ring.
+        // Corrupt garbage: file was moved aside — free path, start a fresh ok ring.
         historyView = { kind: "ok", samples: [] };
+        log(
+          `history ring unavailable (corrupt) at ${opts.ringPath} — reporting once, then resuming a fresh ring (corrupt file already moved aside)`,
+        );
       }
     }
   }
