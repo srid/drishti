@@ -64,7 +64,15 @@ stdenv.mkDerivation {
   # below) needs to resolve its transitive deps (@kolu/surface, @orpc/*,
   # zod) from the workspace-root node_modules, not from an isolated
   # per-package tree.
-  bunInstallFlags = [ "--linker=hoisted" ];
+  #
+  # --production: omit packages/app's test-only devDependencies
+  # (@solidjs/testing-library, happy-dom, …). Those pull entities@7 while
+  # parse5 (via babel-preset-solid) wants entities@6, and bun's hoisted
+  # linker then nests `parse5/node_modules/entities` — which fails on
+  # aarch64-darwin as "AccessDenied: Failed to open node_modules folder
+  # for entities". Production runtime/build never needs those packages;
+  # local `bun install` / `just test` still gets them from bunfig + lock.
+  bunInstallFlags = [ "--linker=hoisted" "--production" ];
 
   # The fixupPhase walks node_modules and patches shebangs / ELF. For a
   # Bun app this is pure overhead — Bun runs the source directly, no
