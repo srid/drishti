@@ -40,7 +40,11 @@ function drishtiArtifacts(home: {
       pathShape: `${pathShapeRoot}/${HISTORY_RING_FILE}`,
       role: "session",
       coveredByTest: "historyRing.test.ts",
+      // versionField non-null requires a declared version+1 reader outcome
+      // (UW2 final SharedArtifact). loadHistoryRing returns kind "unavailable"
+      // for unknown-v (reason "unknown-version"); that kind is the disposition.
       versionField: "v",
+      versionDisposition: "unavailable",
       diskBasenames: [HISTORY_RING_FILE],
       diskBasenamePatterns: [/^history\.ring\.json\.corrupt-\d+$/],
       why: "metric history survives parent deploys and reconnects; typed unavailable on corrupt/unknown-version",
@@ -67,11 +71,13 @@ describe("drishti shared-artifact registry", () => {
       const ring = registry.find((a) => a.id === "history-ring");
       if (ring === undefined) throw new Error("history-ring missing");
       expect(ring.versionField).toBe("v");
+      if (ring.versionField === null) throw new Error("history-ring must be versioned");
+      expect(ring.versionDisposition).toBe("unavailable");
       expect(ring.coveredByTest).toBe("historyRing.test.ts");
       expect(HISTORY_RING_VERSION).toBe(1);
 
-      // UW2 tightened versionField coverage: naming a suite is not enough —
-      // execute a real v+1 plant → readback → typed disposition.
+      // UW2 final: versionField requires executed plant → readback → observe
+      // that RETURNS the declared versionDisposition kind (not void).
       const ringPath = home.file(HISTORY_RING_FILE);
       const newerVersion = HISTORY_RING_VERSION + 1;
       const versionProof = await executeVersionDispositionProof({
@@ -94,12 +100,17 @@ describe("drishti shared-artifact registry", () => {
         },
         observeDisposition: () => {
           const loaded = loadHistoryRing(ringPath);
+          // Must RETURN the disposition object whose `.kind` matches
+          // versionDisposition ("unavailable"); reason pins unknown-version.
           expect(loaded.kind).toBe("unavailable");
           if (loaded.kind === "unavailable") {
             expect(loaded.reason).toBe("unknown-version");
           }
           // Unknown version leaves the file alone.
-          expect(readFileSync(ringPath, "utf8")).toContain(`"v":${newerVersion}`);
+          expect(readFileSync(ringPath, "utf8")).toContain(
+            `"v":${newerVersion}`,
+          );
+          return loaded;
         },
       });
 
