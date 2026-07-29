@@ -77,8 +77,18 @@ typecheck: install
 # no-ops — so a reactive client test (e.g. processesStream.test.ts) would pass
 # vacuously. The flag is safe for the node-side agent/server tests; their
 # resolution is unchanged.
+#
+# Heavy pool/window e2e legs key on KOLU_DAEMON_TESTS (kolu daemon-test-gate);
+# this default leaves them OFF so GHA/shared runners skip them. Use
+# `just test-daemon` (or `ci::test-daemon` on odu linux) for the full suite.
 test *args: install
     {{ nix_shell }} bun test --conditions=browser {{ args }}
+
+# Full suite including daemon-gated e2e (KOLU_DAEMON_TESTS=1). Same env kolu's
+# `describeDaemon` / odu daemon lane uses — no new knob. Forks real agents and
+# may realise agent .drvs; CI/odu linux only (not GHA default `just test`).
+test-daemon *args: install
+    KOLU_DAEMON_TESTS=1 {{ nix_shell }} bun test --conditions=browser {{ args }}
 
 # Format all *.nix files (and any future biome target — drishti doesn't
 # bring biome in by default; add when JS formatting becomes a chore).

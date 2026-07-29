@@ -11,6 +11,14 @@
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
+
+/**
+ * Real-daemon / pool e2e legs key on kolu's existing spawn-guard env
+ * (`KOLU_DAEMON_TESTS=1`) — same gate as `@kolu/daemon-test-gate`'s
+ * `describeDaemon`. Default OFF so GHA/shared runners skip the cold-drv
+ * pool leg; odu linux sets the env via `just test-daemon` / `ci::test-daemon`.
+ */
+const daemonTestsEnabled = process.env.KOLU_DAEMON_TESTS === "1";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import {
   chmodSync,
@@ -272,7 +280,12 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
     expect(p.onContractSkew).toEqual({ kind: "drain-newer-else-refuse" });
   });
 
-  it("live-sample drain through REAL buildHostPool + sshConnector path", async () => {
+  // Heavy pool e2e: warm/cold agent .drv + real buildHostPool dial. Gated so
+  // GHA macos (90s default, cold realisation) skips with a named skip; odu
+  // linux runs under KOLU_DAEMON_TESTS=1 (ci::test-daemon).
+  it.skipIf(!daemonTestsEnabled)(
+    "live-sample drain through REAL buildHostPool + sshConnector path (KOLU_DAEMON_TESTS)",
+    async () => {
     const fixture = await fixtureAgent();
     if (fixture === null) {
       // nix eval unavailable — skip hard assembly (CI always has nix).
@@ -381,5 +394,7 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
       throw new Error("previous daemon died before pool construction");
     }
     void dh;
-  }, 90_000);
+  },
+    90_000,
+  );
 });

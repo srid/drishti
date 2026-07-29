@@ -16,11 +16,13 @@ set working-directory := '..'
 nix_shell := if env('IN_NIX_SHELL', '') != '' { '' } else { 'nix develop --accept-flake-config -c' }
 
 # Pipeline root: every recipe listed here becomes a (recipe × platform) node.
+# `test-daemon` is linux-only (see recipe tags below): GHA macos runs bare
+# `just test` with KOLU_DAEMON_TESTS unset so heavy pool e2e is a named skip.
 [linux]
 [macos]
 [parallel]
 [metadata("ci")]
-default: nix typecheck fmt-check bun-nix-fresh home-manager drv-stability agent-boots
+default: nix typecheck fmt-check bun-nix-fresh home-manager drv-stability agent-boots test-daemon
 
 # Single per-platform `bun install`. Funnel every bun consumer through this
 # node so concurrent `bun install` runs against the same workspace don't race.
@@ -123,6 +125,13 @@ agent-boots:
 # argument and recurses, so `.` covers every *.nix at any depth.
 fmt-check:
     {{ nix_shell }} nixpkgs-fmt --check .
+
+# Full bun suite with kolu's daemon spawn-guard env ON (KOLU_DAEMON_TESTS=1).
+# Linux odu only: GHA/macos keeps bare `just test` (gate OFF → named skip of
+# the heavy pool e2e). Same env as kolu `describeDaemon` / `just test-daemon`.
+[linux]
+test-daemon: install
+    KOLU_DAEMON_TESTS=1 {{ nix_shell }} bun test --conditions=browser
 
 # bun.nix freshness — regenerate from bun.lock into a tmpdir and diff
 # against the committed file. Fails the pipeline if bun.lock has moved
