@@ -326,11 +326,15 @@ export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
 // so `@kolu/surface` serves ONE coalesced snapshot-then-delta stream for it (SR5).
 // The hand-rolled `ProcessesSnapshotMessage` parallel stream is gone.
 
+/** Agent surface contract version — control-core hello `surfaceVersion` and
+ *  parent convergence policy `baked.contractVersion`. Single source for agent
+ *  main, parent hostRegistry, and mixed-build / policy tests. */
+export const AGENT_SURFACE_VERSION = "1.0";
+
 /** One point in a host's metric history — CPU% and memory% at a wall-clock
- *  instant. Captured by the **parent** on each agent poll tick (the parent
- *  is the only tier that observes every tick regardless of which browser
- *  tabs are open) and retained in an in-memory ring for the life of the
- *  parent process. */
+ *  instant. Captured by the **agent daemon** on each poll tick and retained
+ *  in a durable on-disk ring (`history.ring.json` under the daemon home) so
+ *  the ring survives parent deploys and reconnects. */
 export const MetricSampleSchema = z.object({
   /** Wall-clock capture time, epoch ms. */
   t: z.number(),
@@ -344,12 +348,24 @@ export const MetricSampleSchema = z.object({
   disk: z.number(),
 });
 
-/** Snapshot-then-delta `Stream<>` for the per-host metric-history ring —
- *  the same bulk-friendly shape as `processesSnapshot`. A new subscriber
- *  (a freshly-loaded browser, or a tab just switched to this host) gets the
- *  parent's entire ring in one `snapshot` frame, then one `delta` per poll
- *  tick. This is why history survives reloads and tab switches: the state
- *  lives in the parent, and every subscriber is re-seeded from it. */
+/** Typed reasons a metric-history ring cannot be served. Single source for
+ *  the wire schema, HistoryView, and historyRing load dispositions. */
+export const MetricHistoryUnavailableReasons = [
+  "unknown-version",
+  "corrupt",
+  /** Bytes never judged (EACCES/EIO/…); file left in place — do not overwrite. */
+  "unreadable",
+] as const;
+export type MetricHistoryUnavailableReason =
+  (typeof MetricHistoryUnavailableReasons)[number];
+
+/** Snapshot-then-delta `Stream<>` for the per-host metric-history ring.
+ *  A new subscriber gets the agent daemon's entire ring in one `snapshot`
+ *  frame, then one `delta` per poll tick. The ring lives in the agent
+ *  daemon (survives parent deploys); the parent re-serves it to browsers.
+ *
+ *  `unavailable` is a TYPED standing disposition — never a silently empty
+ *  chart. `degraded` means samples still serve but durability was lost. */
 export const MetricHistoryMessage = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("snapshot"),
@@ -358,6 +374,15 @@ export const MetricHistoryMessage = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("delta"),
     sample: MetricSampleSchema,
+  }),
+  z.object({
+    kind: z.literal("unavailable"),
+    reason: z.enum(MetricHistoryUnavailableReasons),
+  }),
+  z.object({
+    kind: z.literal("degraded"),
+    reason: z.literal("persist-failed"),
+    samples: z.array(MetricSampleSchema),
   }),
 ]);
 
@@ -463,6 +488,15 @@ export const surface = defineSurface({
       },
     },
   },
+  streams: {
+    /** Durable metric-history ring — owned by the agent daemon, re-served by
+     *  the parent. Snapshot-then-delta (or a typed `unavailable` disposition
+     *  when the on-disk ring is corrupt / unknown-version). */
+    metricHistory: {
+      inputSchema: z.object({}),
+      outputSchema: MetricHistoryMessage,
+    },
+  },
 });
 
 type SF = SurfaceTypes<typeof surface.spec>;
@@ -481,7 +515,6 @@ export type SystemInfo = SF["cells"]["system"]["Value"];
 // app-only `drishti-common/browser` subpath (./browser.ts), NOT here — see the
 // agent-safety note near the top of this file.
 export type MetricSample = z.infer<typeof MetricSampleSchema>;
-// `metricHistory` is a PARENT-LOCAL member now (composed onto the mirrored agent
-// surface via `extendSurface`), so its message type comes from the schema, not the
-// shared `SF` surface it left.
 export type MetricHistoryMsg = z.infer<typeof MetricHistoryMessage>;
+// Stream message type is also available off the surface's typed streams map
+// once metricHistory is a first-class surface member (UW3 — agent owns the ring).

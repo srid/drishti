@@ -9,7 +9,7 @@
 # Client bundling: re-uses `packages/app/src/server/build.ts` — the same
 # TS code path the dev server invokes when DRISHTI_DIST_DIR is unset.
 # One bundle pipeline; two callers.
-{ stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-remote, kolu-surface-map, kolu-shell-quote, kolu-log, kolu-surface-app, kolu-solid-pwa-install, osfacts-client, surfaceAppCommit ? "dev" }:
+{ stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-remote, kolu-surface-map, kolu-shell-quote, kolu-log, kolu-surface-app, kolu-solid-pwa-install, kolu-surface-daemon, kolu-surface-daemon-supervisor, osfacts-client, surfaceAppCommit ? "dev" }:
 # `@tailwindcss/cli` transitively dlopen()s `@parcel/watcher`'s native
 # binding, which requires `libstdc++.so.6` at runtime even when we don't
 # use --watch. Expose stdenv's libstdc++ via LD_LIBRARY_PATH during the
@@ -64,7 +64,15 @@ stdenv.mkDerivation {
   # below) needs to resolve its transitive deps (@kolu/surface, @orpc/*,
   # zod) from the workspace-root node_modules, not from an isolated
   # per-package tree.
-  bunInstallFlags = [ "--linker=hoisted" ];
+  #
+  # --production: omit packages/app's test-only devDependencies
+  # (@solidjs/testing-library, happy-dom, …). Those pull entities@7 while
+  # parse5 (via babel-preset-solid) wants entities@6, and bun's hoisted
+  # linker then nests `parse5/node_modules/entities` — which fails on
+  # aarch64-darwin as "AccessDenied: Failed to open node_modules folder
+  # for entities". Production runtime/build never needs those packages;
+  # local `bun install` / `just test` still gets them from bunfig + lock.
+  bunInstallFlags = [ "--linker=hoisted" "--production" ];
 
   # The fixupPhase walks node_modules and patches shebangs / ELF. For a
   # Bun app this is pure overhead — Bun runs the source directly, no
@@ -87,6 +95,8 @@ stdenv.mkDerivation {
       ${kolu-log} @kolu/log \
       ${kolu-surface-app} @kolu/surface-app \
       ${kolu-solid-pwa-install} @kolu/solid-pwa-install \
+      ${kolu-surface-daemon} @kolu/surface-daemon \
+      ${kolu-surface-daemon-supervisor} @kolu/surface-daemon-supervisor \
       ${osfacts-client} osfacts-client
   '';
 

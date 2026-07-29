@@ -29,7 +29,8 @@ describe("startWakeMonitor", () => {
 
     // The process was "suspended" ~2 minutes: the next tick sees a huge gap.
     clock.advance(120_000);
-    await Bun.sleep(60); // let the probe timer fire at least once
+    // Under full-suite load a 60ms wait can miss the first 20ms probe tick.
+    await Bun.sleep(200);
 
     expect(gaps.length).toBeGreaterThanOrEqual(1);
     expect(gaps[0]).toBeGreaterThanOrEqual(120_000);

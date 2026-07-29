@@ -16,11 +16,13 @@ set working-directory := '..'
 nix_shell := if env('IN_NIX_SHELL', '') != '' { '' } else { 'nix develop --accept-flake-config -c' }
 
 # Pipeline root: every recipe listed here becomes a (recipe × platform) node.
+# `test-daemon` is linux-only (see recipe tags below): GHA macos runs bare
+# `just test` with KOLU_DAEMON_TESTS unset so heavy pool e2e is a named skip.
 [linux]
 [macos]
 [parallel]
 [metadata("ci")]
-default: nix typecheck fmt-check bun-nix-fresh home-manager drv-stability agent-boots
+default: nix typecheck fmt-check bun-nix-fresh flake-check home-manager drv-stability agent-boots test-daemon
 
 # Single per-platform `bun install`. Funnel every bun consumer through this
 # node so concurrent `bun install` runs against the same workspace don't race.
@@ -37,6 +39,8 @@ install:
       "$DRISHTI_KOLU_LOG" @kolu/log \
       "$DRISHTI_KOLU_SURFACE_APP" @kolu/surface-app \
       "$DRISHTI_KOLU_SOLID_PWA_INSTALL" @kolu/solid-pwa-install \
+      "$DRISHTI_KOLU_SURFACE_DAEMON" @kolu/surface-daemon \
+      "$DRISHTI_KOLU_SURFACE_DAEMON_SUPERVISOR" @kolu/surface-daemon-supervisor \
       "$DRISHTI_OSFACTS_CLIENT" osfacts-client'
 
 # Pre-populate the nix store with crates.io tarballs that nixpkgs' fetchurl
@@ -63,33 +67,113 @@ typecheck: install
 
 # Acceptance guard for issue #38: a client/server-only edit must NOT change the
 # agent's .drv hash — otherwise every remote re-copies + rebuilds the agent on
-# the next reconnect. We snapshot drishti-agent.drvPath, replay a client-only
-# edit in a throwaway git worktree (so this host's tree is never touched), and
-# assert the drvPath is byte-identical. Pinned to x86_64-linux's drvPath: pure
-# cross-arch eval makes the evaluating platform irrelevant, so one check on any
-# host covers the whole agentDrvBySystem map. `--no-eval-cache` so a warm eval
-# cache can't mask a regression.
+# Fleet BUILD_ID stability (W2.5 / U5.1 / U6.1). Identity is the INNER wrapper.
+# Probes (throwaway worktrees; host tree untouched); full map for freeze probes:
+#   (a) client .ts edit
+#   (b) REAL app-only devDependency + lock + bun.nix regen
+#   (c) root package.json only (manifest noise — not an agent input)
+#   (d) app-only script edit (scripts/ not in agent fileset except hydrate)
+#   (e) agent-touching source edit → BUILD_ID rotates
 drv-stability:
     #!/usr/bin/env bash
     set -euo pipefail
-    attr='packages.x86_64-linux.drishti-agent.drvPath'
-    base=$(nix eval --raw --no-eval-cache ".#$attr")
-    tmp=$(mktemp -d)
-    wt="$tmp/wt"
-    trap 'git worktree remove --force "$wt" 2>/dev/null || true; rm -rf "$tmp"' EXIT
-    git worktree add -q --detach "$wt" HEAD
-    printf '\n// drv-stability probe — client edit must not churn the agent\n' \
-      >> "$wt/packages/app/src/client/theme.ts"
-    git -C "$wt" -c user.email=ci@drishti -c user.name=ci commit -qam 'drv-stability probe'
-    after=$(nix eval --raw --no-eval-cache "$wt#$attr")
-    if [ "$base" = "$after" ]; then
-      echo "drv-stability: PASS — agent .drv unchanged across a client edit ($base)"
-    else
-      echo "drv-stability: FAIL — a client edit churned the agent .drv"
-      echo "  before: $base"
-      echo "  after:  $after"
+    # Shebang recipes on odu may lack bun on PATH. Re-enter the flake
+    # devShell once (outer tree only — never nest nix develop in a worktree).
+    if [ -z "${IN_NIX_SHELL:-}" ] && ! command -v bun >/dev/null 2>&1; then
+      exec nix develop --accept-flake-config -c bash "$0" "$@"
+    fi
+    extract_id() {
+      sed -n 's/.*"x86_64-linux"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+    }
+    base_map=$(nix eval --raw --no-eval-cache '.#agentBuildIdsJson')
+    base=$(printf '%s' "$base_map" | extract_id)
+    if [ -z "$base" ]; then
+      echo "drv-stability: FAIL — empty x86_64-linux BUILD_ID from agentBuildIdsJson"
       exit 1
     fi
+    echo "drv-stability: base BUILD_ID map=$base_map"
+
+    run_probe() {
+      local name="$1" expect_change="$2" # 0=unchanged, 1=rotated (x86 only)
+      local mutator="$3"
+      local compare_full_map="${4:-0}"
+      local tmp wt after after_map
+      tmp=$(mktemp -d)
+      wt="$tmp/wt"
+      git worktree add -q --detach "$wt" HEAD
+      WT="$wt" bash -c "$mutator"
+      git -C "$wt" -c user.email=ci@drishti -c user.name=ci add -A
+      git -C "$wt" -c user.email=ci@drishti -c user.name=ci \
+        commit -qm "drv-stability probe: $name" || true
+      after_map=$(nix eval --raw --no-eval-cache "$wt#agentBuildIdsJson")
+      after=$(printf '%s' "$after_map" | extract_id)
+      git worktree remove --force "$wt" 2>/dev/null || true
+      rm -rf "$tmp"
+      if [ "$expect_change" = "0" ]; then
+        if [ "$compare_full_map" = "1" ]; then
+          if [ "$base_map" = "$after_map" ]; then
+            echo "drv-stability: PASS ($name) — all three BUILD_IDs byte-identical"
+            echo "  map: $base_map"
+          else
+            echo "drv-stability: FAIL ($name) — BUILD_ID map rotated (must stay put)"
+            echo "  before: $base_map"
+            echo "  after:  $after_map"
+            exit 1
+          fi
+        elif [ "$base" = "$after" ]; then
+          echo "drv-stability: PASS ($name) — BUILD_ID unchanged ($base)"
+        else
+          echo "drv-stability: FAIL ($name) — BUILD_ID rotated (must stay put)"
+          echo "  before: $base"
+          echo "  after:  $after"
+          exit 1
+        fi
+      else
+        if [ "$base" != "$after" ]; then
+          echo "drv-stability: PASS ($name) — BUILD_ID rotated as expected"
+          echo "  before: $base"
+          echo "  after:  $after"
+        else
+          echo "drv-stability: FAIL ($name) — BUILD_ID stayed put (must rotate on agent touch)"
+          echo "  id: $base"
+          exit 1
+        fi
+      fi
+    }
+
+    # (a) client-only source edit
+    run_probe "client-ts" 0 \
+      'printf "\n// drv-stability probe — client edit must not churn agent BUILD_ID\n" >> "$WT/packages/app/src/client/theme.ts"' \
+      1
+
+    # (b) REAL app-only devDependency + root lock/bun.nix regen (bun from outer shell)
+    run_probe "app-only-devDep" 0 \
+      'set -euo pipefail
+       cd "$WT"
+       bun add -d left-pad@1.3.0 --cwd packages/app
+       nix run .#bun2nix -- -l bun.lock -o bun.nix
+       nixpkgs-fmt bun.nix >/dev/null
+       git diff --exit-code packages/agent/agent.lock packages/agent/agent.bun.nix packages/agent/agent.package.json
+      ' 1
+
+    # (c) root package.json only (U6.1 — not an agent input)
+    run_probe "root-manifest-only" 0 \
+      'printf "\n  , \"//drv-stability\": \"root package.json only\"\n" >> "$WT/package.json"' \
+      1
+
+    # (d) app-only script (U6.1 — scripts/ except hydrate is not an agent input)
+    run_probe "app-only-script" 0 \
+      'printf "\n// drv-stability probe — app-only script must not churn agent BUILD_ID\n" >> "$WT/scripts/gen-pwa-icons.ts"' \
+      1
+
+    # (e) agent-touching edit must rotate
+    run_probe "agent-touch" 1 \
+      'printf "\n// drv-stability probe — agent touch must rotate BUILD_ID\n" >> "$WT/packages/agent/src/main.ts"'
+
+# Flake schema check — packages.* must be derivations (U4.2). Catches raw
+# strings under packages.<system> that GHA build alone misses.
+flake-check:
+    {{ nix_shell }} nix flake check --no-build --show-trace
 
 # Boot the BUILT agent to prove its runtime module graph resolves — the guard
 # this pipeline lacked. `typecheck` resolves `@kolu/*` from the dev node_modules
@@ -105,19 +189,59 @@ agent-boots:
     #!/usr/bin/env bash
     set -euo pipefail
     nix build .#drishti-agent
-    out=$(./result/bin/drishti-agent 2>&1 || true)
-    if printf '%s' "$out" | grep -q "drishti-agent — exposes"; then
+    # UW3: bare invocation is the durable daemon (hangs waiting for
+    # connections). --help loads the full module graph and prints usage,
+    # proving runtime resolution without starting the daemon.
+    out=$(./result/bin/drishti-agent --help 2>&1 || true)
+    if printf '%s' "$out" | grep -q "drishti-agent —"; then
       echo "agent-boots: PASS — the built agent's module graph resolves at runtime"
     else
       echo "agent-boots: FAIL — the built agent did not boot (runtime module error?):"
       printf '%s\n' "$out"
       exit 1
     fi
+    # Joint invariant (W2.5 outer stamp): non-empty BUILD_ID ⇒ non-empty COMMIT_HASH.
+    # MUTATION: drop --set DRISHTI_AGENT_COMMIT_HASH from the outer agent wrapper ⇒ red.
+    # makeWrapper writes env into the launcher script — probe it directly.
+    wrap=./result/bin/drishti-agent
+    if ! grep -q 'DRISHTI_AGENT_BUILD_ID' "$wrap"; then
+      echo "agent-boots: FAIL — outer wrapper missing DRISHTI_AGENT_BUILD_ID"
+      exit 1
+    fi
+    if ! grep -q 'DRISHTI_AGENT_COMMIT_HASH' "$wrap"; then
+      echo "agent-boots: FAIL — outer wrapper missing DRISHTI_AGENT_COMMIT_HASH (joint invariant)"
+      exit 1
+    fi
+    build_id=$(grep -oE 'DRISHTI_AGENT_BUILD_ID=[^[:space:]"]+' "$wrap" | head -1 | cut -d= -f2- | tr -d \"\')
+    commit=$(grep -oE 'DRISHTI_AGENT_COMMIT_HASH=[^[:space:]"]+' "$wrap" | head -1 | cut -d= -f2- | tr -d \"\')
+    if [ -n "$build_id" ] && [ -z "$commit" ]; then
+      echo "agent-boots: FAIL — joint invariant: non-empty BUILD_ID requires non-empty COMMIT_HASH"
+      echo "  BUILD_ID=$build_id COMMIT_HASH=<empty>"
+      exit 1
+    fi
+    echo "agent-boots: PASS — joint identity stamp present (BUILD_ID + COMMIT_HASH)"
 
 # Check formatting without modifying (nixpkgs-fmt). Accepts a directory
 # argument and recurses, so `.` covers every *.nix at any depth.
 fmt-check:
     {{ nix_shell }} nixpkgs-fmt --check .
+
+# Full bun suite with kolu's daemon spawn-guard env ON (KOLU_DAEMON_TESTS=1).
+# Declared on both platforms so `default` can depend on it (just rejects an
+# unknown dep on macos if the recipe is [linux]-only). Body is a no-op skip
+# off Linux; odu linux actually runs the suite. GHA uses bare `just test`
+# (gate OFF → named skip of the heavy pool e2e).
+[linux]
+[macos]
+test-daemon: install
+    # App-scoped Solid preload (must not live on root bunfig — agent BUILD_ID).
+    {{ nix_shell }} sh -c '\
+      if [ "$(uname -s)" = Linux ]; then \
+        KOLU_DAEMON_TESTS=1 bun test --conditions=browser \
+          --preload ./packages/app/src/client/test-setup.ts; \
+      else \
+        echo "test-daemon: skip on $(uname -s) — pool e2e is odu-linux / KOLU_DAEMON_TESTS"; \
+      fi'
 
 # bun.nix freshness — regenerate from bun.lock into a tmpdir and diff
 # against the committed file. Fails the pipeline if bun.lock has moved

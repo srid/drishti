@@ -50,7 +50,10 @@ import { appNameForHost } from "../client/title";
 import { buildAdminRouter } from "./admin-router";
 import { resolveDrvForHost } from "./archMap";
 import { buildClient } from "./build";
-import { buildHostPool } from "./hostRegistry";
+import {
+  buildHostPool,
+  type ProvisioningHostPoolOptions,
+} from "./hostRegistry";
 import { loadHosts, resolveHostsFile, saveHosts } from "./hostsStore";
 import { installStderrTimestamps, makeLogger } from "./log";
 import { startWakeMonitor } from "./wakeMonitor";
@@ -120,10 +123,37 @@ async function main(): Promise<void> {
   }
   log(`agent binary cache: ${binaryCache.substituters.join(", ")}`);
 
-  const resolveDrvPath: Parameters<typeof buildHostPool>[0]["resolveDrvPath"] = (
+  const resolveDrvPath: ProvisioningHostPoolOptions["resolveDrvPath"] = (
     host,
     context,
   ) => resolveDrvForHost(host, agentDrvBySystem, binaryCache, context);
+
+  // Per-system agent BUILD_IDs for multi-arch convergeAdmit (UW3).
+  // W2.6: DRVS map is already required above — the build-ids map is therefore
+  // also required (per-system). A single parent-arch DRISHTI_AGENT_BUILD_ID
+  // cannot satisfy the provisioned path. Off-nix (no DRVS) never reaches here.
+  const buildIdsJson = process.env.DRISHTI_AGENT_BUILD_IDS_JSON;
+  if (buildIdsJson === undefined || buildIdsJson === "") {
+    log(
+      "DRISHTI_AGENT_BUILD_IDS_JSON is required on the provisioned path (drv map is present) — a single DRISHTI_AGENT_BUILD_ID cannot cover multi-arch hosts. The monitor wrapper and `just dev` bake/export the per-system map.",
+    );
+    process.exit(1);
+  }
+  let buildIdBySystem: Record<string, string>;
+  try {
+    buildIdBySystem = drvMapSchema.parse(JSON.parse(buildIdsJson));
+  } catch (err) {
+    log(
+      `DRISHTI_AGENT_BUILD_IDS_JSON: invalid — ${(err as Error).message}`,
+    );
+    process.exit(1);
+  }
+  if (Object.keys(buildIdBySystem).length === 0) {
+    log(
+      "DRISHTI_AGENT_BUILD_IDS_JSON is empty — provisioned path requires at least one system → build id",
+    );
+    process.exit(1);
+  }
 
   const hostsFile = resolveHostsFile();
   const cliHosts = argv._.host;
@@ -157,6 +187,7 @@ async function main(): Promise<void> {
     initialHosts,
     resolveDrvPath,
     hostsFile,
+    buildIdBySystem,
   });
 
   const admin = buildAdminRouter({ pool });

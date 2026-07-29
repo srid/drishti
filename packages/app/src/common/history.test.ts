@@ -4,12 +4,14 @@ import {
   captureSample,
   CHART_MAX_POINTS,
   downsample,
+  foldHistoryView,
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
   isHistoryWindowKey,
   polylinePoints,
   pushSample,
   SPARKLINE_MAX_POINTS,
+  type HistoryView,
   WIDEST_HISTORY_WINDOW,
   windowMsFor,
   windowSlice,
@@ -184,5 +186,53 @@ describe("polylinePoints", () => {
 
   it("returns an empty string for no samples", () => {
     expect(polylinePoints([], "cpu", 100, 100)).toBe("");
+  });
+});
+
+describe("foldHistoryView standing unavailable + degraded (W2/W10)", () => {
+  it("keeps unavailable standing across deltas (never masquerades as ok)", () => {
+    const unavail: HistoryView = {
+      kind: "unavailable",
+      reason: "unknown-version",
+      samples: [],
+    };
+    const next = foldHistoryView(
+      unavail,
+      { kind: "delta", sample: sample(1, 50) },
+      HISTORY_RETENTION_MS,
+    );
+    expect(next).toEqual(unavail);
+  });
+
+  it("late snapshot after unavailable recovers to ok", () => {
+    const unavail: HistoryView = {
+      kind: "unavailable",
+      reason: "corrupt",
+      samples: [],
+    };
+    const next = foldHistoryView(
+      unavail,
+      { kind: "snapshot", samples: [sample(1)] },
+      HISTORY_RETENTION_MS,
+    );
+    expect(next).toEqual({ kind: "ok", samples: [sample(1)] });
+  });
+
+  it("persist-failed degraded keeps samples and stays degraded on delta", () => {
+    const deg: HistoryView = {
+      kind: "degraded",
+      reason: "persist-failed",
+      samples: [sample(1)],
+    };
+    const next = foldHistoryView(
+      deg,
+      { kind: "delta", sample: sample(2, 10) },
+      HISTORY_RETENTION_MS,
+    );
+    expect(next.kind).toBe("degraded");
+    if (next.kind === "degraded") {
+      expect(next.reason).toBe("persist-failed");
+      expect(next.samples.map((s) => s.t)).toEqual([1, 2]);
+    }
   });
 });

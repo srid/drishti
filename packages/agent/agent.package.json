@@ -1,0 +1,9 @@
+{
+  "name": "drishti-agent-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/agent", "packages/common"],
+  "overrides": {
+    "@babel/helper-module-imports": "^7.29.7"
+  }
+}

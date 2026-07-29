@@ -60,9 +60,10 @@ export const AlertsSchema = z.object({
   items: z.array(z.enum(METRIC_IDS)),
 });
 
-/** The empty alert set — the fold's seed and the cell's gate-closed default. A
- *  fresh process re-derives its alerts from fresh samples (the fold carries no
- *  durable state), so booting with "nothing raised" is the honest start. */
+/** The empty alert set — the fold's seed and the cell's gate-closed default.
+ *  The agent also restores a prior fold from `history.ring.json` on boot (W4)
+ *  so a drain→successor keeps raised alerts; absent that seed, booting with
+ *  "nothing raised" is the honest start. */
 export const NO_ALERTS: Alerts = { items: [] };
 
 /** Raise once a metric reaches this percentage (0-100). Exported so the client's

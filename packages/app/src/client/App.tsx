@@ -52,6 +52,7 @@ import {
   formatListenerAddress,
   type IfaceName,
   type MetricHistoryMsg,
+  type MetricHistoryUnavailableReason,
   type MetricSample,
   type NetInterface,
   type Pid,
@@ -66,6 +67,22 @@ import {
 } from "drishti-common/browser";
 import { reconcileRaiseTimes } from "./alertTiming";
 import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
+import {
+  applyConvergencePollError,
+  applyConvergencePollOk,
+  convergenceBannerVisible,
+} from "./convergenceProjection";
+import { DaemonDialog } from "./DaemonDialog";
+import { DaemonDialogGlyph, DaemonStatusChip } from "./DaemonStatusChip";
+import { chipFromDaemonStatus, chipGlanceVisible } from "./daemonStatusPresentation";
+import { HostCardGlance } from "./daemonHostGlance";
+import type { DaemonStatus } from "../common/daemonStatus";
+import {
+  createDaemonStatusStore,
+  DaemonStatusCtx,
+  startDaemonStatusPoll,
+  useDaemonStatusStore,
+} from "./daemonStatusStore";
 import {
   connectionOf,
   connectionPhaseOf,
@@ -141,13 +158,14 @@ import {
   CHART_MAX_POINTS,
   DEFAULT_HISTORY_WINDOW,
   downsample,
+  foldHistoryView,
   HISTORY_RETENTION_MS,
   HISTORY_WINDOWS,
+  type HistoryView,
   type HistoryWindowKey,
   isHistoryWindowKey,
   type MetricKey,
   polylinePoints,
-  pushSample,
   SPARKLINE_MAX_POINTS,
   WIDEST_HISTORY_WINDOW,
   windowMsFor,
@@ -266,10 +284,14 @@ function createPersistedSignal<T extends string>(
 function subscribeMetricHistory(host: string): {
   history: Accessor<MetricSample[]>;
   streamError: Accessor<Error | null>;
+  /** Typed agent-ring disposition — corrupt/unknown-version is never a silent empty chart. */
+  unavailable: Accessor<MetricHistoryUnavailableReason | null>;
 } {
   const ctl = new AbortController();
   onCleanup(() => ctl.abort());
-  const sub = createSubscription<MetricHistoryMsg, MetricSample[]>(
+  // ONE fold for snapshot/delta/unavailable — same HistoryView as agent + parent.
+  // Typed disposition lives on the view; no parallel disposition field.
+  const sub = createSubscription<MetricHistoryMsg, HistoryView>(
     () =>
       unenrolledStreamCall(
         hostStreams(host).metricHistory.unenrolled,
@@ -277,28 +299,35 @@ function subscribeMetricHistory(host: string): {
         { signal: ctl.signal },
       ),
     {
-      reduce: (prev, msg) =>
-        msg.kind === "snapshot"
-          ? msg.samples
-          : pushSample(prev, msg.sample, HISTORY_RETENTION_MS),
-      initial: [],
+      reduce: (prev, msg) => foldHistoryView(prev, msg, HISTORY_RETENTION_MS),
+      initial: { kind: "ok", samples: [] },
       signal: ctl.signal,
     },
   );
-  return { history: () => sub() ?? [], streamError: () => sub.error() ?? null };
+  return {
+    history: () => sub()?.samples ?? [],
+    streamError: () => sub.error() ?? null,
+    unavailable: () => {
+      const view = sub();
+      return view?.kind === "unavailable" ? view.reason : null;
+    },
+  };
 }
 
 // Overlay text for a sparkline with no drawable point yet — the one place that
-// distinguishes the two states an empty ring conflates: a feed that simply
-// hasn't produced its first sample ("collecting…") from one whose stream has
-// died ("unavailable"). Returns null once any sample exists, so the trace
+// distinguishes the three states an empty ring conflates: a feed that simply
+// hasn't produced its first sample ("collecting…"), a transport that died, or a
+// typed agent-ring disposition (corrupt / unknown-version) — both of the latter
+// render "unavailable". Returns null once any sample exists, so the trace
 // itself is what's shown.
 function sparklinePlaceholder(
   latest: MetricSample | null,
   error: Error | null,
+  unavailable: MetricHistoryUnavailableReason | null = null,
 ): string | null {
   if (latest !== null) return null;
-  return error ? "unavailable" : "collecting…";
+  if (error || unavailable !== null) return "unavailable";
+  return "collecting…";
 }
 
 // The metric series the history chart and fleet-card sparkline draw, in
@@ -771,6 +800,16 @@ function MultiHostApp() {
   // subscriptions warm; a tab genuinely left in the background drops them.
   const visible = createVisibilityGate(pageVisible, VISIBILITY_GRACE_MS);
 
+  // U2.2: single fleet-wide daemon status poll — TabChip / HostCard / HostView
+  // share this map (no second authority when a host is selected).
+  const daemonStore = createDaemonStatusStore();
+  startDaemonStatusPoll(daemonStore, hostList);
+  const dialogHost = () => daemonStore.dialogHost();
+  const dialogStatus = (): DaemonStatus | null => {
+    const h = dialogHost();
+    return h === null ? null : (daemonStore.byHost()[h] ?? null);
+  };
+
   return (
     // The app fills exactly one viewport (`h-dvh` + flex column) so the page
     // itself never scrolls — only the inner process list does, keeping the
@@ -779,6 +818,7 @@ function MultiHostApp() {
     // StatusFooter (plus the phone home-indicator inset it absorbs), so the
     // last table rows / fleet cards are never hidden under the bar. The
     // baseline is the shared --status-footer-height constant from styles.css.
+    <DaemonStatusCtx.Provider value={daemonStore}>
     <div class="flex h-dvh flex-col bg-gray-50 p-2 pb-[calc(var(--status-footer-height)+env(safe-area-inset-bottom))] font-mono text-sm dark:bg-gray-950">
       {/* Reactive head, kolu's app-shell pattern over `@solidjs/meta`: the tab
           title is the server's own `drishti@<host>` identity (read from the
@@ -787,6 +827,27 @@ function MultiHostApp() {
           address-bar tint disagreed with the page when the toggle overrode it. */}
       <Title>{appName() ?? APP_TITLE}</Title>
       <Meta name="theme-color" content={brandColorForTheme(theme())} />
+      <DaemonDialog
+        open={dialogHost() !== null}
+        onOpenChange={(open) => {
+          if (!open) daemonStore.setDialogHost(null);
+        }}
+        host={dialogHost() ?? ""}
+        status={dialogStatus()}
+        renewState={
+          dialogHost() === null
+            ? { kind: "idle" }
+            : (daemonStore.renewByHost()[dialogHost()!] ?? { kind: "idle" })
+        }
+        onRenew={() => {
+          const h = dialogHost();
+          if (h !== null) daemonStore.renew(h);
+        }}
+        onReconnect={() => {
+          const h = dialogHost();
+          if (h !== null) daemonStore.reconnect(h);
+        }}
+      />
       <div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
         <TabStrip
           hosts={hostList()}
@@ -844,6 +905,7 @@ function MultiHostApp() {
       </div>
       <StatusFooter health={adminHealth} />
     </div>
+    </DaemonStatusCtx.Provider>
   );
 }
 
@@ -918,30 +980,16 @@ function HostCard(props: { host: string; onSelect: () => void }) {
     return `/ · ${gb.used}/${gb.total} GB · ${disk().toFixed(0)}%`;
   });
 
+  // U3.4 / U4.3: production glance placement (HostCardGlance) owns the
+  // interactive structure — tests render that component, not a hand mirror.
   return (
-    <button
-      type="button"
-      onClick={props.onSelect}
-      class="flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3 text-left transition-colors hover:border-indigo-400 hover:bg-white dark:border-gray-800 dark:bg-gray-900/40 dark:hover:border-indigo-500 dark:hover:bg-gray-900"
+    <HostCardGlance
+      host={props.host}
+      connectionPhase={state()}
+      alertCount={alertCount()}
+      entryState={entryState}
+      onSelect={props.onSelect}
     >
-      <div class="flex items-center gap-2">
-        <HostDot state={entryState} class="shrink-0" />
-        <span class="truncate font-semibold" title={props.host}>
-          {props.host}
-        </span>
-        <Show when={entryState().kind === "connected" && alertCount() > 0}>
-          <span
-            class="shrink-0 rounded-full bg-red-500/15 px-1.5 text-xs font-semibold text-red-600 dark:text-red-400"
-            title={`${alertCount()} alert${alertCount() === 1 ? "" : "s"}`}
-          >
-            {alertCount()}
-          </span>
-        </Show>
-        <span class={`ml-auto shrink-0 text-xs ${STATE[state()].text}`}>
-          {state()}
-        </span>
-      </div>
-
       <Show
         when={entryState().kind === "connected"}
         fallback={
@@ -972,7 +1020,7 @@ function HostCard(props: { host: string; onSelect: () => void }) {
         </div>
         <HostCardSparkline host={props.host} />
       </Show>
-    </button>
+    </HostCardGlance>
   );
 }
 
@@ -985,7 +1033,9 @@ function HostCard(props: { host: string; onSelect: () => void }) {
 // budget so a 40px box is drawn from ~120 points, not the full 900-sample
 // ring.
 function HostCardSparkline(props: { host: string }) {
-  const { history, streamError } = subscribeMetricHistory(props.host);
+  const { history, streamError, unavailable } = subscribeMetricHistory(
+    props.host,
+  );
   const { latest, points } = projectHistory(
     history,
     () => windowMsFor(WIDEST_HISTORY_WINDOW),
@@ -1008,7 +1058,11 @@ function HostCardSparkline(props: { host: string }) {
       </div>
       <Sparkline
         points={points()}
-        placeholder={sparklinePlaceholder(latest(), streamError())}
+        placeholder={sparklinePlaceholder(
+          latest(),
+          streamError(),
+          unavailable(),
+        )}
         class="h-10"
       />
     </div>
@@ -1150,6 +1204,45 @@ function HostView(props: {
     void adminRpc()
       .hosts.reconnect({ host: props.host })
       .catch((err) => console.error(`reconnect ${props.host} failed`, err));
+  };
+
+  // W3.4 / U2.2: daemon status comes from the fleet store (single writer);
+  // local convergence mirror for the standing banner only.
+  const daemonStore = useDaemonStatusStore();
+  const daemonStatus = () => daemonStore.byHost()[props.host] ?? null;
+  const daemonPollError = () =>
+    daemonStore.pollErrorByHost()[props.host] ?? null;
+  const [convergence, setConvergence] = createSignal<{
+    kind: string;
+    detail: string;
+    error?: string;
+  } | null>(null);
+  const [convergencePollError, setConvergencePollError] = createSignal<
+    string | null
+  >(null);
+  // Mirror store status → banner convergence (no second poll).
+  createEffect(() => {
+    const s = daemonStatus();
+    if (s === null) return;
+    const next = applyConvergencePollOk(
+      { anomaly: convergence(), pollError: convergencePollError() },
+      s.anomaly,
+    );
+    setConvergence(next.anomaly);
+    setConvergencePollError(next.pollError);
+  });
+  createEffect(() => {
+    const err = daemonPollError();
+    if (err === null || err === undefined) return;
+    const next = applyConvergencePollError(
+      { anomaly: convergence(), pollError: convergencePollError() },
+      err,
+    );
+    setConvergence(next.anomaly);
+    setConvergencePollError(next.pollError);
+  });
+  const onRenew = () => {
+    daemonStore.renew(props.host);
   };
 
   // The live process table, consumed as a declarative value-bearing reactive
@@ -1349,7 +1442,9 @@ function HostView(props: {
 
   // metricHistory owns its own teardown via this view's reactive owner —
   // see `subscribeMetricHistory` / `projectHistory`.
-  const { history, streamError } = subscribeMetricHistory(props.host);
+  const { history, streamError, unavailable } = subscribeMetricHistory(
+    props.host,
+  );
   const { latest: latestSample, points } = projectHistory(
     history,
     windowMs,
@@ -1374,6 +1469,8 @@ function HostView(props: {
         phase={phase()}
         entryState={entryState}
         count={allPids().length}
+        daemonStatus={daemonStatus()}
+        onDaemonClick={() => daemonStore.setDialogHost(props.host)}
       />
       {/* The readiness gate is the entry's own connection PHASE (`connectionPhaseOf`,
           the same word the header paints) — the per-host `SurfaceHealth`
@@ -1385,6 +1482,43 @@ function HostView(props: {
           erroring sub from a still-warming one — each subscription below
           already surfaces its OWN error via its member's declared `client.onError`
           policy (SR11), routed through the ONE `interpretClientError`. */}
+      {/* W3.4: standing convergence visible even when disconnected (not
+          gated on phase === "connected" — refuse never becomes connected). */}
+      <Show when={convergenceBannerVisible(convergence(), phase())}>
+        <div class="flex items-center justify-between gap-3 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-800 dark:text-amber-300">
+          <span class="min-w-0 truncate">
+            <span class="font-semibold">{convergence()!.kind}</span>
+            {" — "}
+            {convergence()!.detail}
+            <Show when={convergence()!.error}>
+              {(e) => <> ({e()})</>}
+            </Show>
+          </span>
+          <div class="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              class="rounded border border-amber-600/50 px-2 py-0.5 font-medium hover:bg-amber-500/20"
+              onClick={() => daemonStore.setDialogHost(props.host)}
+            >
+              Details
+            </button>
+            <button
+              type="button"
+              class="rounded border border-amber-600/50 px-2 py-0.5 font-medium hover:bg-amber-500/20"
+              onClick={onRenew}
+            >
+              Renew agent
+            </button>
+          </div>
+        </div>
+      </Show>
+      <Show when={convergencePollError() ?? daemonPollError()}>
+        {(err) => (
+          <div class="border-b border-amber-500/30 bg-amber-500/5 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
+            Convergence poll failed — {err()} (standing anomaly retained)
+          </div>
+        )}
+      </Show>
       <Show when={phase() === "connected"} fallback={connectingView()}>
         <AlertsPanel
           ids={raisedIds()}
@@ -1403,6 +1537,7 @@ function HostView(props: {
               points={points()}
               latest={latestSample()}
               streamError={streamError()}
+              unavailable={unavailable()}
               windowKey={historyWindow()}
               onWindow={setHistoryWindow}
             />
@@ -1466,6 +1601,8 @@ function Header(props: {
   phase: ConnectionState;
   entryState: Accessor<EntryState<{ reason: string }, ConnectionInfo>>;
   count: number;
+  daemonStatus: DaemonStatus | null;
+  onDaemonClick: () => void;
 }) {
   // The component body runs ONCE at mount — when props.system is still
   // DEFAULT_SYSTEM (memUsed/memTotal 0). Derive through createMemo so these
@@ -1492,6 +1629,16 @@ function Header(props: {
             <HostDot state={props.entryState} />
             {props.phase}
           </span>
+          {/* Glyph always opens dialog; loud chip only for daemon-only facts. */}
+          <DaemonDialogGlyph onClick={props.onDaemonClick} />
+          <Show
+            when={chipGlanceVisible(chipFromDaemonStatus(props.daemonStatus))}
+          >
+            <DaemonStatusChip
+              status={props.daemonStatus}
+              onClick={props.onDaemonClick}
+            />
+          </Show>
           <span class="text-gray-500">
             {props.count} {props.count === 1 ? "process" : "processes"}
           </span>
@@ -2566,6 +2713,7 @@ function HistoryChart(props: {
   points: Record<MetricKey, string>;
   latest: MetricSample | null;
   streamError: Error | null;
+  unavailable: MetricHistoryUnavailableReason | null;
   windowKey: HistoryWindowKey;
   onWindow: (k: HistoryWindowKey) => void;
 }) {
@@ -2588,7 +2736,11 @@ function HistoryChart(props: {
       </div>
       <Sparkline
         points={props.points}
-        placeholder={sparklinePlaceholder(props.latest, props.streamError)}
+        placeholder={sparklinePlaceholder(
+          props.latest,
+          props.streamError,
+          props.unavailable,
+        )}
         class="h-14"
       />
     </MetricSection>

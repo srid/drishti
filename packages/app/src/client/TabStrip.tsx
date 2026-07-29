@@ -17,13 +17,11 @@ import { useSurfaceApp } from "@kolu/surface-app/solid";
 import { createPwaInstall, installInstructions } from "@kolu/solid-pwa-install";
 import { createSignal, For, Show } from "solid-js";
 import type { View } from "./view";
-import { HostDot } from "./HostDot";
+import { TabHostGlance } from "./daemonHostGlance";
 import { otherTheme, type Theme } from "./theme";
 import { hostMap } from "./wire";
 
-// Shared chip chrome — the fleet tab and the host chips are the same
-// visual control, so the class strings live in one place rather than
-// being copied into each component.
+// Shared chip chrome — fleet tab uses these; host chips live in TabHostGlance.
 const TAB_BASE =
   "flex shrink-0 items-center gap-1.5 border-r border-gray-200 px-2 py-1 text-xs dark:border-gray-800";
 const TAB_INACTIVE =
@@ -172,47 +170,22 @@ function TabChip(props: {
   const entry = hostMap.entry(props.host);
   const state = () => entry.state();
   // The host's raised-alert set (kolu W5 `alerts` cell) — read straight off
-  // `hostMap` the same way the dot reads `state()`, so the chip needs no new
-  // prop threaded through `TabStrip`. A compact red count pip mirrors the fleet
-  // card's pip and the app badge, sharing their ONE source of truth so a host in
-  // trouble is visible even from another tab. It's gated on a LIVE connection
-  // (below) — a disconnected host's last-known set is stale and must not paint as
-  // a live alert, matching the connected-only policy across the card pip and badge.
+  // `hostMap` the same way the dot reads `state()`. Gated on a LIVE connection.
   const alerts = entry.cells.alerts.use({});
   const alertCount = () => (alerts.value()?.items ?? []).length;
 
   return (
-    <div class={`${TAB_BASE} ${props.active ? TAB_ACTIVE : TAB_INACTIVE}`}>
-      <button
-        type="button"
-        class="flex items-center gap-2"
-        onClick={props.onSelect}
-        title={`${props.host} — ${state().kind}`}
-      >
-        <HostDot state={state} />
-        <span class="font-semibold">{props.host}</span>
-        <Show when={state().kind === "connected" && alertCount() > 0}>
-          <span
-            data-testid={`tab-alert-${props.host}`}
-            class="shrink-0 rounded-full bg-red-500/15 px-1.5 text-xs font-semibold text-red-600 dark:text-red-400"
-            title={`${alertCount()} alert${alertCount() === 1 ? "" : "s"}`}
-          >
-            {alertCount()}
-          </span>
-        </Show>
-      </button>
-      <button
-        type="button"
-        class="ml-1 text-gray-400 hover:text-red-500"
-        title={`Remove ${props.host}`}
-        onClick={(e) => {
-          e.stopPropagation();
-          void props.onClose();
-        }}
-      >
-        ×
-      </button>
-    </div>
+    <TabHostGlance
+      host={props.host}
+      active={props.active}
+      connectionKind={state().kind}
+      alertCount={alertCount()}
+      entryState={state}
+      onSelect={props.onSelect}
+      onClose={() => {
+        void props.onClose();
+      }}
+    />
   );
 }
 

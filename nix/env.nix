@@ -22,13 +22,20 @@
 #   DRISHTI_KOLU_LOG              — /nix/store path to @kolu/log source
 #                                    (the zero-dep logging leaf surface-remote
 #                                    imports — the log:Logger seam).
+#   DRISHTI_KOLU_SURFACE_DAEMON   — /nix/store path to @kolu/surface-daemon
+#                                    (daemon spine: home/main/front/controlCore).
+#   DRISHTI_KOLU_SURFACE_DAEMON_SUPERVISOR
+#                                 — /nix/store path to
+#                                    @kolu/surface-daemon-supervisor
+#                                    (parent convergeAdmit / identity probe).
 #   DRISHTI_OSFACTS_CLIENT        — /nix/store path to osfacts-client source.
 #   DRISHTI_OSFACTS_BIN           — absolute path to the matched osfacts binary.
 #
-# All are hydrated into node_modules/@kolu/{surface,surface-remote,surface-map,shell-quote,log,surface-app,solid-pwa-install}
-# by scripts/hydrate-kolu-packages.sh (three callers: shell.nix
-# shellHook, the justfile install recipe, and the build derivations'
-# postBunNodeModulesInstallPhase).
+# All are hydrated into node_modules/@kolu/{surface,surface-remote,surface-map,
+# shell-quote,log,surface-app,solid-pwa-install,surface-daemon,
+# surface-daemon-supervisor} by scripts/hydrate-kolu-packages.sh (three
+# callers: shell.nix shellHook, the justfile install recipe, and the build
+# derivations' postBunNodeModulesInstallPhase).
 { pkgs }:
 {
   DRISHTI_KOLU_SURFACE = pkgs.kolu-surface;
@@ -38,6 +45,8 @@
   DRISHTI_KOLU_SOLID_PWA_INSTALL = pkgs.kolu-solid-pwa-install;
   DRISHTI_KOLU_SHELL_QUOTE = pkgs.kolu-shell-quote;
   DRISHTI_KOLU_LOG = pkgs.kolu-log;
+  DRISHTI_KOLU_SURFACE_DAEMON = pkgs.kolu-surface-daemon;
+  DRISHTI_KOLU_SURFACE_DAEMON_SUPERVISOR = pkgs.kolu-surface-daemon-supervisor;
   DRISHTI_OSFACTS_CLIENT = pkgs.osfacts-client;
   DRISHTI_OSFACTS_BIN = "${pkgs.osfacts}/bin/osfacts";
 }

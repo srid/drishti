@@ -16,9 +16,10 @@ default:
 # the user invokes `just install` from a non-direnv terminal).
 #
 # The @kolu/* packages (surface, surface-remote, surface-map, surface-app,
-# solid-pwa-install) are sourced hermetically from the npins-pinned kolu tree:
-# the overlay extracts each as a nix-store path (nix/overlay.nix), nix/env.nix
-# exports it as $DRISHTI_KOLU_SURFACE{,_REMOTE,_MAP,_APP} /
+# solid-pwa-install, surface-daemon, surface-daemon-supervisor) are sourced
+# hermetically from the npins-pinned kolu tree: the overlay extracts each as a
+# nix-store path (nix/overlay.nix), nix/env.nix exports it as
+# $DRISHTI_KOLU_SURFACE{,_REMOTE,_MAP,_APP,_DAEMON,_DAEMON_SUPERVISOR} /
 # $DRISHTI_KOLU_SOLID_PWA_INSTALL, and this recipe copies it into
 # node_modules. The raw .ts is consumed directly (no build step).
 install:
@@ -31,6 +32,8 @@ install:
       "$DRISHTI_KOLU_LOG" @kolu/log \
       "$DRISHTI_KOLU_SURFACE_APP" @kolu/surface-app \
       "$DRISHTI_KOLU_SOLID_PWA_INSTALL" @kolu/solid-pwa-install \
+      "$DRISHTI_KOLU_SURFACE_DAEMON" @kolu/surface-daemon \
+      "$DRISHTI_KOLU_SURFACE_DAEMON_SUPERVISOR" @kolu/surface-daemon-supervisor \
       "$DRISHTI_OSFACTS_CLIENT" osfacts-client'
 
 # Boot the parent server. Defaults to localhost; pass any number of
@@ -42,10 +45,26 @@ dev host='localhost' *args: install
     set -euo pipefail
     drvs_json=$(nix eval --raw "{{ justfile_directory() }}#agentDrvsJson")
     cache_json=$(nix eval --raw "{{ justfile_directory() }}#agentBinaryCacheJson")
+    # W6: provisioned path needs the same build-id map the wrapper bakes —
+    # no silent "" fallback when the parent holds a drv map.
+    build_ids_json=$(nix eval --raw "{{ justfile_directory() }}#agentBuildIdsJson")
+    local_sys=$(nix eval --impure --raw --expr 'builtins.currentSystem')
+    build_id=$(printf '%s' "$build_ids_json" | {{ nix_shell }} bun -e '
+      const m = JSON.parse(await Bun.stdin.text());
+      const s = process.argv[1];
+      if (m[s] === undefined || m[s] === "") {
+        console.error("missing BUILD_ID for system", s, "in agentBuildIdsJson");
+        process.exit(1);
+      }
+      process.stdout.write(m[s]);
+    ' "$local_sys")
     echo "» agent drvs: $drvs_json"
     echo "» agent binary cache: $cache_json"
+    echo "» agent build id ($local_sys): $build_id"
     DRISHTI_AGENT_DRVS_JSON="$drvs_json" \
     DRISHTI_AGENT_BINARY_CACHE="$cache_json" \
+    DRISHTI_AGENT_BUILD_IDS_JSON="$build_ids_json" \
+    DRISHTI_AGENT_BUILD_ID="$build_id" \
     {{ nix_shell }} bun --cwd packages/app dev {{ host }} {{ args }}
 
 # TypeScript type checking (every workspace member: common, agent, app)
@@ -58,8 +77,21 @@ typecheck: install
 # no-ops — so a reactive client test (e.g. processesStream.test.ts) would pass
 # vacuously. The flag is safe for the node-side agent/server tests; their
 # resolution is unchanged.
+#
+# Heavy pool/window e2e legs key on KOLU_DAEMON_TESTS (kolu daemon-test-gate);
+# this default leaves them OFF so GHA/shared runners skip them. Use
+# `just test-daemon` (or `ci::test-daemon` on odu linux) for the full suite.
+# App-scoped Solid/happy-dom preload (NOT root bunfig — agent BUILD_ID).
+test_preload := "--preload ./packages/app/src/client/test-setup.ts"
+
 test *args: install
-    {{ nix_shell }} bun test --conditions=browser {{ args }}
+    {{ nix_shell }} bun test --conditions=browser {{ test_preload }} {{ args }}
+
+# Full suite including daemon-gated e2e (KOLU_DAEMON_TESTS=1). Same env kolu's
+# `describeDaemon` / odu daemon lane uses — no new knob. Forks real agents and
+# may realise agent .drvs; CI/odu linux only (not GHA default `just test`).
+test-daemon *args: install
+    KOLU_DAEMON_TESTS=1 {{ nix_shell }} bun test --conditions=browser {{ test_preload }} {{ args }}
 
 # Format all *.nix files (and any future biome target — drishti doesn't
 # bring biome in by default; add when JS formatting becomes a chore).
@@ -74,6 +106,12 @@ fmt-check:
 # (i.e. after `bun install`/`bun add`).
 regenerate-bun-nix:
     {{ nix_shell }} sh -c 'nix run .#bun2nix -- -l bun.lock -o bun.nix && nixpkgs-fmt bun.nix'
+
+# Regenerate the agent-scoped lock + agent.bun.nix (positive projection).
+# Run after changing packages/agent or packages/common dependencies.
+# Does NOT touch the root bun.lock / bun.nix (app-only churn stays there).
+regenerate-agent-deps:
+    {{ nix_shell }} sh scripts/regenerate-agent-deps.sh
 
 # Regenerate the committed PWA icons (manifest icons, favicon, apple-touch)
 # from scripts/gen-pwa-icons.ts. Run this after editing the icon geometry.

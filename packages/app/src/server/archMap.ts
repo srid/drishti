@@ -29,7 +29,7 @@ export async function resolveDrvForHost(
   drvBySystem: Readonly<Record<string, string>>,
   binaryCache: AgentBinaryCache,
   context: HostProbeContext,
-): Promise<AgentDerivation> {
+): Promise<{ derivation: AgentDerivation; system: string }> {
   const sys = await resolveSystem(host, {
     signal: context.signal,
     onProgress: context.localProgress,
@@ -40,5 +40,8 @@ export async function resolveDrvForHost(
       `${host}: no agent .drv baked for system=${sys} (known: ${Object.keys(drvBySystem).join(", ")})`,
     );
   }
-  return directAgentDerivation(drv, binaryCache);
+  return {
+    derivation: directAgentDerivation(drv, binaryCache),
+    system: sys,
+  };
 }

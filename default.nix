@@ -38,6 +38,9 @@
 { pkgs ? null
 , b2n ? null
 , agentDrvBySystem ? null
+  # Per-system agent BUILD_ID map ({ system → hash }) for multi-arch
+  # convergeAdmit. Same bake rules as agentDrvBySystem (string-only JSON).
+, agentBuildIdBySystem ? null
   # Binary-cache declaration ({ substituters; trustedPublicKeys; } — lists,
   # both non-empty) baked for @kolu/surface-remote's agent prefetch. flake.nix
   # derives it from its own nixConfig block; like agentDrvBySystem, only the
@@ -74,7 +77,20 @@ let
     then resolvedPkgs.callPackage ./nix/packages/drishti-agent { bun2nix = b2n; }
     else throw "drishti agent build derivation needs `b2n` (lib.mkBun2nix output) — invoke via flake.nix";
 
-  drishti-agent = resolvedPkgs.runCommand "drishti-agent"
+  # Identity env for the durable daemon (UW3). Two-stage wrapper (W2.5):
+  #
+  #   INNER — bun / osfacts / entrypoint. Its store path is the sole input to
+  #           BUILD_ID. A client-only monorepo commit must NOT churn this
+  #           (drv-stability / issue #38): no monorepo rev here.
+  #   OUTER — stamps BUILD_ID (hash of the inner path) AND COMMIT_HASH (monorepo
+  #           `rev`). The outer path may change when `rev` advances; that is
+  #           ZERO identity cost — convergeAdmit keys on BUILD_ID only, so no
+  #           drain / no id rotation. Pre-W2.5 the single wrapper could not
+  #           carry `rev` without rotating the id; that reasoning is obsolete.
+  #
+  # Joint invariant: a nix-built agent with non-empty BUILD_ID must also carry
+  # a non-empty COMMIT_HASH (identity fragment serves both; CI pins this).
+  drishti-agent-inner = resolvedPkgs.runCommand "drishti-agent-inner"
     {
       nativeBuildInputs = [ resolvedPkgs.makeWrapper ];
       meta.mainProgram = "drishti-agent";
@@ -83,6 +99,17 @@ let
     makeWrapper ${resolvedPkgs.bun}/bin/bun $out/bin/drishti-agent \
       --add-flags "${drishtiAgentBuilt}/lib/drishti/packages/agent/src/main.ts" \
       --set DRISHTI_OSFACTS_BIN "${resolvedPkgs.osfacts}/bin/osfacts"
+  '';
+  drishtiAgentBuildId = builtins.hashString "sha256" (toString drishti-agent-inner);
+  drishti-agent = resolvedPkgs.runCommand "drishti-agent"
+    {
+      nativeBuildInputs = [ resolvedPkgs.makeWrapper ];
+      meta.mainProgram = "drishti-agent";
+    } ''
+    mkdir -p $out/bin
+    makeWrapper ${drishti-agent-inner}/bin/drishti-agent $out/bin/drishti-agent \
+      --set DRISHTI_AGENT_BUILD_ID "${drishtiAgentBuildId}" \
+      --set DRISHTI_AGENT_COMMIT_HASH "${rev}"
   '';
 
   drishti-client = resolvedPkgs.runCommand "drishti-client"
@@ -95,6 +122,8 @@ let
   drishti =
     if agentDrvBySystem == null || binaryCache == null
     then throw "the `drishti` monitor wrapper requires `agentDrvBySystem` and `binaryCache` — invoke via flake.nix (which threads in the per-system agent .drv map and the cache declaration)"
+    else if agentBuildIdBySystem == null
+    then throw "the `drishti` monitor wrapper requires `agentBuildIdBySystem` whenever `agentDrvBySystem` is given (W2.6 — provisioned path has no silent empty build-id map)"
     else
       resolvedPkgs.runCommand "drishti"
         {
@@ -110,6 +139,11 @@ let
           `# cell and the client's shellCommit() agree — the freshness rail` \
           `# reads one consistent commit.` \
           --set ${stamp.envVar} "${rev}" \
+          `# Expected agent build identity for convergeAdmit (UW3). Same hash` \
+          `# the agent wrapper bakes; multi-arch remotes may mismatch and` \
+          `# ride adopt-stale after the drain budget (onGiveUp).` \
+          --set DRISHTI_AGENT_BUILD_ID "${drishtiAgentBuildId}" \
+          --set DRISHTI_AGENT_COMMIT_HASH "${rev}" \
           `# DRISHTI_AGENT_DRVS_JSON: {system -> drvPath} JSON map. flake.nix` \
           `# pre-evaluates one entry per system in its 'systems' list; the` \
           `# server picks the right entry at runtime via 'uname -ms' on each` \
@@ -118,6 +152,10 @@ let
           `# and this wrapper compiles fine but HostSession crashes at` \
           `# 'nix copy --derivation' time.` \
           --set-default DRISHTI_AGENT_DRVS_JSON '${builtins.toJSON agentDrvBySystem}' \
+          `# Per-system BUILD_IDs so multi-arch hosts expect the agent they` \
+          `# provision (not the parent-arch-only DRISHTI_AGENT_BUILD_ID).` \
+          `# Required whenever agentDrvBySystem is set (W2.6).` \
+          --set DRISHTI_AGENT_BUILD_IDS_JSON '${builtins.toJSON agentBuildIdBySystem}' \
           `# DRISHTI_AGENT_BINARY_CACHE: {substituters, trustedPublicKeys}` \
           `# JSON (surface-remote's AgentBinaryCache shape) — the caches the` \
           `# agent closure is prefetched from before shipping to a remote` \
@@ -129,5 +167,8 @@ let
 in
 {
   inherit drishti drishti-agent drishti-client drishtiBuilt drishtiAgentBuilt;
+  inherit drishtiAgentBuildId;
+  # Exposed so W2.5 nix proofs can hash the real inner wrapper drv.
+  inherit drishti-agent-inner;
   inherit (resolvedPkgs) kolu-surface kolu-surface-remote kolu-surface-map osfacts osfacts-client;
 }

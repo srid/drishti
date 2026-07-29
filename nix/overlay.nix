@@ -37,6 +37,12 @@ in
   # The zero-dep logging leaf surface-remote imports (the `log:Logger` seam,
   # juspay/kolu#1876) — hydrated so its `@kolu/log` import resolves.
   kolu-log = mkKoluPackage "log";
+  # Durable-daemon spine (UW3): the agent binary depends on surface-daemon
+  # (daemonHome / daemonMain / front / controlCore); the parent depends on
+  # surface-daemon-supervisor (convergeAdmit / probeDaemonIdentityFrom).
+  # Both ride the same npins kolu pin so the fragment and the probe stay matched.
+  kolu-surface-daemon = mkKoluPackage "surface-daemon";
+  kolu-surface-daemon-supervisor = mkKoluPackage "surface-daemon-supervisor";
   # osfacts incubates at the kolu repo root (juspay/kolu#2011), outside the
   # `packages/` workspace. Keep its binary and dependency-free TypeScript
   # client on the same npins revision so the client's `V 2` gate can never be

@@ -1,0 +1,5 @@
+# Agent-scoped install config for the agent derivation (nix/packages/drishti-agent).
+# Deliberately NOT the workspace-root bunfig.toml: app test preload/lock churn
+# must never rehash the agent tree (drv-stability / fleet BUILD_ID).
+[install]
+linker = "hoisted"

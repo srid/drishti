@@ -39,6 +39,10 @@
 import { composeSurfaceContracts, defineSurface } from "@kolu/surface/define";
 import { surfaceAppSurface } from "@kolu/surface-app/surface";
 import { z } from "zod";
+import {
+  ConvergenceAnomalyWireSchema,
+  DaemonStatusSchema,
+} from "./daemonStatus";
 import { isValidHost } from "./host";
 
 const HostInputSchema = z
@@ -81,6 +85,27 @@ export const adminSurface = defineSurface({
       recheck: {
         input: z.object({}),
         output: z.object({ ok: z.boolean() }),
+      },
+      // W7: build-axis replace — drain + await exit via control-core (HostSession.renew).
+      // After renew the session reconnect machinery spawns the successor.
+      renew: {
+        input: z.object({ host: z.string() }),
+        output: z.object({ ok: z.boolean(), error: z.string().optional() }),
+      },
+      // W7: standing convergence anomaly for a host (adopted-stale / skew /
+      // unconverged / cross-supervisor / link-failed), or null when clean.
+      // Typed kind + detail for minimal honest UI projection.
+      convergence: {
+        input: z.object({ host: z.string() }),
+        output: z.object({
+          anomaly: ConvergenceAnomalyWireSchema.nullable(),
+        }),
+      },
+      // UI phase: full typed daemon status for chip + dialog (outcome, identity,
+      // anomaly with structured evidence, phase). Superset of convergence.
+      daemonStatus: {
+        input: z.object({ host: z.string() }),
+        output: DaemonStatusSchema,
       },
     },
   },

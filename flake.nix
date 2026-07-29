@@ -67,6 +67,14 @@
             (import ./default.nix { inherit pkgs b2n; }).drishti-agent.drvPath)
         perSystemAttrs;
 
+      # Per-system agent BUILD_ID — hash of that system's real inner wrapper
+      # derivation (W2.5). Parent convergeAdmit uses this so a multi-arch host
+      # expects the build id of the agent it actually provisions.
+      agentBuildIdBySystem = builtins.mapAttrs
+        (_: { pkgs, b2n }:
+          (import ./default.nix { inherit pkgs b2n; }).drishtiAgentBuildId)
+        perSystemAttrs;
+
       # The caches provisioning prefetches the agent closure from before
       # shipping it to a remote host (@kolu/surface-remote's AgentBinaryCache
       # shape — both lists must be non-empty, the constructor throws
@@ -83,13 +91,18 @@
     {
       packages = eachSystem ({ pkgs, b2n }:
         let
-          drvs = import ./default.nix { inherit pkgs b2n agentDrvBySystem binaryCache rev; };
+          drvs = import ./default.nix {
+            inherit pkgs b2n agentDrvBySystem agentBuildIdBySystem binaryCache rev;
+          };
 
         in
         {
           # `nix run github:srid/drishti -- user@host` → the monitor.
           default = drvs.drishti;
           inherit (drvs) drishti drishti-agent drishti-client drishtiBuilt drishtiAgentBuilt;
+          # Inner wrapper derivation only (packages.* must be derivations —
+          # raw BUILD_ID string lives on agentBuildIdsJson, not packages).
+          inherit (drvs) drishti-agent-inner;
           # @kolu/* source paths — exposed so `nix build .#kolu-surface`
           # realizes the store path used by the dev shell's hydrate hook.
           kolu-surface = pkgs.kolu-surface;
@@ -109,6 +122,10 @@
       # DRISHTI_AGENT_DRVS_JSON without having to know about the per-
       # system attr structure.
       agentDrvsJson = builtins.toJSON agentDrvBySystem;
+
+      # Twin of agentDrvsJson for multi-arch BUILD_IDs — parent exports as
+      # DRISHTI_AGENT_BUILD_IDS_JSON for convergeAdmit expected-build selection.
+      agentBuildIdsJson = builtins.toJSON agentBuildIdBySystem;
 
       # Twin of agentDrvsJson for the cache declaration — `just dev` exports
       # this verbatim as DRISHTI_AGENT_BINARY_CACHE.

@@ -14,7 +14,7 @@ describe("resolveDrvForHost", () => {
       signal,
       onProgress: () => {},
     });
-    const drv = await resolveDrvForHost(
+    const resolved = await resolveDrvForHost(
       "localhost",
       {
         [sys]: "/nix/store/test.drv",
@@ -22,7 +22,8 @@ describe("resolveDrvForHost", () => {
       TEST_BINARY_CACHE,
       { signal, localProgress: () => {} },
     );
-    expect(drv).toMatchObject({
+    expect(resolved.system).toBe(sys);
+    expect(resolved.derivation).toMatchObject({
       kind: "drv-path",
       drvPath: "/nix/store/test.drv",
       binaryCache: TEST_BINARY_CACHE,
