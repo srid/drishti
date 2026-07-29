@@ -5,6 +5,7 @@ import {
   fallbackTableMarker,
   processComparator,
   processDetailMemoryText,
+  processInspectionNotes,
   processMatches,
   processRowUptime,
   PROCESS_SORT_KEYS,
@@ -61,7 +62,7 @@ describe("process table qualified cells", () => {
     expect(
       Object.entries(rendered.cells)
         .filter(([name]) => name !== "command")
-        .every(([, cell]) => cell.text === "—" && !cell.warning),
+        .every(([, cell]) => cell.kind === "plain" && cell.text === "—"),
     ).toBe(true);
   });
 
@@ -73,8 +74,11 @@ describe("process table qualified cells", () => {
     );
 
     expect(rendered.dimmed).toBe(false);
-    expect(rendered.cells.ports).toEqual({ text: "EACCES", warning: true });
-    expect(rendered.cells.command).toEqual({ text: "server", warning: false });
+    expect(rendered.cells.ports).toEqual({
+      kind: "unreadable",
+      text: "EACCES",
+    });
+    expect(rendered.cells.command).toEqual({ kind: "plain", text: "server" });
   });
 
   it("renders a ports-blind errno in the PORTS cell instead of the empty dash", () => {
@@ -84,13 +88,13 @@ describe("process table qualified cells", () => {
         "ports",
         "—",
       ),
-    ).toEqual({ text: "EACCES", warning: true });
+    ).toEqual({ kind: "unreadable", text: "EACCES" });
   });
 
   it("keeps the dash for a readable process with no listeners", () => {
     expect(processTableCell(process([]), "ports", "—")).toEqual({
+      kind: "plain",
       text: "—",
-      warning: false,
     });
   });
 
@@ -100,13 +104,13 @@ describe("process table qualified cells", () => {
         process([{ facet: "status", errno: "EACCES" }]),
         "8",
       ),
-    ).toEqual({ text: "EACCES", warning: true });
+    ).toEqual({ kind: "unreadable", text: "EACCES" });
     expect(
       processThreadCell(
         process([{ facet: "status_threads", errno: "ENOTSUP" }]),
         "—",
       ),
-    ).toEqual({ text: "ENOTSUP", warning: true });
+    ).toEqual({ kind: "unreadable", text: "ENOTSUP" });
   });
 
   it("reduces an errno to a subtle marker without losing hover or accessible text", () => {
@@ -123,9 +127,9 @@ describe("process table qualified cells", () => {
     ]);
 
     expect(processTableCell(recovered, "cpu_time", "17.5%")).toEqual({
+      kind: "fallback",
       text: "17.5%",
-      warning: false,
-      fallbackCommand: "/bin/ps",
+      command: "/bin/ps",
     });
     expect(fallbackTableMarker("/bin/ps")).toEqual({
       glyph: "↩",
@@ -151,6 +155,21 @@ describe("process detail presentation", () => {
   it("restores human process-state labels", () => {
     expect(processStateText("R")).toBe("running (R)");
     expect(processStateText(null)).toBe("—");
+  });
+
+  it("lists blind and recovered facets together and never claims full native", () => {
+    expect(processInspectionNotes(process([]))).toEqual([]);
+    expect(
+      processInspectionNotes(
+        process(
+          [{ facet: "cwd", errno: "EPERM" }],
+          [{ facet: "cpu_time", command: "/bin/ps" }],
+        ),
+      ),
+    ).toEqual([
+      { text: "cwd blind (EPERM)", tone: "warn" },
+      { text: "cpu_time via /bin/ps", tone: "quiet" },
+    ]);
   });
 });
 

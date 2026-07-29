@@ -162,7 +162,7 @@ describe("osfacts V2 process observation", () => {
     expect(psCalls).toBe(0);
   });
 
-  it("keeps the osfacts frame when Darwin ps fails", async () => {
+  it("keeps the osfacts frame when Darwin ps fails and publishes enrichment status", async () => {
     const reading = parseSnapshotOutput(
       "V\t2\nP\t42\t1\tserver\nU\t42\tcpu_time\tEACCES\nU\t42\tmem\tEACCES\n",
     );
@@ -174,7 +174,7 @@ describe("osfacts V2 process observation", () => {
       async () => parseHostOutput(hostFixture),
       () => 1_000,
       async () => {
-        throw new Error("ps unavailable");
+        throw Object.assign(new Error("ps unavailable"), { code: "ENOENT" });
       },
     );
 
@@ -186,6 +186,22 @@ describe("osfacts V2 process observation", () => {
         { facet: "mem", errno: "EACCES" },
       ],
     });
+    expect([...(await reader.readSourceErrors()).values()]).toEqual(
+      expect.arrayContaining([
+        {
+          operation: "snapshot",
+          source: "/bin/ps",
+          facet: "cpu_time",
+          code: "ENOENT",
+        },
+        {
+          operation: "snapshot",
+          source: "/bin/ps",
+          facet: "mem",
+          code: "ENOENT",
+        },
+      ]),
+    );
   });
 
   it("recovers CPU and RSS when their whole osfacts sources fail", async () => {

@@ -98,8 +98,9 @@ const ProcessSchema = z.object({
   name: z.string(),
   /** Full argv joined for display/search and capped at the historic 200 chars. */
   command: z.string(),
-  /** Per-process CPU use over the last poll window. osfacts publishes a
-   *  cumulative counter; the agent derives this consumer-side rate. */
+  /** Per-process CPU use. Native rows are the poll-window rate derived from
+   *  osfacts cumulative counters. Command-recovered rows (see `fallbacks`)
+   *  carry the producer command's own measurement (e.g. Darwin `ps` `%cpu`). */
   cpuPct: z.number().nonnegative(),
   /** Effective uid rendered with the historic Linux policy: uid 0 is root,
    *  every other uid is decimal. Empty only when the uid facet is unreadable. */

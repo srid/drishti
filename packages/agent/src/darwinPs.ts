@@ -1,7 +1,14 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Pid } from "drishti-common";
-import type { ProcessUsage } from "./processUsageFallback";
+
+/** The two facts Apple's privileged ps can recover when task inspection is
+ * denied to the ordinary osfacts process. Source-owned shape: no identity or
+ * recovery policy. */
+export interface ProcessUsage {
+  cpuPct: number;
+  rssBytes: number;
+}
 
 export const DARWIN_PS_PATH = "/bin/ps";
 export const DARWIN_PS_ARGS = ["-axo", "pid=,pcpu=,rss="] as const;
@@ -13,10 +20,10 @@ export interface DarwinPsOptions {
 }
 
 const DARWIN_PS_OPTIONS: DarwinPsOptions = {
-  // Preserve the pre-osfacts reader's proven child discipline: a hung ps must
-  // settle so the poll's single-flight guard can release, while large process
-  // tables must not trip Node's small default output buffer.
-  timeout: 20_000,
+  // Enrichment rides beside osfacts in Promise.all, so a hung ps stalls the
+  // whole process frame. Cap well under the agent poll interval (2s) so a
+  // dead census fails fast and the authoritative osfacts frame still lands.
+  timeout: 1_500,
   killSignal: "SIGKILL",
   maxBuffer: 16 * 1024 * 1024,
 };

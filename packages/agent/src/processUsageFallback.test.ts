@@ -33,7 +33,7 @@ describe("process usage fallback policy", () => {
       new Map([[42, original]]),
       new Map([[42, { cpuPct: 17.5, rssBytes: 4_194_304 }]]),
       [],
-      { command: "/bin/ps" },
+      "/bin/ps",
     ).get(42)!;
 
     expect(recovered).toEqual({
@@ -57,7 +57,7 @@ describe("process usage fallback policy", () => {
       new Map([[42, original]]),
       new Map([[42, { cpuPct: 99, rssBytes: 99_999 }]]),
       [],
-      { command: "/bin/ps" },
+      "/bin/ps",
     );
 
     expect(recovered.get(42)).toBe(original);
@@ -82,7 +82,7 @@ describe("process usage fallback policy", () => {
           code: "EACCES",
         },
       ],
-      { command: "/bin/ps" },
+      "/bin/ps",
     ).get(42)!;
 
     expect(recovered.cpuPct).toBe(7.5);
@@ -104,7 +104,57 @@ describe("process usage fallback policy", () => {
       new Map([[42, original]]),
       new Map([[7, { cpuPct: 9, rssBytes: 1024 }]]),
       [],
-      { command: "/bin/ps" },
+      "/bin/ps",
+    );
+
+    expect(recovered.get(42)).toBe(original);
+  });
+
+  it("synthesizes unreadable markers when a source E has no ps row", () => {
+    const original = process();
+    const recovered = recoverUnreadableProcessUsage(
+      new Map([[42, original]]),
+      new Map(),
+      [
+        {
+          operation: "snapshot",
+          source: "task_info",
+          facet: "cpu_time",
+          code: "EACCES",
+        },
+        {
+          operation: "snapshot",
+          source: "task_info",
+          facet: "mem",
+          code: "EACCES",
+        },
+      ],
+      "/bin/ps",
+    ).get(42)!;
+
+    expect(recovered.cpuPct).toBe(0);
+    expect(recovered.rssBytes).toBeNull();
+    expect(recovered.fallbacks).toEqual([]);
+    expect(recovered.unreadable).toEqual([
+      { facet: "cpu_time", errno: "EACCES" },
+      { facet: "mem", errno: "EACCES" },
+    ]);
+  });
+
+  it("does not overwrite a present RSS under a source mem E", () => {
+    const original = process({ rssBytes: 4096, cpuPct: 3 });
+    const recovered = recoverUnreadableProcessUsage(
+      new Map([[42, original]]),
+      new Map([[42, { cpuPct: 99, rssBytes: 99_999 }]]),
+      [
+        {
+          operation: "snapshot",
+          source: "task_info",
+          facet: "mem",
+          code: "EACCES",
+        },
+      ],
+      "/bin/ps",
     );
 
     expect(recovered.get(42)).toBe(original);

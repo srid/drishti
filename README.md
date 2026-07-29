@@ -50,7 +50,7 @@ Open <http://localhost:7720>. The UI opens on the **fleet** tab — a single ove
 
 ## Known limitations
 
-On macOS, Apple gates other users' task info behind a private entitlement. Drishti's ordinary, unprivileged osfacts process cannot read those CPU/RSS facts, so the agent recovers them from Apple's privileged `/bin/ps`. If that command fails or a process exits between the two censuses, the affected values remain honestly unreadable for that poll. Linux needs no supplement.
+On macOS, Apple gates other users' task info behind a private entitlement. Drishti's ordinary, unprivileged osfacts process cannot read those CPU/RSS facts, so the agent recovers them from Apple's privileged `/bin/ps`. If that command fails, the process frame still publishes and the failure appears as a `/bin/ps` source-error status beside any still-blind cells; a process that exits between the two censuses stays honestly unreadable for that poll. Linux needs no supplement.
 
 On macOS 27+, Apple platform signing gates the host-wide unclaimed-listener table, so osfacts reports a named `ports_unclaimed` source failure there. Claimed listeners for the agent's own processes still work.
 

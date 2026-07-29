@@ -30,11 +30,12 @@ import {
   OsfactsSourceError,
   osfactsSourceStatus,
 } from "drishti-common/source-errors";
-import { DARWIN_PS_PATH, readDarwinProcessUsage } from "./darwinPs";
 import {
+  DARWIN_PS_PATH,
   type ProcessUsage,
-  recoverUnreadableProcessUsage,
-} from "./processUsageFallback";
+  readDarwinProcessUsage,
+} from "./darwinPs";
+import { recoverUnreadableProcessUsage } from "./processUsageFallback";
 
 type RawSystemInfo = Omit<
   SystemInfo,
@@ -352,13 +353,44 @@ export function createOsfactsReader(
     const takenMs = now();
     if (processCache && takenMs - processCache.takenMs < maxAgeMs)
       return processCache.promise;
-    // No capability gate: Darwin runs ps on every fresh process poll. It runs
-    // beside osfacts so the fallback adds no serial child latency. Failure is
-    // enrichment-local; the authoritative osfacts frame still publishes.
-    const nativeUsage: Promise<Map<Pid, ProcessUsage>> =
+    // No capability gate: Darwin runs ps on every fresh process poll beside
+    // osfacts. The ps child budget is short so a hang cannot stall the frame;
+    // rejection keeps the osfacts frame and publishes enrichment status into
+    // the same sourceErrors receptacle osfacts partial failures use.
+    type NativeCensus = {
+      usage: Map<Pid, ProcessUsage>;
+      errors: SourceErrorFact[];
+    };
+    const nativeCensus: Promise<NativeCensus> =
       os === "darwin"
-        ? readDarwinUsage().catch(() => new Map<Pid, ProcessUsage>())
-        : Promise.resolve(new Map<Pid, ProcessUsage>());
+        ? readDarwinUsage()
+            .then(
+              (usage): NativeCensus => ({
+                usage,
+                errors: [],
+              }),
+            )
+            .catch((error: unknown): NativeCensus => {
+              const code = enrichmentFailureCode(error);
+              return {
+                usage: new Map(),
+                errors: [
+                  {
+                    operation: "snapshot",
+                    source: DARWIN_PS_PATH,
+                    facet: "cpu_time",
+                    code,
+                  },
+                  {
+                    operation: "snapshot",
+                    source: DARWIN_PS_PATH,
+                    facet: "mem",
+                    code,
+                  },
+                ],
+              };
+            })
+        : Promise.resolve({ usage: new Map(), errors: [] });
     const promise = Promise.all([
       readSnapshot(bin, {
         procs: true,
@@ -371,8 +403,8 @@ export function createOsfactsReader(
         status: true,
         argv: true,
       }),
-      nativeUsage,
-    ]).then(([reading, fallback]) => {
+      nativeCensus,
+    ]).then(([reading, census]) => {
       const current = new Map<Pid, number>(
         reading.cpuTimes.map(({ pid, cpuTimeUs }) => [pid, cpuTimeUs]),
       );
@@ -390,14 +422,20 @@ export function createOsfactsReader(
       }
       processBaseline = { takenMs, cpuTimes: current };
       const frame = processesFromOsfacts(reading, cpuPct);
+      // Recovery is a Darwin sequence step. Linux keeps the pure osfacts map.
+      const processes =
+        os === "darwin"
+          ? recoverUnreadableProcessUsage(
+              frame.processes,
+              census.usage,
+              frame.sourceErrors,
+              DARWIN_PS_PATH,
+            )
+          : frame.processes;
       return {
         ...frame,
-        processes: recoverUnreadableProcessUsage(
-          frame.processes,
-          fallback,
-          frame.sourceErrors,
-          { command: DARWIN_PS_PATH },
-        ),
+        processes,
+        sourceErrors: [...frame.sourceErrors, ...census.errors],
       };
     });
     processCache = { takenMs, promise };
@@ -466,6 +504,20 @@ export function createOsfactsReader(
 
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+/** Prefer Node system-error codes (ENOENT, ETIMEDOUT) so the source-error
+ * banner names a stable failure; fall back to one token rather than free text. */
+function enrichmentFailureCode(error: unknown): string {
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof (error as { code: unknown }).code === "string" &&
+    (error as { code: string }).code.length > 0
+  )
+    return (error as { code: string }).code;
+  return "ENRICHMENT_FAILED";
 }
 
 export function osfactsBinPath(): string {

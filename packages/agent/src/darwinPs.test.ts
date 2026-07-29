@@ -32,7 +32,7 @@ describe("Darwin ps process usage", () => {
         path: DARWIN_PS_PATH,
         args: DARWIN_PS_ARGS,
         options: {
-          timeout: 20_000,
+          timeout: 1_500,
           killSignal: "SIGKILL",
           maxBuffer: 16 * 1024 * 1024,
         },

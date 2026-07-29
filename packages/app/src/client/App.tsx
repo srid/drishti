@@ -94,6 +94,7 @@ import {
   fullyBlindErrno,
   processComparator,
   processDetailMemoryText,
+  processInspectionNotes,
   processMatches,
   processRowCell,
   processRowUptime,
@@ -647,7 +648,7 @@ function MultiHostApp() {
   // opened the host (which would mislead: "since just now" for a hours-old
   // alert). Cleared when the alert releases (hysteresis drop below CLEAR_PCT) so
   // a later re-raise stamps fresh, never a stale first-raise time.
-  const raiseKey = (host: string, id: AlertId) => `${host} ${id}`;
+  const raiseKey = (host: string, id: AlertId) => `${host}${id}`;
   const [raisedSince, setRaisedSince] = createSignal<Record<string, number>>(
     {},
   );
@@ -1925,10 +1926,10 @@ function ProcessRow(props: {
       | "uid"
       | "cwd",
     readableText: string,
-  ) => {
+  ): ProcessTableCellPresentation => {
     const process = proc();
     return process === undefined
-      ? { text: readableText, warning: false }
+      ? { kind: "plain", text: readableText }
       : processRowCell(process, facet, readableText);
   };
   const blindErrno = () => {
@@ -1964,7 +1965,7 @@ function ProcessRow(props: {
       </td>
       <td
         class={`w-px max-w-32 truncate whitespace-nowrap px-2 py-0 text-left ${
-          userCell().warning
+          userCell().kind === "unreadable"
             ? "text-amber-600 dark:text-amber-400"
             : "text-gray-700 dark:text-gray-300"
         }`}
@@ -1973,7 +1974,7 @@ function ProcessRow(props: {
       </td>
       <td
         class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
-          cpuCell().warning
+          cpuCell().kind === "unreadable"
             ? "text-amber-600 dark:text-amber-400"
             : processPctColor(proc()?.cpuPct ?? 0)
         }`}
@@ -1985,7 +1986,7 @@ function ProcessRow(props: {
       </td>
       <td
         class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
-          memoryCell().warning
+          memoryCell().kind === "unreadable"
             ? "text-amber-600 dark:text-amber-400"
             : "text-gray-700 dark:text-gray-300"
         }`}
@@ -1994,7 +1995,7 @@ function ProcessRow(props: {
       </td>
       <td
         class={`w-px whitespace-nowrap px-2 py-0 text-right tabular-nums ${
-          uptimeCell().warning
+          uptimeCell().kind === "unreadable"
             ? "text-amber-600 dark:text-amber-400"
             : "text-gray-700 dark:text-gray-300"
         }`}
@@ -2009,7 +2010,7 @@ function ProcessRow(props: {
           run off-screen with no ellipsis). Dropping either one breaks it. */}
       <td
         class={`w-full max-w-0 px-2 py-0 text-left ${
-          commandCell().warning
+          commandCell().kind === "unreadable"
             ? "text-amber-600 dark:text-amber-400"
             : "text-gray-700 dark:text-gray-300"
         }`}
@@ -2034,7 +2035,7 @@ function ProcessRow(props: {
             <span class="text-gray-500">·</span>
             <span
               class={`min-w-0 truncate text-xs ${
-                cwdCell().warning
+                cwdCell().kind === "unreadable"
                   ? "text-amber-600 dark:text-amber-400"
                   : "text-gray-400"
               }`}
@@ -2077,14 +2078,20 @@ function FallbackMark(props: { command: string }) {
 function CompactCellValue(props: { cell: ProcessTableCellPresentation }) {
   return (
     <Show
-      when={props.cell.warning}
+      when={
+        props.cell.kind === "unreadable" ? props.cell.text : undefined
+      }
       fallback={
         // The marker is an adornment, not part of the value's inline width.
         // Keeping it absolute preserves right-aligned numeric columns: a
         // fallback value occupies exactly the same width as a native value.
         <span class="relative inline-block">
           {props.cell.text}
-          <Show when={props.cell.fallbackCommand}>
+          <Show
+            when={
+              props.cell.kind === "fallback" ? props.cell.command : undefined
+            }
+          >
             {(command) => (
               <span class="absolute left-full top-1/2 ml-1 -translate-y-1/2">
                 <FallbackMark command={command()} />
@@ -2094,7 +2101,7 @@ function CompactCellValue(props: { cell: ProcessTableCellPresentation }) {
         </span>
       }
     >
-      <UnreadableMark errno={props.cell.text} />
+      {(errno) => <UnreadableMark errno={errno()} />}
     </Show>
   );
 }
@@ -2103,7 +2110,9 @@ function DetailCellValue(props: { cell: ProcessTableCellPresentation }) {
   return (
     <span class="inline-flex items-baseline gap-1">
       {props.cell.text}
-      <Show when={props.cell.fallbackCommand}>
+      <Show
+        when={props.cell.kind === "fallback" ? props.cell.command : undefined}
+      >
         {(command) => <FallbackMark command={command()} />}
       </Show>
     </span>
@@ -2191,7 +2200,7 @@ function ProcessDetail(props: {
         <DetailRow label="command">
           <span
             class={`break-all ${
-              processTableCell(p(), "argv", "").warning
+              processTableCell(p(), "argv", "").kind === "unreadable"
                 ? "text-amber-600 dark:text-amber-400"
                 : ""
             }`}
@@ -2202,7 +2211,7 @@ function ProcessDetail(props: {
         <DetailRow label="cwd">
           <span
             class={
-              processTableCell(p(), "cwd", "").warning
+              processTableCell(p(), "cwd", "").kind === "unreadable"
                 ? "text-amber-600 dark:text-amber-400"
                 : "break-all"
             }
@@ -2213,7 +2222,7 @@ function ProcessDetail(props: {
         <DetailRow label="cpu">
           <span
             class={`tabular-nums ${
-              cpuCell().warning
+              cpuCell().kind === "unreadable"
                 ? "text-amber-600 dark:text-amber-400"
                 : processPctColor(p().cpuPct)
             }`}
@@ -2241,7 +2250,7 @@ function ProcessDetail(props: {
         <DetailRow label="state">
           <span
             class={`tabular-nums ${
-              processTableCell(p(), "status", "").warning
+              processTableCell(p(), "status", "").kind === "unreadable"
                 ? "text-amber-600 dark:text-amber-400"
                 : ""
             }`}
@@ -2252,7 +2261,7 @@ function ProcessDetail(props: {
         <DetailRow label="nice">
           <span
             class={`tabular-nums ${
-              processTableCell(p(), "status", "").warning
+              processTableCell(p(), "status", "").kind === "unreadable"
                 ? "text-amber-600 dark:text-amber-400"
                 : ""
             }`}
@@ -2263,13 +2272,13 @@ function ProcessDetail(props: {
         <Show
           when={
             p().threads !== null ||
-            processThreadCell(p(), "").warning
+            processThreadCell(p(), "").kind === "unreadable"
           }
         >
           <DetailRow label="threads">
             <span
               class={`tabular-nums ${
-                processThreadCell(p(), "").warning
+                processThreadCell(p(), "").kind === "unreadable"
                   ? "text-amber-600 dark:text-amber-400"
                   : ""
               }`}
@@ -2281,7 +2290,7 @@ function ProcessDetail(props: {
         <DetailRow label="memory">
           <span
             class={`tabular-nums ${
-              memoryCell().warning
+              memoryCell().kind === "unreadable"
                 ? "text-amber-600 dark:text-amber-400"
                 : ""
             }`}
@@ -2311,14 +2320,20 @@ function ProcessDetail(props: {
         </DetailRow>
         <DetailRow label="inspection">
           <Show
-            when={p().unreadable.length > 0}
-            fallback={<span>all requested facets readable</span>}
+            when={processInspectionNotes(p()).length > 0}
+            fallback={<span>all requested facets native</span>}
           >
-            <span class="flex flex-wrap gap-x-3 text-amber-600 dark:text-amber-400">
-              <For each={p().unreadable}>
-                {({ facet, errno }) => (
-                  <span>
-                    {facet} blind ({errno})
+            <span class="flex flex-wrap gap-x-3">
+              <For each={processInspectionNotes(p())}>
+                {(note) => (
+                  <span
+                    class={
+                      note.tone === "warn"
+                        ? "text-amber-600 dark:text-amber-400"
+                        : "text-gray-500 dark:text-gray-400"
+                    }
+                  >
+                    {note.text}
                   </span>
                 )}
               </For>
