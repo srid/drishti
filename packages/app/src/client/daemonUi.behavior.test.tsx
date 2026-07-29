@@ -45,18 +45,27 @@ const appSrc = readFileSync(join(import.meta.dir, "App.tsx"), "utf8");
 /** Minimal EntryState lens for glance placements (no live hostMap). */
 function fakeEntryState(
   kind: "connected" | "disconnected" | "failed" = "connected",
-) {
+  // Production glance only needs kind + failure.reason for HostDot; cast the
+  // test double rather than minting branded membership IDs.
+): () => import("@kolu/surface-map").EntryState<
+  { reason: string },
+  import("drishti-common/browser").ConnectionInfo
+> {
   return () => {
     if (kind === "connected") {
-      return { kind: "connected" as const, value: {} };
+      return {
+        kind: "connected",
+        membershipId: "test" as never,
+        clockOffset: null,
+      } as never;
     }
     if (kind === "failed") {
       return {
-        kind: "failed" as const,
+        kind: "failed",
         failure: { reason: "test-fail" },
-      };
+      } as never;
     }
-    return { kind: "disconnected" as const };
+    return { kind: "disconnected" } as never;
   };
 }
 
