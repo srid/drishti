@@ -50,7 +50,10 @@ import { appNameForHost } from "../client/title";
 import { buildAdminRouter } from "./admin-router";
 import { resolveDrvForHost } from "./archMap";
 import { buildClient } from "./build";
-import { buildHostPool } from "./hostRegistry";
+import {
+  buildHostPool,
+  type ProvisioningHostPoolOptions,
+} from "./hostRegistry";
 import { loadHosts, resolveHostsFile, saveHosts } from "./hostsStore";
 import { installStderrTimestamps, makeLogger } from "./log";
 import { startWakeMonitor } from "./wakeMonitor";
@@ -120,7 +123,7 @@ async function main(): Promise<void> {
   }
   log(`agent binary cache: ${binaryCache.substituters.join(", ")}`);
 
-  const resolveDrvPath: Parameters<typeof buildHostPool>[0]["resolveDrvPath"] = (
+  const resolveDrvPath: ProvisioningHostPoolOptions["resolveDrvPath"] = (
     host,
     context,
   ) => resolveDrvForHost(host, agentDrvBySystem, binaryCache, context);

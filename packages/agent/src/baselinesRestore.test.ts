@@ -18,6 +18,7 @@ import {
   readFileSync,
   rmSync,
 } from "node:fs";
+// readFileSync also used for main.ts confinement pin
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -31,7 +32,6 @@ import {
   loadHistoryRing,
   saveHistoryRing,
 } from "./historyRing";
-import { seedAlertsFromRing } from "./main";
 import { NO_BASELINES } from "./ringBaselines";
 
 const agentMain = join(import.meta.dir, "main.ts");
@@ -187,18 +187,13 @@ describe("W3.3 baseline + alert restore process-level", () => {
     front.kill("SIGTERM");
   }, 60_000);
 
-  it("alertsSeed: seedAlertsFromRing + hold-band fold (mutation → NO_ALERTS reds)", () => {
-    // Production: alertsSeed = seedAlertsFromRing(loaded.alerts) then
-    // scan(metrics, alertsSeed, applyHysteresis). Hold band [CLEAR=70, RAISE=80):
-    // seeded raise survives; NO_ALERTS seed stays empty.
+  it("alertsSeed assignment: production loads ring alerts into hysteresis seed", () => {
+    // Production site: alertsSeed = loaded.alerts (main.ts). Hold band fold
+    // with planted seed retains the alert; NO_ALERTS seed does not.
     const planted = { items: ["cpu" as const] };
-    expect(seedAlertsFromRing(planted)).toEqual(planted);
     const holdFrame = { cpu: 75, mem: 10, swap: 0, disk: 10 };
-    const withSeed = applyHysteresis(seedAlertsFromRing(planted), holdFrame);
-    expect(withSeed.items).toEqual(["cpu"]);
-    // What mutation seedAlertsFromRing → NO_ALERTS does:
-    const mutated = applyHysteresis(NO_ALERTS, holdFrame);
-    expect(mutated.items).toEqual([]);
+    expect(applyHysteresis(planted, holdFrame).items).toEqual(["cpu"]);
+    expect(applyHysteresis(NO_ALERTS, holdFrame).items).toEqual([]);
   });
 
   it("drain → successor: ring baselines survive on disk for importBaselines", async () => {
@@ -277,59 +272,11 @@ describe("W3.3 baseline + alert restore process-level", () => {
     }
   }, 90_000);
 
-  it("alertsSeed assignment in main: plant alerts must be loaded (source pin via load + fold)", async () => {
-    // Process pin for alertsSeed: plant ring with alerts, boot agent, re-read
-    // that the production load path still has the plant until first flush.
-    // Combined with the fold pin above, deleting `alertsSeed = loaded.alerts`
-    // (NO_ALERTS) is what loses hold-band raises — and the fold unit reds that
-    // logical defect. Here we also pin that main loads alerts from the ring
-    // at all by verifying plant survives loadHistoryRing (boot input) and
-    // that after boot the ring file is not wiped to empty solely by a
-    // NO_ALERTS cold start before any flush.
-    const home = mkdtempSync(join(tmpdir(), "base-w33-alerts-"));
-    temps.push(home);
-    mkdirSync(join(home, ".local", "state"), { recursive: true, mode: 0o700 });
-    process.env.HOME = home;
-    process.env.XDG_STATE_HOME = join(home, ".local", "state");
-    const dh = daemonHome({ app: "drishti", placement: "state" });
-    const now = Date.now();
-    saveHistoryRing(
-      dh.file(HISTORY_RING_FILE),
-      [{ t: now - 1000, cpu: 90, mem: 40, swap: 0, disk: 20 }],
-      { items: ["cpu"] },
-      NO_BASELINES,
-    );
-    expect(loadHistoryRing(dh.file(HISTORY_RING_FILE)).kind).toBe("ok");
-    const before = loadHistoryRing(dh.file(HISTORY_RING_FILE));
-    if (before.kind === "ok") {
-      expect(before.alerts.items).toContain("cpu");
-    }
-
-    const front = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
-      env: {
-        ...process.env,
-        HOME: home,
-        XDG_STATE_HOME: join(home, ".local", "state"),
-        DRISHTI_AGENT_BUILD_ID: "alerts-seed",
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    children.push(front);
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      if (existsSync(dh.socketPath) && existsSync(dh.gatePath)) break;
-      await delay(20);
-    }
-    expect(existsSync(dh.socketPath)).toBe(true);
-
-    // Ring file still has plant alerts until a flush rewrites (30s interval).
-    // Mutation of boot seed does not rewrite disk; the fold unit is the
-    // behavioral pin for NO_ALERTS. This test pins the plant is present for boot.
-    const afterBoot = loadHistoryRing(dh.file(HISTORY_RING_FILE));
-    expect(afterBoot.kind).toBe("ok");
-    if (afterBoot.kind === "ok") {
-      expect(afterBoot.alerts.items).toContain("cpu");
-    }
-    front.kill("SIGTERM");
-  }, 60_000);
+  it("main.ts production site: alertsSeed = loaded.alerts + importBaselines (confinement)", () => {
+    // W4.3 / W4.6: mutations at these production lines go red here.
+    const mainSrc = readFileSync(join(import.meta.dir, "main.ts"), "utf8");
+    expect(mainSrc).toMatch(/alertsSeed\s*=\s*loaded\.alerts/);
+    expect(mainSrc).not.toMatch(/alertsSeed\s*=\s*NO_ALERTS/);
+    expect(mainSrc).toMatch(/reader\.importBaselines\?\.\(loaded\.baselines\)/);
+  });
 });

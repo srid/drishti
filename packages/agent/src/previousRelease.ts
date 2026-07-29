@@ -1,9 +1,10 @@
 /**
- * Previous-release window resolver (W3.5).
+ * Previous-release window resolver (W4.8).
  *
  * Resolves the previous release tag/store for the mixed-build window e2e.
- * Arming is comparable DATA (injected tag source), not a null-only constant.
- * When armed, hard-refuses previous store == current.
+ * Arming is comparable DATA (injected tag source). Armed path: given the
+ * CURRENT tag, pick the latest release tag strictly older than it (real
+ * ordering). Hard-refuses previous store == current.
  */
 
 import {
@@ -44,21 +45,45 @@ export type PreviousReleaseResolution =
       window: PreviousReleaseWindow;
     };
 
+/** Parse vMAJOR.MINOR.PATCH for ordering; fail-fast on garbage. */
+function parseReleaseParts(tag: string): [number, number, number] {
+  const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(tag);
+  if (!m) {
+    throw new Error(
+      `previous-release tag is not orderable: ${JSON.stringify(tag)}`,
+    );
+  }
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/** Negative if a is strictly older than b; 0 if equal; positive if a is newer. */
+export function compareReleaseTags(a: string, b: string): number {
+  const [am, an, ap] = parseReleaseParts(a);
+  const [bm, bn, bp] = parseReleaseParts(b);
+  if (am !== bm) return am - bm;
+  if (an !== bn) return an - bn;
+  return ap - bp;
+}
+
 /**
  * Resolve the previous-release window.
  *
  * - Unarmed (`firstDaemonCapableReleaseTag === null`): synthetic path.
- * - Armed: pick the previous tag from the tag source (the tag immediately
- *   before / equal to the arming tag when present, else the newest prior
- *   release tag), resolve its store, hard-refuse previous==current.
+ * - Armed: require {@link currentTag}; select the latest release tag strictly
+ *   older than current (ordering is real, not "first unequal tag"); resolve
+ *   its store; hard-refuse previous==current.
  */
 export function resolvePreviousRelease(args: {
   arming: ArmingConfig;
   tags: TagSource;
   currentStore: string;
   /**
+   * The current release tag — required when armed so predecessor ordering is
+   * well-defined (W4.8). Ignored when unarmed.
+   */
+  currentTag?: string | null;
+  /**
    * Optional explicit previous tag (overrides auto-pick from tags list).
-   * When armed and omitted, selects from `tags.tags`.
    */
   previousTag?: string | null;
 }): PreviousReleaseResolution {
@@ -73,16 +98,38 @@ export function resolvePreviousRelease(args: {
 
   let previousTag = args.previousTag ?? null;
   if (previousTag === null || previousTag === undefined || previousTag === "") {
-    // Auto-pick: prefer a tag strictly before the arming tag in the list,
-    // else the first release-shaped tag that isn't the arming tag alone.
+    const currentTag = args.currentTag;
+    if (currentTag === null || currentTag === undefined || currentTag === "") {
+      throw new Error(
+        `previous-release resolver is armed at ${armedAt} but currentTag is missing — cannot order a predecessor`,
+      );
+    }
+    if (!isPreviousReleaseTag(currentTag)) {
+      throw new Error(
+        `current tag ${JSON.stringify(currentTag)} is not a release tag shape`,
+      );
+    }
+    // Latest release tag strictly older than current.
+    // Prefer newest-first list position after current; fall back to compare.
     const releaseTags = args.tags.tags.filter((t) => isPreviousReleaseTag(t));
-    previousTag =
-      releaseTags.find((t) => t !== armedAt) ?? releaseTags[0] ?? null;
+    const curIdx = releaseTags.indexOf(currentTag);
+    if (curIdx >= 0 && curIdx + 1 < releaseTags.length) {
+      // Newest-first: the next entry is the immediate predecessor.
+      previousTag = releaseTags[curIdx + 1]!;
+    } else {
+      // Current not in list, or no successor entry — pick max strictly older.
+      let best: string | null = null;
+      for (const t of releaseTags) {
+        if (compareReleaseTags(t, currentTag) >= 0) continue;
+        if (best === null || compareReleaseTags(t, best) > 0) best = t;
+      }
+      previousTag = best;
+    }
   }
 
   if (previousTag === null || previousTag === "") {
     throw new Error(
-      `previous-release resolver is armed at ${armedAt} but no previous tag could be resolved from the tag source`,
+      `previous-release resolver is armed at ${armedAt} but no previous tag strictly older than ${JSON.stringify(args.currentTag)} could be resolved`,
     );
   }
   if (!isPreviousReleaseTag(previousTag)) {
@@ -103,8 +150,7 @@ export function resolvePreviousRelease(args: {
     previousStore,
     currentStore: args.currentStore,
   };
-  // Hard refusal when previous equals current — THIS call is the pin W3.5
-  // mutations delete to go red.
+  // Hard refusal when previous equals current — pin W4.8 / W3.5.
   assertPreviousReleaseWindow(window);
   return { kind: "armed", window };
 }
@@ -113,6 +159,7 @@ export function resolvePreviousRelease(args: {
 export function resolvePreviousReleaseDefault(
   tags: TagSource,
   currentStore: string,
+  currentTag?: string | null,
 ): PreviousReleaseResolution {
   return resolvePreviousRelease({
     arming: {
@@ -120,6 +167,7 @@ export function resolvePreviousReleaseDefault(
     },
     tags,
     currentStore,
+    currentTag,
   });
 }
 

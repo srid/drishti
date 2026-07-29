@@ -23,6 +23,7 @@
  * `@kolu/surface-daemon-supervisor`. Host-set persistence is `hostsStore.ts`.
  */
 
+import { ORPCError } from "@orpc/client";
 import { composeSurfaceContracts, scopeSibling } from "@kolu/surface/define";
 import {
   controlCoreSurface,
@@ -37,7 +38,6 @@ import {
   drainAndAwaitExit,
   drainRejectionSuffix,
   probeDaemonIdentityFrom,
-  type ConnectorDrainBudget,
 } from "@kolu/surface-daemon-supervisor";
 import {
   type Admit,
@@ -124,78 +124,64 @@ export type DrishtiConvergence =
       readonly error: string;
     };
 
-/** Wire result of control-core drain when the agent reports flush status. */
-export type DrainVerbResult = {
-  ok: boolean;
-  persistFailed: boolean;
-  error: string | null;
+/** Captured final-flush failure from a drain that threw DRISHTI_PERSIST_FAILED. */
+export type DrainPersistFailure = {
+  persistFailed: true;
+  error: string;
 };
 
 /**
- * Parent-side projection of a drain verb result (W3.2). Pure — unit-tested so
- * dropping `persistFailed` from the drain result / ignoring it goes red.
+ * Project a captured drain persist-failure to the standing parent anomaly
+ * (W4.2). Used by the automatic admit path and renew.
  */
-export function convergenceFromDrainResult(
-  result: DrainVerbResult | null | undefined,
+export function convergenceFromDrainPersistFailure(
+  failure: DrainPersistFailure | null | undefined,
 ): Extract<DrishtiConvergence, { kind: "drained-with-persist-failure" }> | null {
-  if (result?.persistFailed) {
+  if (failure?.persistFailed) {
     return {
       kind: "drained-with-persist-failure",
       detail: "final history ring flush failed during drain",
-      error: result.error ?? "persist-failed",
+      error: failure.error,
     };
   }
   return null;
 }
 
 /**
- * Parse drain verb throw / return into a typed result (W3.2). Mutations that
- * stop throwing DRISHTI_PERSIST_FAILED or strip persistFailed go red via the
- * parent unit + flushFail process tests.
+ * Capture a tagged ORPCError from drain — code only, no string soup (W4.2).
+ * Success is void; only failures throw.
  */
-export function parseDrainVerbOutcome(args: {
-  raw?: unknown;
-  err?: unknown;
-}): DrainVerbResult | null {
-  if (args.raw !== undefined && args.raw !== null && typeof args.raw === "object") {
-    if ("persistFailed" in args.raw) {
-      const r = args.raw as {
-        ok?: boolean;
-        persistFailed?: boolean;
-        error?: string | null;
-      };
-      return {
-        ok: r.ok === true,
-        persistFailed: r.persistFailed === true,
-        error: typeof r.error === "string" ? r.error : null,
-      };
-    }
-  }
-  if (args.err !== undefined && args.err !== null) {
-    const e = args.err as {
-      code?: string;
-      message?: string;
-      data?: { persistFailed?: boolean; error?: string | null };
+export function captureDrainPersistFailure(
+  err: unknown,
+): DrainPersistFailure | null {
+  if (err instanceof ORPCError && err.code === "DRISHTI_PERSIST_FAILED") {
+    const data = err.data as { error?: string } | undefined;
+    return {
+      persistFailed: true,
+      error:
+        (typeof data?.error === "string" && data.error) ||
+        err.message ||
+        "persist-failed",
     };
-    if (e.code === "DRISHTI_PERSIST_FAILED") {
-      return {
-        ok: false,
-        persistFailed: true,
-        error:
-          (typeof e.data?.error === "string" && e.data.error) ||
-          e.message ||
-          "persist-failed",
-      };
-    }
-    const msg = e.message ?? "";
-    if (msg.includes("DRISHTI_PERSIST_FAILED")) {
-      return {
-        ok: false,
-        persistFailed: true,
-        error:
-          msg.replace(/^.*DRISHTI_PERSIST_FAILED:?\s*/, "") || "persist-failed",
-      };
-    }
+  }
+  // Also accept plain objects with code (cross-realm ORPCError).
+  if (
+    err !== null &&
+    typeof err === "object" &&
+    "code" in err &&
+    (err as { code: unknown }).code === "DRISHTI_PERSIST_FAILED"
+  ) {
+    const e = err as {
+      message?: string;
+      data?: { error?: string };
+    };
+    return {
+      persistFailed: true,
+      error:
+        (typeof e.data?.error === "string" && e.data.error) ||
+        e.message ||
+        "persist-failed",
+    };
   }
   return null;
 }
@@ -225,26 +211,39 @@ export type ResolvedHostAgent = {
   system: string;
 };
 
-export interface HostPoolOptions {
+/**
+ * W4.7: pool construction is a discriminated union — the illegal state
+ * "provisioning without ids" / "off-nix with a resolver" is unspellable.
+ *
+ * - Provisioning: resolver + non-empty ids map both required.
+ * - Off-nix: no `resolveDrvPath` field at all (no agent provision path).
+ */
+export type ProvisioningHostPoolOptions = {
   initialHosts: readonly string[];
+  hostsFile: string;
   /** Resolve a host string to its agent `.drv` + probed system. */
   resolveDrvPath: (
     host: string,
     context: ResolveDrvPathContext,
   ) => Promise<ResolvedHostAgent>;
+  /** Per-system expected agent BUILD_IDs — required, non-empty. */
+  buildIdBySystem: Readonly<Record<string, string>>;
+};
+
+export type OffNixHostPoolOptions = {
+  initialHosts: readonly string[];
   hostsFile: string;
-  /**
-   * Per-system expected agent BUILD_IDs. Required whenever the pool is
-   * provisioning (the default — resolveDrvPath is always the provision path).
-   * Only omit / leave empty with `offNix: true`.
-   */
-  buildIdBySystem?: Readonly<Record<string, string>>;
-  /**
-   * Genuine off-nix parent: no agent drv map at all. When true, expected
-   * build id falls back to env / can't-judge. When false/omitted, the pool
-   * is provisioning and buildIdBySystem must cover every system (W3.6).
-   */
-  offNix?: boolean;
+  // intentionally no resolveDrvPath — off-nix has no agent provision path
+};
+
+export type HostPoolOptions =
+  | ProvisioningHostPoolOptions
+  | OffNixHostPoolOptions;
+
+function isProvisioningPool(
+  opts: HostPoolOptions,
+): opts is ProvisioningHostPoolOptions {
+  return "resolveDrvPath" in opts;
 }
 
 /** Live combined dial stashed under the app-scoped client admit receives. */
@@ -311,9 +310,9 @@ export function awaitExitViaProcessOracle(
 
 /**
  * Admit factory: probe identity, run convergeAdmit, bind active on adopt.
- * Exported for W3.1a mutation pins (bypass convergeAdmit ⇒ drain not called).
+ * Internal — bound by the production makeSession assembly (W4.1 dial e2e).
  */
-export function makeAgentAdmit(args: {
+function makeAgentAdmit(args: {
   combinedByScopedClient: WeakMap<AgentAppClient, ActiveCombined>;
   /** Budget is minted on first drv resolve (when system is known). */
   getBudget: () => ReturnType<typeof createConnectorDrainBudget>;
@@ -337,6 +336,24 @@ export function makeAgentAdmit(args: {
       throw new Error("drishti agent admit superseded");
     }
 
+    // W4.2: wrap fireDrain to capture tagged persist-failure app-side.
+    // Framework plug stays void; we never present a failed final write as clean.
+    const drainCapture: { failure: DrainPersistFailure | null } = {
+      failure: null,
+    };
+    const drain = async (): Promise<void> => {
+      try {
+        await probe.fireDrain();
+      } catch (err) {
+        const captured = captureDrainPersistFailure(err);
+        if (captured !== null) {
+          drainCapture.failure = captured;
+          return; // drain fired; awaitExit still waits for process exit
+        }
+        throw err;
+      }
+    };
+
     const admitLog: DaemonLogger = stderrLogger();
     const verdict = await convergeAdmit({
       running: {
@@ -344,7 +361,7 @@ export function makeAgentAdmit(args: {
         instanceKey: probe.instanceKey,
       },
       budget: args.getBudget(),
-      drain: probe.fireDrain,
+      drain,
       awaitExit: probe.awaitExit,
       ceilingMs: probe.drainCeilingMs,
       log: admitLog,
@@ -365,12 +382,17 @@ export function makeAgentAdmit(args: {
         return { kind: "adopt" };
       }
       case "replaced": {
-        args.setConvergence(null);
+        // Automatic path: project drained-with-persist-failure when the final
+        // flush threw — never present a dirty drain as clean (W4.2).
+        const projected = convergenceFromDrainPersistFailure(
+          drainCapture.failure,
+        );
+        args.setConvergence(projected);
         return { kind: "replaced", reason: verdict.reason };
       }
       case "refuse": {
-        // W3.4: retain the combined binding so renew() can drain a refused
-        // session (skew / cross-supervisor) instead of throwing on null.
+        // W3.4 / W4.4: retain the combined binding so renew() can drain a
+        // refused session instead of throwing on null.
         args.setConvergence(verdict.anomaly);
         args.setActiveCombined(active);
         return {
@@ -446,20 +468,17 @@ function attachDaemonSession(args: {
           "drishti agent is not bound — cannot drain (the daemon is unreachable)",
         );
       }
-      // Object holder: TS control-flow analysis ignores assignments inside the
-      // drainAndAwaitExit callback if we use a bare `let`.
-      const drainHolder: { result: DrainVerbResult | null } = { result: null };
+      const drainHolder: { failure: DrainPersistFailure | null } = {
+        failure: null,
+      };
       const { took, drainRejection } = await drainAndAwaitExit(
         async () => {
           try {
-            const raw: unknown =
-              await active.client.surface.control.core.drain();
-            drainHolder.result = parseDrainVerbOutcome({ raw });
+            await active.client.surface.control.core.drain();
           } catch (err) {
-            // Agent throws ORPCError code DRISHTI_PERSIST_FAILED (W3.2).
-            const parsed = parseDrainVerbOutcome({ err });
-            if (parsed !== null) {
-              drainHolder.result = parsed;
+            const captured = captureDrainPersistFailure(err);
+            if (captured !== null) {
+              drainHolder.failure = captured;
               return; // drain fired; awaitExit still waits for process exit
             }
             throw err;
@@ -474,7 +493,7 @@ function attachDaemonSession(args: {
             drainRejectionSuffix(drainRejection),
         );
       }
-      const projected = convergenceFromDrainResult(drainHolder.result);
+      const projected = convergenceFromDrainPersistFailure(drainHolder.failure);
       if (projected !== null) {
         args.setConvergence(projected);
       }
@@ -529,20 +548,41 @@ export function expectProvisionedBuildId(args: {
 }
 
 export function buildHostPool(opts: HostPoolOptions): HostPool {
+  // W4.7: discriminated union — provisioning is "has resolveDrvPath", never
+  // an offNix boolean override.
+  if (!isProvisioningPool(opts)) {
+    if (opts.initialHosts.length > 0) {
+      throw new Error(
+        "buildHostPool: off-nix pool has no resolveDrvPath and cannot host agent sessions",
+      );
+    }
+    // Empty off-nix pool: membership only, no connector assembly.
+    return buildRemotePool<HostSession, undefined>({
+      initialHosts: [],
+      buildEntry: () => {
+        throw new Error("buildHostPool: off-nix pool has no buildEntry");
+      },
+      controls: {
+        reconnect: () => {},
+        recheck: () => {},
+      },
+      persist: (hosts) => saveHosts(opts.hostsFile, hosts),
+      log: (line) => log(line),
+    });
+  }
+
   // Policy is pure config (mint once as fallback). Budget is minted PER host
   // entry so flaps on host A don't exhaust host B's drain attempts — and so
   // the expected build id can match the host's probed system (multi-arch).
   const fallbackBuildId = process.env.DRISHTI_AGENT_BUILD_ID ?? "";
-  const buildIdBySystem = opts.buildIdBySystem ?? {};
-  // W3.6: provisioning is decided by the DRV map path (resolveDrvPath is
-  // always how this pool provisions). Only `offNix: true` opts out — never
-  // the absence of the ids map (that inversion is the F6 defect).
-  const provisioning = opts.offNix !== true;
-  if (provisioning && Object.keys(buildIdBySystem).length === 0) {
+  const buildIdBySystem = opts.buildIdBySystem;
+  if (Object.keys(buildIdBySystem).length === 0) {
     throw new Error(
-      "buildHostPool: provisioning path requires a non-empty buildIdBySystem (drv map is in use via resolveDrvPath; pass offNix: true only for genuine off-nix parents)",
+      "buildHostPool: provisioning path requires a non-empty buildIdBySystem (drv map is in use via resolveDrvPath)",
     );
   }
+  const provisioning = true;
+  const resolveDrvPath = opts.resolveDrvPath;
 
   return buildRemotePool<HostSession, undefined>({
     initialHosts: opts.initialHosts,
@@ -585,7 +625,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
             .filter((e): e is [string, string] => e[1] !== undefined),
         ),
         resolveDrvPath: async (context) => {
-          const resolved = await opts.resolveDrvPath(host, context);
+          const resolved = await resolveDrvPath(host, context);
           // W2.6: provisioned path fail-fast via expectProvisionedBuildId.
           if (budget === null) {
             expectedBuildId = expectProvisionedBuildId({

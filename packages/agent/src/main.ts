@@ -89,14 +89,6 @@ const POLL_INTERVAL_MS = 2000;
  *  different cadence pass `ringPersistMs` on the private build options only. */
 const RING_PERSIST_INTERVAL_MS = 30_000;
 
-/**
- * Seed the alerts hysteresis fold from a loaded ring (W3.3).
- * Production: identity. Mutation `return NO_ALERTS` loses pre-drain raises
- * in the hold band and is unit-tested.
- */
-export function seedAlertsFromRing(loaded: Alerts): Alerts {
-  return loaded;
-}
 /** Idle-exit after this many ms with no live parent connections. */
 const IDLE_TIMEOUT_MS = 60 * 60_000;
 
@@ -253,9 +245,9 @@ async function buildAgentRuntime(
     const loaded = loadHistoryRing(opts.ringPath);
     if (loaded.kind === "ok") {
       historyView = { kind: "ok", samples: loaded.samples };
-      // W3.3: seed hysteresis from the ring (mutation → NO_ALERTS goes red).
-      alertsSeed = seedAlertsFromRing(loaded.alerts);
-      // Restore baselines BEFORE any host/process read (W3.3).
+      // W3.3 / W4.3: seed hysteresis from the ring (mutation → NO_ALERTS reds).
+      alertsSeed = loaded.alerts;
+      // Restore baselines BEFORE any host/process read (W3.3 / W4.3).
       reader.importBaselines?.(loaded.baselines);
     } else if (
       loaded.reason === "unknown-version" ||
@@ -492,9 +484,10 @@ async function buildAgentRuntime(
         }
         const identity = readBakedIdentity("DRISHTI_AGENT");
         const startedAt = Date.now();
-        // W3.2: drain verb RESULT carries final-flush failure (typed). The
-        // frozen control-core schema has empty drain output, but the runtime
-        // still returns the value to the parent (the knowing endpoint).
+        // W4.2: control-core drain is FROZEN void. Success returns void; final
+        // flush failure throws typed ORPCError (data carries the failure). The
+        // parent wraps fireDrain to capture the rejection — never decorate the
+        // wire schema or return illegal success objects.
         const controlBase = controlCoreFragment({
           stateRoot: opts.stateRoot,
           surfaceVersion: AGENT_SURFACE_VERSION,
@@ -502,52 +495,34 @@ async function buildAgentRuntime(
           commit: identity.navigableCommit,
           buildId: identity.staleKey,
           onDrain: async () => {
-            // No-op placeholder — real drain body below returns the result.
+            // Placeholder — body below owns flush + throw.
           },
         });
         const control = {
           procedures: {
             core: {
               hello: controlBase.procedures.core.hello,
-              drain: async () => {
-                // W3.2: final-flush failure is carried on the drain verb.
-                // Frozen control-core types drain as void, so we RETURN a typed
-                // object AND throw a tagged error the parent can project when
-                // the wire strips void outputs. Defer lifetime abort so the
-                // response / error can leave the process first.
+              drain: async (): Promise<void> => {
                 const flush = flushRing();
-                const result = !flush.ok
-                  ? {
-                      ok: false as const,
-                      persistFailed: true as const,
-                      error: flush.error,
-                    }
-                  : {
-                      ok: true as const,
-                      persistFailed: false as const,
-                      error: null,
-                    };
-                // Defer lifetime abort so the drain RPC can finish on the wire
-                // (process exit must not race the response/error).
+                // Defer lifetime abort so the drain RPC (or error) can leave
+                // the process first.
                 setTimeout(() => {
                   void opts.onDrain?.(flush);
                 }, 150);
                 if (!flush.ok) {
-                  // Defined ORPCError so the parent receives code+data (not
-                  // INTERNAL_SERVER_ERROR soup). Parent maps this to
-                  // drained-with-persist-failure (W3.2).
                   throw new ORPCError("DRISHTI_PERSIST_FAILED", {
                     message: flush.error,
-                    data: result,
+                    data: {
+                      persistFailed: true as const,
+                      error: flush.error,
+                    },
                   });
                 }
-                return result;
+                // void success — frozen control-core output is empty.
               },
             },
           },
         };
-        // Cast: frozen control-core schema types drain as void, but the
-        // runtime still returns FlushResult for the parent (W3.2).
         const runtime = implementSurfaces(
           { app: surface, control: controlCoreSurface },
           {},

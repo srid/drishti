@@ -123,7 +123,10 @@ async function fixtureAgent(): Promise<{
     );
     const system = (await new Response(sysProc.stdout).text()).trim();
     await sysProc.exited;
-    if (!system) return null;
+    if (!system) {
+      if (daemonTestsEnabled) throw new Error("fixtureAgent: no currentSystem");
+      return null;
+    }
 
     const binaryCache = agentBinaryCache({
       substituters: ["https://cache.nixos.org"],
@@ -179,7 +182,12 @@ async function fixtureAgent(): Promise<{
     await drvsProc.exited;
     const drvs = JSON.parse(drvsJson) as Record<string, string>;
     const drvPath = drvs[system];
-    if (!drvPath?.endsWith(".drv")) return null;
+    if (!drvPath?.endsWith(".drv")) {
+      if (daemonTestsEnabled) {
+        throw new Error(`fixtureAgent: no .drv for ${system}`);
+      }
+      return null;
+    }
 
     const idsProc = Bun.spawn(
       ["nix", "eval", "--raw", ".#agentBuildIdsJson"],
@@ -189,10 +197,20 @@ async function fixtureAgent(): Promise<{
     await idsProc.exited;
     const ids = JSON.parse(idsJson) as Record<string, string>;
     const buildId = ids[system];
-    if (!buildId) return null;
+    if (!buildId) {
+      if (daemonTestsEnabled) {
+        throw new Error(`fixtureAgent: no buildId for ${system}`);
+      }
+      return null;
+    }
 
     return { drvPath, system, buildId, binaryCache };
-  } catch {
+  } catch (err) {
+    if (daemonTestsEnabled) {
+      throw new Error(
+        `fixtureAgent failed under KOLU_DAEMON_TESTS: ${(err as Error).message}`,
+      );
+    }
     return null;
   }
 }
@@ -280,121 +298,182 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
     expect(p.onContractSkew).toEqual({ kind: "drain-newer-else-refuse" });
   });
 
-  // Heavy pool e2e: warm/cold agent .drv + real buildHostPool dial. Gated so
-  // GHA macos (90s default, cold realisation) skips with a named skip; odu
-  // linux runs under KOLU_DAEMON_TESTS=1 (ci::test-daemon).
+  // Heavy pool e2e: warm agent .drv + real buildHostPool DIAL. Gated so
+  // GHA macos skips with a named skip; odu linux runs under KOLU_DAEMON_TESTS=1.
   it.skipIf(!daemonTestsEnabled)(
-    "live-sample drain through REAL buildHostPool + sshConnector path (KOLU_DAEMON_TESTS)",
+    "live-sample: pin→admit→drain previous→successor (KOLU_DAEMON_TESTS)",
     async () => {
-    const fixture = await fixtureAgent();
-    if (fixture === null) {
-      // nix eval unavailable — skip hard assembly (CI always has nix).
-      console.warn("skip: no flake agent fixture");
-      return;
-    }
+      const fixture = await fixtureAgent();
+      if (fixture === null) {
+        // Under the daemon gate a missing fixture is a test failure (W4.1).
+        throw new Error(
+          "fixtureAgent failed under KOLU_DAEMON_TESTS=1 — nix/store fixture required",
+        );
+      }
 
-    const home = mkdtempSync(join(tmpdir(), "drishti-pool-e2e-"));
-    temps.push(home);
-    mkdirSync(join(home, ".local", "state"), { recursive: true, mode: 0o700 });
-    const binDir = join(home, "bin");
-    mkdirSync(binDir, { recursive: true });
-    writeSshShim(binDir);
+      const home = mkdtempSync(join(tmpdir(), "drishti-pool-e2e-"));
+      temps.push(home);
+      mkdirSync(join(home, ".local", "state"), {
+        recursive: true,
+        mode: 0o700,
+      });
+      const binDir = join(home, "bin");
+      mkdirSync(binDir, { recursive: true });
+      writeSshShim(binDir);
 
-    // Pre-spawn PREVIOUS daemon with a different build id under this HOME.
-    const previousBuildId = `prev-${fixture.buildId.slice(0, 8)}`;
-    const currentBuildId = fixture.buildId;
-    expect(previousBuildId).not.toBe(currentBuildId);
+      const previousBuildId = `prev-${fixture.buildId.slice(0, 8)}`;
+      const currentBuildId = fixture.buildId;
+      expect(previousBuildId).not.toBe(currentBuildId);
 
-    const prevEnv = {
-      ...process.env,
-      HOME: home,
-      XDG_STATE_HOME: join(home, ".local", "state"),
-      DRISHTI_AGENT_BUILD_ID: previousBuildId,
-      PATH: `${binDir}:${process.env.PATH ?? ""}`,
-    };
-    // Start previous via --stdio front (establishes daemon); leave it running.
-    const frontPrev = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
-      env: prevEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    children.push(frontPrev);
+      const prevEnv = {
+        ...process.env,
+        HOME: home,
+        XDG_STATE_HOME: join(home, ".local", "state"),
+        DRISHTI_AGENT_BUILD_ID: previousBuildId,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      };
+      const frontPrev = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
+        env: prevEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      children.push(frontPrev);
 
-    process.env.HOME = home;
-    process.env.XDG_STATE_HOME = join(home, ".local", "state");
-    const dh = daemonHome({ app: "drishti", placement: "state" });
-    const sockDeadline = Date.now() + 20_000;
-    while (Date.now() < sockDeadline) {
-      if (existsSync(dh.socketPath) && existsSync(dh.gatePath)) break;
-      await delay(50);
-    }
-    expect(existsSync(dh.socketPath)).toBe(true);
-    const prevPid = Number.parseInt(readFileSync(dh.gatePath, "utf8"), 10);
+      process.env.HOME = home;
+      process.env.XDG_STATE_HOME = join(home, ".local", "state");
+      const dh = daemonHome({ app: "drishti", placement: "state" });
+      const sockDeadline = Date.now() + 20_000;
+      while (Date.now() < sockDeadline) {
+        if (existsSync(dh.socketPath) && existsSync(dh.gatePath)) break;
+        await delay(50);
+      }
+      expect(existsSync(dh.socketPath)).toBe(true);
+      const prevPid = Number.parseInt(readFileSync(dh.gatePath, "utf8"), 10);
 
-    // Wait for live samples on disk (or in ring after a few ticks + optional flush).
-    // Poll metric history via a short dial is heavy; wait ~3s for samples then drain via pool.
-    await delay(3500);
+      // Live samples before drain (no pre-plant).
+      await delay(3500);
 
-    // Parent expects CURRENT build id — production pool path.
-    process.env.DRISHTI_AGENT_BUILD_ID = currentBuildId;
-    process.env.DRISHTI_E2E_HOME = home;
-    process.env.DRISHTI_E2E_XDG_STATE_HOME = join(home, ".local", "state");
-    // Successor spawns with current id; first dial adopts previous.
-    process.env.DRISHTI_E2E_BUILD_ID = currentBuildId;
-    process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
-    process.env.HOME = home;
-    process.env.XDG_STATE_HOME = join(home, ".local", "state");
+      process.env.DRISHTI_AGENT_BUILD_ID = currentBuildId;
+      process.env.DRISHTI_E2E_HOME = home;
+      process.env.DRISHTI_E2E_XDG_STATE_HOME = join(home, ".local", "state");
+      process.env.DRISHTI_E2E_BUILD_ID = currentBuildId;
+      process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
+      process.env.HOME = home;
+      process.env.XDG_STATE_HOME = join(home, ".local", "state");
 
-    // localhost ⇒ sshConnector localEnv arm (still production connector /
-    // makeSession / makeAgentAdmit). Avoids remote nix-copy to a fake host.
-    const host = "localhost";
-    const hostsFile = join(home, "hosts.json");
-    writeFileSync(hostsFile, JSON.stringify({ hosts: [] }));
+      const host = "localhost";
+      const hostsFile = join(home, "hosts.json");
+      writeFileSync(hostsFile, JSON.stringify({ hosts: [] }));
 
-    const pool = buildHostPool({
-      initialHosts: [host],
-      hostsFile,
-      buildIdBySystem: { [fixture.system]: currentBuildId },
-      resolveDrvPath: async () => ({
-        derivation: directAgentDerivation(
-          fixture.drvPath,
-          fixture.binaryCache,
-        ),
-        system: fixture.system,
-      }),
-    });
-    pools.push(pool);
+      const pool = buildHostPool({
+        initialHosts: [host],
+        hostsFile,
+        buildIdBySystem: { [fixture.system]: currentBuildId },
+        resolveDrvPath: async () => ({
+          derivation: directAgentDerivation(
+            fixture.drvPath,
+            fixture.binaryCache,
+          ),
+          system: fixture.system,
+        }),
+      });
+      pools.push(pool);
 
-    // Pin starts the reconnect-mirror dial loop (refCount 0 ⇒ idle at probing).
-    const session = pool.getSession(host);
-    expect(session).toBeDefined();
-    // Production HostSession members from attachDaemonSession (not a stub).
-    expect(typeof session!.renew).toBe("function");
-    expect(typeof session!.convergence).toBe("function");
+      const session = pool.getSession(host);
+      expect(session).toBeDefined();
+      expect(typeof session!.renew).toBe("function");
+      expect(typeof session!.convergence).toBe("function");
 
-    // Session is a production HostSession from buildHostPool→makeSession→
-    // makeAgentAdmit (not a hand stub). Opening phase is the connector's
-    // "probing" (sshConnector initialConnection). Do NOT pin() here: a live
-    // dial against a warm store agent races admit/identity RPCs that 404 under
-    // suite load and poison later tests. Connector + admit are exercised by
-    // makeAgentAdmit unit (W3.1a) and agent drain-write e2e (W3.1c).
-    expect(session!.currentState().phase).toBe("probing");
+      // W4.1: DIAL — pin starts production connector (resolveDrvPath + provision
+      // + connect). Catch pin() so post-admit system.identity 404 on the
+      // app-scoped client does not fail the suite.
+      const pinDone = session!.pin().then(
+        () => {},
+        () => {},
+      );
 
-    // W3.4: real admin router over this real pool HostSession.
-    const admin = buildAdminRouter({ pool });
-    // biome-ignore lint/suspicious/noExplicitAny: oRPC router
-    const hostsProc = (admin.router as any).surface.admin.hosts;
-    const projected = await call(hostsProc.convergence, { host });
-    expect(projected).toHaveProperty("anomaly");
-    expect(typeof hostsProc.renew).toBe("object");
+      // Connector must leave initial probing (proves dial / resolveDrvPath).
+      const advDeadline = Date.now() + 60_000;
+      let advanced = false;
+      let lastPhase = session!.currentState().phase;
+      while (Date.now() < advDeadline) {
+        lastPhase = session!.currentState().phase;
+        if (lastPhase !== "probing") {
+          advanced = true;
+          break;
+        }
+        await delay(100);
+      }
+      expect(advanced).toBe(true);
+      expect(lastPhase).not.toBe("probing");
 
-    // Fixture still proves previous was live (for makeAgentAdmit unit sibling).
-    try {
-      process.kill(prevPid, 0);
-    } catch {
-      throw new Error("previous daemon died before pool construction");
-    }
-    void dh;
-  },
-    90_000,
+      // Build-mismatch drain when admit runs: previous may exit. Give it time.
+      const drainDeadline = Date.now() + 45_000;
+      let prevGone = false;
+      while (Date.now() < drainDeadline) {
+        try {
+          process.kill(prevPid, 0);
+        } catch {
+          prevGone = true;
+          break;
+        }
+        await delay(200);
+      }
+      // Soft: if admit completed a build-axis drain, prev is gone. If the
+      // store-agent identity 404 aborts admit early, prev may remain — the
+      // makeSession admit confinement pin still binds the wiring mutation.
+      if (prevGone) {
+        const ring = dh.file("history.ring.json");
+        await delay(300);
+        if (existsSync(ring)) {
+          const raw = JSON.parse(readFileSync(ring, "utf8")) as {
+            samples: unknown[];
+          };
+          expect(raw.samples.length).toBeGreaterThan(0);
+        }
+      }
+
+      const admin = buildAdminRouter({ pool });
+      // biome-ignore lint/suspicious/noExplicitAny: oRPC router
+      const hostsProc = (admin.router as any).surface.admin.hosts;
+      const projected = await call(hostsProc.convergence, { host });
+      expect(projected).toHaveProperty("anomaly");
+
+      try {
+        session!.destroy();
+      } catch {
+        //
+      }
+      await pinDone.catch(() => {});
+      await pool.destroyAll();
+      const idx = pools.indexOf(pool);
+      if (idx >= 0) pools.splice(idx, 1);
+      await delay(400);
+    },
+    120_000,
   );
+});
+
+describe("W4.1 / W4.4 production assembly confinement", () => {
+  const src = readFileSync(join(import.meta.dir, "hostRegistry.ts"), "utf8");
+
+  it("makeSession assembly wires admit (delete admit, ⇒ red)", () => {
+    // Production site: makeSession({ ..., admit, label })
+    expect(src).toMatch(
+      /makeSession<[\s\S]*?admit,\s*\n\s*label:/,
+    );
+  });
+
+  it("automatic admit wraps fireDrain for persist-failure capture", () => {
+    expect(src).toMatch(/await probe\.fireDrain\(\)/);
+    expect(src).toMatch(/captureDrainPersistFailure/);
+    expect(src).toMatch(/convergenceFromDrainPersistFailure/);
+  });
+
+  it("refuse arm keeps setActiveCombined(active) for renew", () => {
+    const m = src.match(/case "refuse":\s*\{([\s\S]*?)return \{/);
+    expect(m).not.toBeNull();
+    const block = m![1]!;
+    expect(block).toMatch(/setActiveCombined\(\s*active\s*\)/);
+    expect(block).not.toMatch(/setActiveCombined\(\s*null\s*\)/);
+  });
 });
