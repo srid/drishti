@@ -45,6 +45,11 @@ import { sessionConnection } from "@kolu/surface-remote/connection";
 import { surfaceAppServer } from "@kolu/surface-app/server";
 import { adminContract, adminSurfaces } from "../common/admin-surface";
 import { hostSurfaceMap } from "../common/hostMap";
+import {
+  emptyDaemonStatus,
+  projectConvergenceAnomaly,
+  projectDaemonStatus,
+} from "./daemonStatusProjection";
 import type { HostPool } from "./hostRegistry";
 import { makeLogger } from "./log";
 import { buildRouter } from "./router";
@@ -172,15 +177,17 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
               }
               const c = session.convergence();
               if (c === null) return { anomaly: null };
-              return {
-                anomaly: {
-                  kind: c.kind,
-                  detail: c.detail,
-                  ...("error" in c && typeof c.error === "string"
-                    ? { error: c.error }
-                    : {}),
-                },
-              };
+              return { anomaly: projectConvergenceAnomaly(c) };
+            },
+            daemonStatus: ({ input }: { input: { host: string } }) => {
+              if (!opts.pool.has(input.host)) {
+                return emptyDaemonStatus("unknown");
+              }
+              const session = opts.pool.getSession(input.host);
+              if (session === undefined) {
+                return emptyDaemonStatus("unknown");
+              }
+              return projectDaemonStatus(session);
             },
           },
         },

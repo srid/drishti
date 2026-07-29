@@ -23,6 +23,14 @@ function stubPool(args: {
   let conv = args.convergence;
   const session = {
     convergence: () => conv,
+    outcome: () => null,
+    identity: () => ({
+      stateRoot: "/tmp/state",
+      contractVersion: "1.0",
+      startedAt: 1,
+      commit: "abc",
+      buildId: "bld",
+    }),
     preservation: { children: "die" as const },
     renew:
       args.renew ??
@@ -88,6 +96,12 @@ describe("buildAdminRouter convergence + renew (W2.7)", () => {
         anomaly: {
           kind: "cross-supervisor",
           detail: "foreign lineage reappeared after drain",
+          drained: { kind: "instance", key: "ik-1" },
+          observed: { kind: "instance", key: "ik-2" },
+          running: {
+            contractVersion: "1.0",
+            build: { kind: "known", id: "x" },
+          },
         },
       });
 
@@ -113,6 +127,35 @@ describe("buildAdminRouter convergence + renew (W2.7)", () => {
       ok: false,
       error: "host not found",
     });
+  });
+
+  it("daemonStatus projects identity + phase for a connected-style session", async () => {
+    const pool = stubPool({
+      convergence: {
+        kind: "adopted-stale",
+        detail: "budget",
+        running: {
+          contractVersion: "1.0",
+          build: { kind: "known", id: "old" },
+        },
+        expected: {
+          contractVersion: "1.0",
+          build: { kind: "known", id: "new" },
+        },
+      },
+    });
+    const admin = buildAdminRouter({ pool });
+    // biome-ignore lint/suspicious/noExplicitAny: oRPC runtime router
+    const hosts = (admin.router as any).surface.admin.hosts;
+    expect(hosts.daemonStatus).toBeDefined();
+    const status = await call(hosts.daemonStatus, { host: "localhost" });
+    expect(status.anomaly?.kind).toBe("adopted-stale");
+    expect(status.anomaly?.running?.build).toEqual({
+      kind: "known",
+      id: "old",
+    });
+    expect(status.identity?.buildId).toBe("bld");
+    expect(status.phase).toBe("disconnected");
   });
 
   it("skew-refused session: renew callable (W3.4 retained binding)", async () => {
@@ -143,6 +186,14 @@ describe("buildAdminRouter convergence + renew (W2.7)", () => {
       anomaly: {
         kind: "skew-refused",
         detail: "contract skew refused",
+        running: {
+          contractVersion: "2.0",
+          build: { kind: "known", id: "run" },
+        },
+        expected: {
+          contractVersion: "1.0",
+          build: { kind: "known", id: "exp" },
+        },
       },
     });
     const r = await call(hosts.renew, { host: "localhost" });

@@ -40,3 +40,28 @@ describe("App.tsx convergence confinement (W4.5)", () => {
     );
   });
 });
+
+describe("App.tsx daemon status UI confinement", () => {
+  it("polls hosts.daemonStatus and folds via pure helpers", () => {
+    expect(appSrc).toMatch(/hosts\.daemonStatus\s*\(/);
+    expect(appSrc).toMatch(/applyDaemonStatusOk\s*\(/);
+    expect(appSrc).toMatch(/applyDaemonStatusError\s*\(/);
+    expect(appSrc).toMatch(/applyRenewResult\s*\(/);
+    expect(appSrc).toMatch(/DaemonStatusChip/);
+    expect(appSrc).toMatch(/DaemonDialog/);
+  });
+
+  it("renew result is state, not only console.error", () => {
+    expect(appSrc).toMatch(/setRenewState\s*\(\s*applyRenewResult/);
+    // No renew path that only console.errors without setRenewState.
+    expect(appSrc).not.toMatch(
+      /hosts\.renew[\s\S]{0,200}console\.error\s*\(\s*`renew/,
+    );
+  });
+
+  it("chip presentation is not inlined as string match on detail", () => {
+    // Forbidden: UI parsing anomaly.detail for chip kind.
+    expect(appSrc).not.toMatch(/anomaly\.detail\s*\.\s*includes\s*\(/);
+    expect(appSrc).not.toMatch(/detail\s*\.\s*startsWith\s*\(/);
+  });
+});

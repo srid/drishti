@@ -216,6 +216,15 @@ export type HostSessionOutcome =
       readonly resolutionKind: ResolveDrvError["resolution"]["kind"];
     };
 
+/** Frozen-fragment identity stashed at admit for the daemon dialog (UI phase). */
+export type HostDaemonIdentity = {
+  readonly stateRoot: string | null;
+  readonly contractVersion: string | null;
+  readonly startedAt: number | null;
+  readonly commit: string | null;
+  readonly buildId: string | null;
+};
+
 export type HostSession = Omit<
   DaemonSession<AgentAppClient, DrishtiConvergence>,
   "onState" | "currentState"
@@ -223,6 +232,8 @@ export type HostSession = Omit<
   Pick<Session<AgentAppClient, SshProv>, "onState" | "currentState"> & {
     /** Last structured dial/admit outcome (W8.1 / W8.2). */
     outcome: () => HostSessionOutcome | null;
+    /** Last control-core hello projection (null until first successful probe). */
+    identity: () => HostDaemonIdentity | null;
   };
 
 /** The pool `serveHostMap` consumes directly. */
@@ -364,6 +375,7 @@ function makeAgentAdmit(args: {
   setConvergence: (c: DrishtiConvergence | null) => void;
   setActiveCombined: (a: ActiveCombined | null) => void;
   setOutcome: (o: HostSessionOutcome) => void;
+  setIdentity: (id: HostDaemonIdentity) => void;
 }): Admit<AgentAppClient> {
   return async (scopedClient): Promise<AdmitVerdict> => {
     const active = args.combinedByScopedClient.get(scopedClient);
@@ -380,6 +392,28 @@ function makeAgentAdmit(args: {
     });
     if (active.signal.aborted) {
       throw new Error("drishti agent admit superseded");
+    }
+    // Stash frozen-fragment identity for the daemon dialog (typed projection).
+    try {
+      const hello = await active.client.surface.control.core.hello();
+      args.setIdentity({
+        stateRoot: hello.stateRoot,
+        contractVersion: hello.surfaceVersion,
+        startedAt: hello.startedAt,
+        commit: hello.commit ?? null,
+        buildId: hello.buildId ?? null,
+      });
+    } catch {
+      args.setIdentity({
+        stateRoot: null,
+        contractVersion: probe.identity.contractVersion,
+        startedAt: null,
+        commit: null,
+        buildId:
+          probe.identity.build.kind === "known"
+            ? probe.identity.build.id
+            : null,
+      });
     }
 
     // W4.2: wrap fireDrain to capture tagged persist-failure app-side.
@@ -492,6 +526,7 @@ function attachDaemonSession(args: {
   getActiveCombined: () => ActiveCombined | null;
   setActiveCombined: (a: ActiveCombined | null) => void;
   getOutcome: () => HostSessionOutcome | null;
+  getIdentity: () => HostDaemonIdentity | null;
 }): HostSession {
   const { base } = args;
 
@@ -531,6 +566,7 @@ function attachDaemonSession(args: {
   return Object.assign(base, {
     convergence: () => args.getConvergence(),
     outcome: () => args.getOutcome(),
+    identity: () => args.getIdentity(),
     preservation: { children: "die" as const },
     // Minimal renew on drainAndAwaitExit; result projects persist failure (W3.2).
     renew: async () => {
@@ -637,6 +673,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         let convergence: DrishtiConvergence | null = null;
         let activeCombined: ActiveCombined | null = null;
         let outcome: HostSessionOutcome | null = null;
+        let identity: HostDaemonIdentity | null = null;
         const combinedByScopedClient = new WeakMap<
           AgentAppClient,
           ActiveCombined
@@ -708,6 +745,9 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
           setOutcome: (o) => {
             outcome = o;
           },
+          setIdentity: (id) => {
+            identity = id;
+          },
         });
         const base = makeSession<AgentAppClient, SshProv>({
           connectOnce: rawConnector,
@@ -727,6 +767,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
             activeCombined = a;
           },
           getOutcome: () => outcome,
+          getIdentity: () => identity,
         });
         return { session, handler: undefined };
       },
@@ -759,6 +800,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
       let convergence: DrishtiConvergence | null = null;
       let activeCombined: ActiveCombined | null = null;
       let outcome: HostSessionOutcome | null = null;
+      let identity: HostDaemonIdentity | null = null;
       const combinedByScopedClient = new WeakMap<
         AgentAppClient,
         ActiveCombined
@@ -856,6 +898,9 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         setOutcome: (o) => {
           outcome = o;
         },
+        setIdentity: (id) => {
+          identity = id;
+        },
       });
 
       const base = makeSession<AgentAppClient, SshProv>({
@@ -882,6 +927,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
           activeCombined = a;
         },
         getOutcome: () => outcome,
+        getIdentity: () => identity,
       });
 
       return { session, handler: undefined };

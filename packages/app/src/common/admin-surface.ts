@@ -39,6 +39,10 @@
 import { composeSurfaceContracts, defineSurface } from "@kolu/surface/define";
 import { surfaceAppSurface } from "@kolu/surface-app/surface";
 import { z } from "zod";
+import {
+  ConvergenceAnomalyWireSchema,
+  DaemonStatusSchema,
+} from "./daemonStatus";
 import { isValidHost } from "./host";
 
 const HostInputSchema = z
@@ -94,15 +98,14 @@ export const adminSurface = defineSurface({
       convergence: {
         input: z.object({ host: z.string() }),
         output: z.object({
-          anomaly: z
-            .object({
-              kind: z.string(),
-              detail: z.string(),
-              /** Present for drained-with-persist-failure (W3.2). */
-              error: z.string().optional(),
-            })
-            .nullable(),
+          anomaly: ConvergenceAnomalyWireSchema.nullable(),
         }),
+      },
+      // UI phase: full typed daemon status for chip + dialog (outcome, identity,
+      // anomaly with structured evidence, phase). Superset of convergence.
+      daemonStatus: {
+        input: z.object({ host: z.string() }),
+        output: DaemonStatusSchema,
       },
     },
   },

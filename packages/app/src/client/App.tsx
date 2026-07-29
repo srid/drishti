@@ -72,6 +72,16 @@ import {
   applyConvergencePollOk,
   convergenceBannerVisible,
 } from "./convergenceProjection";
+import { DaemonDialog } from "./DaemonDialog";
+import { DaemonStatusChip } from "./DaemonStatusChip";
+import type { DaemonStatus } from "../common/daemonStatus";
+import {
+  applyDaemonStatusError,
+  applyDaemonStatusOk,
+  applyRenewResult,
+  applyRenewStart,
+  type RenewUiState,
+} from "./daemonStatusPresentation";
 import {
   connectionOf,
   connectionPhaseOf,
@@ -1176,8 +1186,8 @@ function HostView(props: {
       .catch((err) => console.error(`reconnect ${props.host} failed`, err));
   };
 
-  // W3.4: standing convergence + renew. Poll fold is pure (convergenceProjection)
-  // so mutations (catch-to-null / connected-only banner) are unit-testable.
+  // W3.4 / UI phase: standing convergence + full daemon status for chip/dialog.
+  // Poll fold is pure (convergenceProjection / daemonStatusPresentation).
   const [convergence, setConvergence] = createSignal<{
     kind: string;
     detail: string;
@@ -1186,10 +1196,23 @@ function HostView(props: {
   const [convergencePollError, setConvergencePollError] = createSignal<
     string | null
   >(null);
+  const [daemonStatus, setDaemonStatus] = createSignal<DaemonStatus | null>(
+    null,
+  );
+  const [daemonPollError, setDaemonPollError] = createSignal<string | null>(
+    null,
+  );
+  const [daemonDialogOpen, setDaemonDialogOpen] = createSignal(false);
+  const [renewState, setRenewState] = createSignal<RenewUiState>({
+    kind: "idle",
+  });
   const pollConvergence = () => {
     void adminRpc()
-      .hosts.convergence({ host: props.host })
+      .hosts.daemonStatus({ host: props.host })
       .then((r) => {
+        const folded = applyDaemonStatusOk(r);
+        setDaemonStatus(folded.status);
+        setDaemonPollError(folded.pollError);
         const next = applyConvergencePollOk(
           { anomaly: convergence(), pollError: convergencePollError() },
           r.anomaly,
@@ -1198,9 +1221,13 @@ function HostView(props: {
         setConvergencePollError(next.pollError);
       })
       .catch((err) => {
+        const msg = (err as Error).message;
+        const folded = applyDaemonStatusError(daemonStatus(), msg);
+        setDaemonStatus(folded.status);
+        setDaemonPollError(folded.pollError);
         const next = applyConvergencePollError(
           { anomaly: convergence(), pollError: convergencePollError() },
-          (err as Error).message,
+          msg,
         );
         setConvergence(next.anomaly);
         setConvergencePollError(next.pollError);
@@ -1210,13 +1237,21 @@ function HostView(props: {
   const convIv = setInterval(pollConvergence, 5_000);
   onCleanup(() => clearInterval(convIv));
   const onRenew = () => {
+    setRenewState(applyRenewStart(renewState()));
     void adminRpc()
       .hosts.renew({ host: props.host })
       .then((r) => {
-        if (!r.ok) console.error(`renew ${props.host} failed: ${r.error}`);
+        setRenewState(applyRenewResult(r));
         pollConvergence();
       })
-      .catch((err) => console.error(`renew ${props.host} failed`, err));
+      .catch((err) => {
+        setRenewState(
+          applyRenewResult({
+            ok: false,
+            error: (err as Error).message,
+          }),
+        );
+      });
   };
 
   // The live process table, consumed as a declarative value-bearing reactive
@@ -1443,6 +1478,17 @@ function HostView(props: {
         phase={phase()}
         entryState={entryState}
         count={allPids().length}
+        daemonStatus={daemonStatus()}
+        onDaemonClick={() => setDaemonDialogOpen(true)}
+      />
+      <DaemonDialog
+        open={daemonDialogOpen()}
+        onOpenChange={setDaemonDialogOpen}
+        host={props.host}
+        status={daemonStatus()}
+        renewState={renewState()}
+        onRenew={onRenew}
+        onReconnect={onReconnect}
       />
       {/* The readiness gate is the entry's own connection PHASE (`connectionPhaseOf`,
           the same word the header paints) — the per-host `SurfaceHealth`
@@ -1466,16 +1512,25 @@ function HostView(props: {
               {(e) => <> ({e()})</>}
             </Show>
           </span>
-          <button
-            type="button"
-            class="shrink-0 rounded border border-amber-600/50 px-2 py-0.5 font-medium hover:bg-amber-500/20"
-            onClick={onRenew}
-          >
-            Renew agent
-          </button>
+          <div class="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              class="rounded border border-amber-600/50 px-2 py-0.5 font-medium hover:bg-amber-500/20"
+              onClick={() => setDaemonDialogOpen(true)}
+            >
+              Details
+            </button>
+            <button
+              type="button"
+              class="rounded border border-amber-600/50 px-2 py-0.5 font-medium hover:bg-amber-500/20"
+              onClick={onRenew}
+            >
+              Renew agent
+            </button>
+          </div>
         </div>
       </Show>
-      <Show when={convergencePollError()}>
+      <Show when={convergencePollError() ?? daemonPollError()}>
         {(err) => (
           <div class="border-b border-amber-500/30 bg-amber-500/5 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
             Convergence poll failed — {err()} (standing anomaly retained)
@@ -1564,6 +1619,8 @@ function Header(props: {
   phase: ConnectionState;
   entryState: Accessor<EntryState<{ reason: string }, ConnectionInfo>>;
   count: number;
+  daemonStatus: DaemonStatus | null;
+  onDaemonClick: () => void;
 }) {
   // The component body runs ONCE at mount — when props.system is still
   // DEFAULT_SYSTEM (memUsed/memTotal 0). Derive through createMemo so these
@@ -1590,6 +1647,10 @@ function Header(props: {
             <HostDot state={props.entryState} />
             {props.phase}
           </span>
+          <DaemonStatusChip
+            status={props.daemonStatus}
+            onClick={props.onDaemonClick}
+          />
           <span class="text-gray-500">
             {props.count} {props.count === 1 ? "process" : "processes"}
           </span>
