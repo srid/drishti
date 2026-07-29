@@ -50,7 +50,12 @@ export function startWakeMonitor(opts: WakeMonitorOptions): () => void {
     if (gap > thresholdMs) opts.onWake(gap);
   }, intervalMs);
 
-  (id as unknown as { unref?: () => void }).unref?.();
+  // Production uses the default 1s cadence and must not pin the process.
+  // Short test intervals stay ref'd so Bun/Node keep firing them under load
+  // (unref + heavy suite can drop the first probe before the sleep resolves).
+  if (intervalMs >= 1000) {
+    (id as unknown as { unref?: () => void }).unref?.();
+  }
 
   return () => clearInterval(id);
 }

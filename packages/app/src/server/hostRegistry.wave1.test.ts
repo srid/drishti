@@ -7,7 +7,7 @@ import {
   expectProvisionedBuildId,
 } from "./hostRegistry";
 
-describe("W2.6 provisioned build-id fail-fast", () => {
+describe("W3.6 provisioned build-id fail-fast (helper)", () => {
   it("throws when provisioning with empty BUILD_IDS map", () => {
     expect(() =>
       expectProvisionedBuildId({
@@ -19,7 +19,7 @@ describe("W2.6 provisioned build-id fail-fast", () => {
     ).toThrow(/BUILD_IDS map is empty/);
   });
 
-  it("throws when drv map is present but system id is missing", () => {
+  it("throws when system id is missing under provisioning", () => {
     expect(() =>
       expectProvisionedBuildId({
         system: "x86_64-linux",

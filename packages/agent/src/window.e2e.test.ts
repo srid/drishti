@@ -507,10 +507,12 @@ describe("real window e2e", () => {
   }, 90_000);
 
   it("previous-release resolver is synthetic-unarmed until first daemon-capable tag", () => {
-    expect(isPreviousReleaseArmed()).toBe(false);
+    expect(isPreviousReleaseArmed({ firstDaemonCapableReleaseTag: null })).toBe(
+      false,
+    );
     const r = resolvePreviousRelease({
-      previousTag: "v0.1.0",
-      previousStore: "/nix/store/a",
+      arming: { firstDaemonCapableReleaseTag: null },
+      tags: { tags: ["v0.1.0"], storeForTag: () => "/nix/store/a" },
       currentStore: "/nix/store/b",
     });
     expect(r.kind).toBe("synthetic-unarmed");

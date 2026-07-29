@@ -176,6 +176,9 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
                 anomaly: {
                   kind: c.kind,
                   detail: c.detail,
+                  ...("error" in c && typeof c.error === "string"
+                    ? { error: c.error }
+                    : {}),
                 },
               };
             },

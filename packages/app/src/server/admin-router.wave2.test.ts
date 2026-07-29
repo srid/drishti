@@ -114,4 +114,74 @@ describe("buildAdminRouter convergence + renew (W2.7)", () => {
       error: "host not found",
     });
   });
+
+  it("skew-refused session: renew callable (W3.4 retained binding)", async () => {
+    const anomaly: DrishtiConvergence = {
+      kind: "skew-refused",
+      running: {
+        contractVersion: "2.0",
+        build: { kind: "known", id: "run" },
+      },
+      expected: {
+        contractVersion: "1.0",
+        build: { kind: "known", id: "exp" },
+      },
+      detail: "contract skew refused",
+    };
+    let renewed = false;
+    const pool = stubPool({
+      convergence: anomaly,
+      renew: async () => {
+        renewed = true;
+      },
+    });
+    const admin = buildAdminRouter({ pool });
+    // biome-ignore lint/suspicious/noExplicitAny: oRPC runtime router
+    const hosts = (admin.router as any).surface.admin.hosts;
+    const projected = await call(hosts.convergence, { host: "localhost" });
+    expect(projected).toEqual({
+      anomaly: {
+        kind: "skew-refused",
+        detail: "contract skew refused",
+      },
+    });
+    const r = await call(hosts.renew, { host: "localhost" });
+    expect(r).toEqual({ ok: true });
+    expect(renewed).toBe(true);
+  });
+
+  it("null-binding renew surfaces error (W3.4 mutation pin)", async () => {
+    // Production HostSession.renew throws "is not bound" when activeCombined
+    // is null. Admin router maps that to { ok: false, error }. Force-null of
+    // the binding in production renew goes red on the real-pool e2e; this
+    // router test pins the error shape for the same message.
+    const pool = stubPool({
+      convergence: {
+        kind: "skew-refused",
+        running: {
+          contractVersion: "2.0",
+          build: { kind: "known", id: "run" },
+        },
+        expected: {
+          contractVersion: "1.0",
+          build: { kind: "known", id: "exp" },
+        },
+        detail: "skew",
+      },
+      renew: async () => {
+        throw new Error(
+          "drishti agent is not bound — cannot drain (the daemon is unreachable)",
+        );
+      },
+    });
+    const admin = buildAdminRouter({ pool });
+    // biome-ignore lint/suspicious/noExplicitAny: oRPC runtime router
+    const hosts = (admin.router as any).surface.admin.hosts;
+    const r = (await call(hosts.renew, { host: "localhost" })) as {
+      ok: boolean;
+      error?: string;
+    };
+    expect(r.ok).toBe(false);
+    expect(r.error ?? "").toMatch(/is not bound/);
+  });
 });

@@ -68,6 +68,11 @@ import {
 import { reconcileRaiseTimes } from "./alertTiming";
 import { disconnectedMessage, STATE, withElapsed } from "./connectionColors";
 import {
+  applyConvergencePollError,
+  applyConvergencePollOk,
+  convergenceBannerVisible,
+} from "./convergenceProjection";
+import {
   connectionOf,
   connectionPhaseOf,
   failureRecord,
@@ -1171,12 +1176,12 @@ function HostView(props: {
       .catch((err) => console.error(`reconnect ${props.host} failed`, err));
   };
 
-  // W2.7: standing convergence anomaly (adopt-stale / skew / cross-supervisor /
-  // link-failed) + renew verb. Standing law: a poll failure is its OWN typed
-  // state — never erase the standing anomaly with catch-to-null.
+  // W3.4: standing convergence + renew. Poll fold is pure (convergenceProjection)
+  // so mutations (catch-to-null / connected-only banner) are unit-testable.
   const [convergence, setConvergence] = createSignal<{
     kind: string;
     detail: string;
+    error?: string;
   } | null>(null);
   const [convergencePollError, setConvergencePollError] = createSignal<
     string | null
@@ -1185,11 +1190,20 @@ function HostView(props: {
     void adminRpc()
       .hosts.convergence({ host: props.host })
       .then((r) => {
-        setConvergence(r.anomaly);
-        setConvergencePollError(null);
+        const next = applyConvergencePollOk(
+          { anomaly: convergence(), pollError: convergencePollError() },
+          r.anomaly,
+        );
+        setConvergence(next.anomaly);
+        setConvergencePollError(next.pollError);
       })
       .catch((err) => {
-        setConvergencePollError((err as Error).message);
+        const next = applyConvergencePollError(
+          { anomaly: convergence(), pollError: convergencePollError() },
+          (err as Error).message,
+        );
+        setConvergence(next.anomaly);
+        setConvergencePollError(next.pollError);
       });
   };
   pollConvergence();
@@ -1440,25 +1454,26 @@ function HostView(props: {
           erroring sub from a still-warming one — each subscription below
           already surfaces its OWN error via its member's declared `client.onError`
           policy (SR11), routed through the ONE `interpretClientError`. */}
-      {/* W2.7: standing convergence is visible even when disconnected
-          (refused skew / cross-supervisor never becomes phase=connected). */}
-      <Show when={convergence()}>
-        {(c) => (
-          <div class="flex items-center justify-between gap-3 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-800 dark:text-amber-300">
-            <span class="min-w-0 truncate">
-              <span class="font-semibold">{c().kind}</span>
-              {" — "}
-              {c().detail}
-            </span>
-            <button
-              type="button"
-              class="shrink-0 rounded border border-amber-600/50 px-2 py-0.5 font-medium hover:bg-amber-500/20"
-              onClick={onRenew}
-            >
-              Renew agent
-            </button>
-          </div>
-        )}
+      {/* W3.4: standing convergence visible even when disconnected (not
+          gated on phase === "connected" — refuse never becomes connected). */}
+      <Show when={convergenceBannerVisible(convergence(), phase())}>
+        <div class="flex items-center justify-between gap-3 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-800 dark:text-amber-300">
+          <span class="min-w-0 truncate">
+            <span class="font-semibold">{convergence()!.kind}</span>
+            {" — "}
+            {convergence()!.detail}
+            <Show when={convergence()!.error}>
+              {(e) => <> ({e()})</>}
+            </Show>
+          </span>
+          <button
+            type="button"
+            class="shrink-0 rounded border border-amber-600/50 px-2 py-0.5 font-medium hover:bg-amber-500/20"
+            onClick={onRenew}
+          >
+            Renew agent
+          </button>
+        </div>
       </Show>
       <Show when={convergencePollError()}>
         {(err) => (

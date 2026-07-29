@@ -98,6 +98,8 @@ export const adminSurface = defineSurface({
             .object({
               kind: z.string(),
               detail: z.string(),
+              /** Present for drained-with-persist-failure (W3.2). */
+              error: z.string().optional(),
             })
             .nullable(),
         }),

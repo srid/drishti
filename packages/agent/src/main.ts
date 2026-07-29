@@ -26,6 +26,7 @@
  * fd 2 (`process.stderr.write`).
  */
 
+import { ORPCError } from "@orpc/client";
 import {
   controlCoreFragment,
   controlCoreSurface,
@@ -87,6 +88,15 @@ const POLL_INTERVAL_MS = 2000;
  *  flushes. Baked 30s cadence (W2.9) — no env override knob. Tests that need a
  *  different cadence pass `ringPersistMs` on the private build options only. */
 const RING_PERSIST_INTERVAL_MS = 30_000;
+
+/**
+ * Seed the alerts hysteresis fold from a loaded ring (W3.3).
+ * Production: identity. Mutation `return NO_ALERTS` loses pre-drain raises
+ * in the hold band and is unit-tested.
+ */
+export function seedAlertsFromRing(loaded: Alerts): Alerts {
+  return loaded;
+}
 /** Idle-exit after this many ms with no live parent connections. */
 const IDLE_TIMEOUT_MS = 60 * 60_000;
 
@@ -217,35 +227,22 @@ async function buildAgentRuntime(
   reader: ProcReader,
   opts: BuildAgentRuntimeOptions,
 ): Promise<AgentRuntime> {
-  const systemStore = inMemoryStore({
-    ...(await reader.readSystem()),
-    ...cpuAggregate(await reader.readCpuCores()),
-    pollIntervalMs: POLL_INTERVAL_MS,
-  });
-  const pollInstall = (tick: () => void): (() => void) => {
-    const iv = setInterval(tick, POLL_INTERVAL_MS);
-    return () => clearInterval(iv);
-  };
-
-  // ── Durable history ring (W2 standing unavailable; W4 alerts; W10 flush) ──
-  // unavailable is STANDING: every subscriber sees it until a legitimate
-  // transition. unknown-version / unreadable stay unavailable (file left alone).
-  // corrupt starts unavailable (F9); first successful sample transitions to ok
-  // once the corrupt file has been moved aside (disk path free).
+  // ── Durable history ring FIRST (W3.3) ─────────────────────────────────
+  // Load ring + importBaselines BEFORE the first readSystem/readCpuCores so
+  // the successor's first tick is not a cold zero-rate frame retained in the
+  // reader's one-second cache.
   let historyView: HistoryView = { kind: "ok", samples: [] };
-  /** Restored / live hysteresis fold seed (W4). */
+  /** Restored / live hysteresis fold seed. */
   let alertsSeed: Alerts = NO_ALERTS;
   /** Read current alerts from the cell once the runtime is built. */
   let readAlerts: () => Alerts = () => alertsSeed;
-  /** Read rate baselines for flush (W2.4). */
+  /** Read rate baselines for flush. */
   let readBaselines: () => RingBaselines = () => NO_BASELINES;
   /** When true, never flush to disk (file left alone: unknown-v / unreadable). */
   let persistWithheld = false;
   /**
    * Corrupt load moved the file aside — disk path is free. Stay standing
-   * unavailable until the first successful persist of a fresh ring (so every
-   * subscriber — including late ones after boot — still sees typed
-   * unavailable for F9 / W2). Sampling accumulates into `freshSamples` only.
+   * unavailable until the first successful persist of a fresh ring.
    */
   let corruptAwaitingFresh = false;
   let freshSamples: MetricSample[] = [];
@@ -256,15 +253,14 @@ async function buildAgentRuntime(
     const loaded = loadHistoryRing(opts.ringPath);
     if (loaded.kind === "ok") {
       historyView = { kind: "ok", samples: loaded.samples };
-      alertsSeed = loaded.alerts;
-      // W2.4: restore rate baselines so the first successor tick is not zeros.
+      // W3.3: seed hysteresis from the ring (mutation → NO_ALERTS goes red).
+      alertsSeed = seedAlertsFromRing(loaded.alerts);
+      // Restore baselines BEFORE any host/process read (W3.3).
       reader.importBaselines?.(loaded.baselines);
     } else if (
       loaded.reason === "unknown-version" ||
       loaded.reason === "unreadable"
     ) {
-      // STANDING unavailable; file left alone; stream reports unavailable —
-      // never an ok-empty masquerade (W2).
       persistWithheld = true;
       historyView = {
         kind: "unavailable",
@@ -275,8 +271,6 @@ async function buildAgentRuntime(
         `history ring standing unavailable (${loaded.reason}) at ${opts.ringPath}`,
       );
     } else {
-      // Corrupt: file already moved aside. Stand unavailable until a fresh
-      // ring is successfully written to the free path.
       corruptAwaitingFresh = true;
       historyView = {
         kind: "unavailable",
@@ -288,6 +282,18 @@ async function buildAgentRuntime(
       );
     }
   }
+
+  // First system/cpu read AFTER baseline restore — rates are non-zero on a
+  // successor that inherited host/process baselines from the ring.
+  const systemStore = inMemoryStore({
+    ...(await reader.readSystem()),
+    ...cpuAggregate(await reader.readCpuCores()),
+    pollIntervalMs: POLL_INTERVAL_MS,
+  });
+  const pollInstall = (tick: () => void): (() => void) => {
+    const iv = setInterval(tick, POLL_INTERVAL_MS);
+    return () => clearInterval(iv);
+  };
   const historyBus: Channel<MetricHistoryMsg> =
     inMemoryChannel<MetricHistoryMsg>();
 
@@ -486,24 +492,66 @@ async function buildAgentRuntime(
         }
         const identity = readBakedIdentity("DRISHTI_AGENT");
         const startedAt = Date.now();
-        const control = controlCoreFragment({
+        // W3.2: drain verb RESULT carries final-flush failure (typed). The
+        // frozen control-core schema has empty drain output, but the runtime
+        // still returns the value to the parent (the knowing endpoint).
+        const controlBase = controlCoreFragment({
           stateRoot: opts.stateRoot,
           surfaceVersion: AGENT_SURFACE_VERSION,
           startedAt,
           commit: identity.navigableCommit,
           buildId: identity.staleKey,
           onDrain: async () => {
-            // W2.8: await flush RESULT — a failed final write stays visible
-            // (degraded stream + drain callback sees ok:false). Do not abort
-            // past a silent void flush.
-            const flush = flushRing();
-            await opts.onDrain?.(flush);
+            // No-op placeholder — real drain body below returns the result.
           },
         });
+        const control = {
+          procedures: {
+            core: {
+              hello: controlBase.procedures.core.hello,
+              drain: async () => {
+                // W3.2: final-flush failure is carried on the drain verb.
+                // Frozen control-core types drain as void, so we RETURN a typed
+                // object AND throw a tagged error the parent can project when
+                // the wire strips void outputs. Defer lifetime abort so the
+                // response / error can leave the process first.
+                const flush = flushRing();
+                const result = !flush.ok
+                  ? {
+                      ok: false as const,
+                      persistFailed: true as const,
+                      error: flush.error,
+                    }
+                  : {
+                      ok: true as const,
+                      persistFailed: false as const,
+                      error: null,
+                    };
+                // Defer lifetime abort so the drain RPC can finish on the wire
+                // (process exit must not race the response/error).
+                setTimeout(() => {
+                  void opts.onDrain?.(flush);
+                }, 150);
+                if (!flush.ok) {
+                  // Defined ORPCError so the parent receives code+data (not
+                  // INTERNAL_SERVER_ERROR soup). Parent maps this to
+                  // drained-with-persist-failure (W3.2).
+                  throw new ORPCError("DRISHTI_PERSIST_FAILED", {
+                    message: flush.error,
+                    data: result,
+                  });
+                }
+                return result;
+              },
+            },
+          },
+        };
+        // Cast: frozen control-core schema types drain as void, but the
+        // runtime still returns FlushResult for the parent (W3.2).
         const runtime = implementSurfaces(
           { app: surface, control: controlCoreSurface },
           {},
-          { app: appDeps as never, control },
+          { app: appDeps as never, control: control as never },
         );
         // W4: flush must read live hysteresis, not only the boot seed.
         readAlerts = () => runtime.ctx.app.cells.alerts.get() as Alerts;

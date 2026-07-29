@@ -1,11 +1,9 @@
 /**
- * Previous-release window resolver (W2.3 / Atlas UW3 Lands).
+ * Previous-release window resolver (W3.5).
  *
- * At the first daemon-capable release tag, the window e2e resolves a real
- * previous store path and hard-refuses when previous equals current. Before
- * that tag arms, the synthetic previous (same source, different baked
- * buildId) drives the mixed-build proof — the arming condition is CODE here,
- * not a comment.
+ * Resolves the previous release tag/store for the mixed-build window e2e.
+ * Arming is comparable DATA (injected tag source), not a null-only constant.
+ * When armed, hard-refuses previous store == current.
  */
 
 import {
@@ -15,14 +13,26 @@ import {
 } from "@kolu/surface-daemon/upgrade-window.testlib";
 
 /**
- * The first drishti release tag whose agent is a durable daemon capable of
- * the mixed-build window. Until this ships, {@link resolvePreviousRelease}
- * returns the synthetic-unarmed path.
- *
- * Bump (or set) when cutting that release; tests pin the pre-arming state
- * against the empty sentinel.
+ * Default production arming: null until the first daemon-capable release is
+ * cut. Tests inject an explicit {@link ArmingConfig} rather than mutating this.
  */
-export const FIRST_DAEMON_CAPABLE_RELEASE_TAG: string | null = null;
+export const DEFAULT_FIRST_DAEMON_CAPABLE_RELEASE_TAG: string | null = null;
+
+/** Arming gate as comparable data (injection is data, not a null literal path). */
+export type ArmingConfig = {
+  /**
+   * First release tag whose agent is a durable daemon. `null` ⇒ synthetic
+   * unarmed path (same source, different baked buildId).
+   */
+  firstDaemonCapableReleaseTag: string | null;
+};
+
+export type TagSource = {
+  /** Available release tags, newest-first preferred. */
+  tags: readonly string[];
+  /** Resolve a tag to its agent store path (or null if unknown). */
+  storeForTag: (tag: string) => string | null;
+};
 
 export type PreviousReleaseResolution =
   | {
@@ -35,55 +45,88 @@ export type PreviousReleaseResolution =
     };
 
 /**
- * Resolve the previous-release window for the upgrade e2e.
+ * Resolve the previous-release window.
  *
- * - Before {@link FIRST_DAEMON_CAPABLE_RELEASE_TAG} is set: synthetic path
- *   (caller drives same-source / different-buildId bootstrap).
- * - Once armed: requires a real previous tag + store, and hard-refuses when
- *   previous store equals current (framework assertPreviousReleaseWindow).
+ * - Unarmed (`firstDaemonCapableReleaseTag === null`): synthetic path.
+ * - Armed: pick the previous tag from the tag source (the tag immediately
+ *   before / equal to the arming tag when present, else the newest prior
+ *   release tag), resolve its store, hard-refuse previous==current.
  */
 export function resolvePreviousRelease(args: {
-  /** Candidate previous tag (e.g. from git describe / env). */
-  previousTag: string | null;
-  previousStore: string | null;
+  arming: ArmingConfig;
+  tags: TagSource;
   currentStore: string;
+  /**
+   * Optional explicit previous tag (overrides auto-pick from tags list).
+   * When armed and omitted, selects from `tags.tags`.
+   */
+  previousTag?: string | null;
 }): PreviousReleaseResolution {
-  const armedAt = FIRST_DAEMON_CAPABLE_RELEASE_TAG;
+  const armedAt = args.arming.firstDaemonCapableReleaseTag;
   if (armedAt === null) {
     return {
       kind: "synthetic-unarmed",
       reason:
-        "FIRST_DAEMON_CAPABLE_RELEASE_TAG is unset — mixed-build uses synthetic previous (same source, different baked buildId) until the first daemon-capable release arms the real resolver",
+        "firstDaemonCapableReleaseTag is null — mixed-build uses synthetic previous (same source, different baked buildId) until the first daemon-capable release arms the resolver",
     };
   }
 
-  if (args.previousTag === null || args.previousTag === "") {
+  let previousTag = args.previousTag ?? null;
+  if (previousTag === null || previousTag === undefined || previousTag === "") {
+    // Auto-pick: prefer a tag strictly before the arming tag in the list,
+    // else the first release-shaped tag that isn't the arming tag alone.
+    const releaseTags = args.tags.tags.filter((t) => isPreviousReleaseTag(t));
+    previousTag =
+      releaseTags.find((t) => t !== armedAt) ?? releaseTags[0] ?? null;
+  }
+
+  if (previousTag === null || previousTag === "") {
     throw new Error(
-      `previous-release resolver is armed at ${armedAt} but no previous tag was provided`,
+      `previous-release resolver is armed at ${armedAt} but no previous tag could be resolved from the tag source`,
     );
   }
-  if (!isPreviousReleaseTag(args.previousTag)) {
+  if (!isPreviousReleaseTag(previousTag)) {
     throw new Error(
-      `previous-release tag ${JSON.stringify(args.previousTag)} is not a release tag shape`,
+      `previous-release tag ${JSON.stringify(previousTag)} is not a release tag shape`,
     );
   }
-  if (args.previousStore === null || args.previousStore === "") {
+
+  const previousStore = args.tags.storeForTag(previousTag);
+  if (previousStore === null || previousStore === "") {
     throw new Error(
-      `previous-release resolver is armed but previous store path is missing for tag ${args.previousTag}`,
+      `previous-release resolver is armed but store path is missing for tag ${previousTag}`,
     );
   }
 
   const window: PreviousReleaseWindow = {
-    ref: args.previousTag,
-    previousStore: args.previousStore,
+    ref: previousTag,
+    previousStore,
     currentStore: args.currentStore,
   };
-  // Hard refusal when previous equals current (framework gate).
+  // Hard refusal when previous equals current — THIS call is the pin W3.5
+  // mutations delete to go red.
   assertPreviousReleaseWindow(window);
   return { kind: "armed", window };
 }
 
-/** True when the real previous-tag path is armed (not synthetic). */
-export function isPreviousReleaseArmed(): boolean {
-  return FIRST_DAEMON_CAPABLE_RELEASE_TAG !== null;
+/** Production convenience: resolve with default arming + an injected tag source. */
+export function resolvePreviousReleaseDefault(
+  tags: TagSource,
+  currentStore: string,
+): PreviousReleaseResolution {
+  return resolvePreviousRelease({
+    arming: {
+      firstDaemonCapableReleaseTag: DEFAULT_FIRST_DAEMON_CAPABLE_RELEASE_TAG,
+    },
+    tags,
+    currentStore,
+  });
+}
+
+export function isPreviousReleaseArmed(
+  arming: ArmingConfig = {
+    firstDaemonCapableReleaseTag: DEFAULT_FIRST_DAEMON_CAPABLE_RELEASE_TAG,
+  },
+): boolean {
+  return arming.firstDaemonCapableReleaseTag !== null;
 }
