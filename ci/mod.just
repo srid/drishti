@@ -77,6 +77,11 @@ typecheck: install
 drv-stability:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Shebang recipes on odu may lack bun on PATH. Re-enter the flake
+    # devShell once (outer tree only — never nest nix develop in a worktree).
+    if [ -z "${IN_NIX_SHELL:-}" ] && ! command -v bun >/dev/null 2>&1; then
+      exec nix develop --accept-flake-config -c bash "$0" "$@"
+    fi
     extract_id() {
       sed -n 's/.*"x86_64-linux"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
     }
@@ -141,13 +146,13 @@ drv-stability:
       'printf "\n// drv-stability probe — client edit must not churn agent BUILD_ID\n" >> "$WT/packages/app/src/client/theme.ts"' \
       1
 
-    # (b) REAL app-only devDependency + root lock/bun.nix regen
+    # (b) REAL app-only devDependency + root lock/bun.nix regen (bun from outer shell)
     run_probe "app-only-devDep" 0 \
       'set -euo pipefail
        cd "$WT"
-       nix develop --accept-flake-config -c bun add -d left-pad@1.3.0 --cwd packages/app
-       nix develop --accept-flake-config -c nix run .#bun2nix -- -l bun.lock -o bun.nix
-       nix develop --accept-flake-config -c nixpkgs-fmt bun.nix >/dev/null
+       bun add -d left-pad@1.3.0 --cwd packages/app
+       nix run .#bun2nix -- -l bun.lock -o bun.nix
+       nixpkgs-fmt bun.nix >/dev/null
        git diff --exit-code packages/agent/agent.lock packages/agent/agent.bun.nix packages/agent/agent.package.json
       ' 1
 
