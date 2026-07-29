@@ -67,6 +67,17 @@
             (import ./default.nix { inherit pkgs b2n; }).drishti-agent.drvPath)
         perSystemAttrs;
 
+      # Per-system agent BUILD_ID (hash of that system's drishtiAgentBuilt).
+      # Parent convergeAdmit uses this so a multi-arch host expects the build
+      # id of the agent it actually provisions — not the parent-arch only id.
+      agentBuildIdBySystem = builtins.mapAttrs
+        (_: { pkgs, b2n }:
+          let
+            built = (import ./default.nix { inherit pkgs b2n; }).drishtiAgentBuilt;
+          in
+          builtins.hashString "sha256" (toString built))
+        perSystemAttrs;
+
       # The caches provisioning prefetches the agent closure from before
       # shipping it to a remote host (@kolu/surface-remote's AgentBinaryCache
       # shape — both lists must be non-empty, the constructor throws
@@ -83,7 +94,9 @@
     {
       packages = eachSystem ({ pkgs, b2n }:
         let
-          drvs = import ./default.nix { inherit pkgs b2n agentDrvBySystem binaryCache rev; };
+          drvs = import ./default.nix {
+            inherit pkgs b2n agentDrvBySystem agentBuildIdBySystem binaryCache rev;
+          };
 
         in
         {
@@ -109,6 +122,10 @@
       # DRISHTI_AGENT_DRVS_JSON without having to know about the per-
       # system attr structure.
       agentDrvsJson = builtins.toJSON agentDrvBySystem;
+
+      # Twin of agentDrvsJson for multi-arch BUILD_IDs — parent exports as
+      # DRISHTI_AGENT_BUILD_IDS_JSON for convergeAdmit expected-build selection.
+      agentBuildIdsJson = builtins.toJSON agentBuildIdBySystem;
 
       # Twin of agentDrvsJson for the cache declaration — `just dev` exports
       # this verbatim as DRISHTI_AGENT_BINARY_CACHE.

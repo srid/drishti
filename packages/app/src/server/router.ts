@@ -177,8 +177,10 @@ export function buildRouter(opts: BuildRouterOptions) {
     streams: {
       metricHistory: {
         // Yield the parent's current ring (or a typed unavailable) on
-        // subscribe, then forward each agent-driven frame.
+        // subscribe, then forward each agent-driven frame. Subscribe to the
+        // bus BEFORE the snapshot so a frame cannot fall between them.
         source: async function* (_input, signal) {
+          const tail = historyBus.subscribe(signal);
           if (historyView.kind === "unavailable") {
             yield {
               kind: "unavailable",
@@ -190,7 +192,7 @@ export function buildRouter(opts: BuildRouterOptions) {
               samples: [...historyView.samples],
             } satisfies MetricHistoryMsg;
           }
-          for await (const msg of historyBus.subscribe(signal)) {
+          for await (const msg of tail) {
             yield msg;
           }
         },

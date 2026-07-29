@@ -131,17 +131,27 @@ export type HostSession = Omit<
 /** The pool `serveHostMap` consumes directly. */
 export type HostPool = RemotePool<HostSession, undefined> & PoolControls;
 
+/** Result of resolving a host to an agent derivation — includes the
+ *  probed nix system so multi-arch parents can pick the matching expected
+ *  build id (UW3 convergeAdmit). */
+export type ResolvedHostAgent = {
+  derivation: AgentDerivation;
+  /** Nix system string from the arch probe (e.g. `x86_64-linux`). */
+  system: string;
+};
+
 export interface HostPoolOptions {
   initialHosts: readonly string[];
-  /** Resolve a host string to its agent `.drv` path. The pool has no
-   *  business knowing how the answer was reached (arch probe, map
-   *  lookup, a static value for localhost-only dev) — it just awaits
-   *  the resolved path per host. */
+  /** Resolve a host string to its agent `.drv` + probed system. */
   resolveDrvPath: (
     host: string,
     context: ResolveDrvPathContext,
-  ) => Promise<AgentDerivation>;
+  ) => Promise<ResolvedHostAgent>;
   hostsFile: string;
+  /** Per-system expected agent BUILD_IDs (hash of that system's agent
+   *  closure). When present, each host's admit policy uses the id for its
+   *  probed system instead of the parent-arch-only env fallback. */
+  buildIdBySystem?: Readonly<Record<string, string>>;
 }
 
 /** Live combined dial stashed under the app-scoped client admit receives. */
@@ -209,7 +219,8 @@ export function awaitExitViaProcessOracle(
 /** Admit factory: probe identity, run convergeAdmit, bind active on adopt. */
 function makeAgentAdmit(args: {
   combinedByScopedClient: WeakMap<AgentAppClient, ActiveCombined>;
-  budget: ConnectorDrainBudget;
+  /** Budget is minted on first drv resolve (when system is known). */
+  getBudget: () => ReturnType<typeof createConnectorDrainBudget>;
   setConvergence: (c: DrishtiConvergence | null) => void;
   setActiveCombined: (a: ActiveCombined | null) => void;
 }): Admit<AgentAppClient> {
@@ -236,7 +247,7 @@ function makeAgentAdmit(args: {
         ...probe.identity,
         instanceKey: probe.instanceKey,
       },
-      budget: args.budget,
+      budget: args.getBudget(),
       drain: probe.fireDrain,
       awaitExit: probe.awaitExit,
       ceilingMs: probe.drainCeilingMs,
@@ -340,24 +351,19 @@ function attachDaemonSession(args: {
  *  boot surfaces as a per-host `failed` connection state — never a throw
  *  that takes the whole pool (and with it the parent's HTTP port, never
  *  bound until this returns) down. */
+/** Shared never-settling promise for non-exit closes (one allocation). */
+const NEVER_EXITS: Promise<void> = new Promise(() => {});
+
 export function buildHostPool(opts: HostPoolOptions): HostPool {
-  // ONE policy + budget for the whole pool. Budget memory is per-supervisor-
-  // boot and SURVIVES adopts across dials (mint once, share across hosts'
-  // admit hooks — each host has its own lineage key via instanceKey).
-  // Per-host budgets would also work; one shared budget is fine because
-  // lineage keys are instance-scoped (startedAt), not host-scoped collisions.
-  const binderBuildId = process.env.DRISHTI_AGENT_BUILD_ID ?? "";
-  const policy = drishtiAgentConvergencePolicy(binderBuildId);
-  // Budget minted once; createConnectorDrainBudget is per-policy. For
-  // multi-host we mint a budget PER host entry so one host's flap doesn't
-  // exhaust another's budget — see buildEntry below.
+  // Policy is pure config (mint once as fallback). Budget is minted PER host
+  // entry so flaps on host A don't exhaust host B's drain attempts — and so
+  // the expected build id can match the host's probed system (multi-arch).
+  const fallbackBuildId = process.env.DRISHTI_AGENT_BUILD_ID ?? "";
+  const buildIdBySystem = opts.buildIdBySystem ?? {};
 
   return buildRemotePool<HostSession, undefined>({
     initialHosts: opts.initialHosts,
     buildEntry: (host) => {
-      // Per-host budget so flaps on host A don't spend host B's attempts.
-      const budget = createConnectorDrainBudget(policy);
-
       // Arm-local convergence state (closures, not class fields).
       let convergence: DrishtiConvergence | null = null;
       let activeCombined: ActiveCombined | null = null;
@@ -365,6 +371,10 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         AgentAppClient,
         ActiveCombined
       >();
+      // Budget minted once per host, after the first drv resolve when we know
+      // the remote system and can pick the matching expected build id.
+      let budget: ReturnType<typeof createConnectorDrainBudget> | null = null;
+      let expectedBuildId = fallbackBuildId;
 
       // sshConnector always runs `<binary> --stdio` (appended by the connector
       // itself — do NOT pass `--stdio` in extraArgs). That flag is the durable
@@ -385,19 +395,38 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
             .map((k): [string, string | undefined] => [k, process.env[k]])
             .filter((e): e is [string, string] => e[1] !== undefined),
         ),
-        resolveDrvPath: (context) => opts.resolveDrvPath(host, context),
+        resolveDrvPath: async (context) => {
+          const resolved = await opts.resolveDrvPath(host, context);
+          // Prefer per-system build id when the resolver reports the system.
+          if (
+            budget === null &&
+            resolved.system !== undefined &&
+            buildIdBySystem[resolved.system] !== undefined
+          ) {
+            expectedBuildId = buildIdBySystem[resolved.system]!;
+          }
+          if (budget === null) {
+            budget = createConnectorDrainBudget(
+              drishtiAgentConvergencePolicy(expectedBuildId),
+            );
+          }
+          return resolved.derivation;
+        },
       });
 
       // Connector wraps the combined dial: stash ActiveCombined, hand admit
       // the app-scoped client (pump + kill forward use that scope).
       const rawConnector: Connector<AgentAppClient, SshProv> = async (ctx) => {
         const conn = await inner(ctx);
-        const processExit = conn.closed.then((info: ClosedInfo) => {
-          if (info.kind !== "exit") {
-            // Keep the oracle unsettled so awaitExit only resolves on ceiling abort.
-            return new Promise<void>(() => {});
-          }
-        });
+        // Process-exit oracle: settle only on ClosedInfo.kind === "exit".
+        // Rejection and non-exit closes are link loss — never process exit
+        // (shared NEVER_EXITS so we don't allocate a pending promise per dial).
+        const processExit = conn.closed.then(
+          (info: ClosedInfo) => {
+            if (info.kind !== "exit") return NEVER_EXITS;
+          },
+          () => NEVER_EXITS,
+        );
         const active: ActiveCombined = {
           client: conn.client,
           dispose: conn.teardown,
@@ -411,7 +440,15 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
 
       const admit = makeAgentAdmit({
         combinedByScopedClient,
-        budget,
+        getBudget: () => {
+          if (budget === null) {
+            // resolveDrvPath always runs before admit; mint with fallback if not.
+            budget = createConnectorDrainBudget(
+              drishtiAgentConvergencePolicy(expectedBuildId),
+            );
+          }
+          return budget;
+        },
         setConvergence: (c) => {
           convergence = c;
         },

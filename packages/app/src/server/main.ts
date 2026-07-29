@@ -125,6 +125,21 @@ async function main(): Promise<void> {
     context,
   ) => resolveDrvForHost(host, agentDrvBySystem, binaryCache, context);
 
+  // Per-system agent BUILD_IDs for multi-arch convergeAdmit (UW3). Absent
+  // off-nix; parent falls back to the single DRISHTI_AGENT_BUILD_ID.
+  let buildIdBySystem: Record<string, string> = {};
+  const buildIdsJson = process.env.DRISHTI_AGENT_BUILD_IDS_JSON;
+  if (buildIdsJson !== undefined && buildIdsJson !== "") {
+    try {
+      buildIdBySystem = drvMapSchema.parse(JSON.parse(buildIdsJson));
+    } catch (err) {
+      log(
+        `DRISHTI_AGENT_BUILD_IDS_JSON: invalid — ${(err as Error).message}`,
+      );
+      process.exit(1);
+    }
+  }
+
   const hostsFile = resolveHostsFile();
   const cliHosts = argv._.host;
   // Validate CLI host args at the same boundary as the admin surface and the
@@ -157,6 +172,7 @@ async function main(): Promise<void> {
     initialHosts,
     resolveDrvPath,
     hostsFile,
+    buildIdBySystem,
   });
 
   const admin = buildAdminRouter({ pool });

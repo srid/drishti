@@ -38,6 +38,9 @@
 { pkgs ? null
 , b2n ? null
 , agentDrvBySystem ? null
+  # Per-system agent BUILD_ID map ({ system → hash }) for multi-arch
+  # convergeAdmit. Same bake rules as agentDrvBySystem (string-only JSON).
+, agentBuildIdBySystem ? null
   # Binary-cache declaration ({ substituters; trustedPublicKeys; } — lists,
   # both non-empty) baked for @kolu/surface-remote's agent prefetch. flake.nix
   # derives it from its own nixConfig block; like agentDrvBySystem, only the
@@ -133,6 +136,9 @@ let
           `# and this wrapper compiles fine but HostSession crashes at` \
           `# 'nix copy --derivation' time.` \
           --set-default DRISHTI_AGENT_DRVS_JSON '${builtins.toJSON agentDrvBySystem}' \
+          `# Per-system BUILD_IDs so multi-arch hosts expect the agent they` \
+          `# provision (not the parent-arch-only DRISHTI_AGENT_BUILD_ID).` \
+          --set-default DRISHTI_AGENT_BUILD_IDS_JSON '${builtins.toJSON (if agentBuildIdBySystem != null then agentBuildIdBySystem else {})}' \
           `# DRISHTI_AGENT_BINARY_CACHE: {substituters, trustedPublicKeys}` \
           `# JSON (surface-remote's AgentBinaryCache shape) — the caches the` \
           `# agent closure is prefetched from before shipping to a remote` \

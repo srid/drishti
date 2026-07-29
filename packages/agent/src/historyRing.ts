@@ -17,6 +17,7 @@
 import {
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -27,6 +28,12 @@ import {
 } from "drishti-common";
 import type { HistoryView } from "drishti-common/history";
 import { z } from "zod";
+
+function log(...args: unknown[]): void {
+  process.stderr.write(
+    `historyRing: ${args.map((a) => String(a)).join(" ")}\n`,
+  );
+}
 
 /** On-disk ring schema version. Bump only with a reader migration path. */
 export const HISTORY_RING_VERSION = 1;
@@ -53,9 +60,10 @@ export function loadHistoryRing(path: string): HistoryRingLoad {
     if (code === "ENOENT") {
       return { kind: "ok", samples: [] };
     }
-    // Unreadable for other reasons (EACCES, …) is corrupt disposition: we
-    // cannot safely interpret the file, and must not silently empty the chart.
-    moveCorruptAside(path);
+    // Unreadable (EACCES, transient EIO/EMFILE, …): typed unavailable without
+    // move-aside — we never judged the bytes, so renaming would orphan a
+    // possibly healthy ring on a transient fd blip.
+    log(`read failed (${code ?? "unknown"}): ${(err as Error).message}`);
     return unavailable("corrupt");
   }
 
@@ -94,7 +102,16 @@ export function saveHistoryRing(
     samples: [...samples],
   } satisfies z.infer<typeof RingFileSchema>);
   writeFileSync(tmp, body, { encoding: "utf8", mode: 0o600 });
-  renameSync(tmp, path);
+  try {
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // Best-effort temp cleanup; rethrow the rename failure.
+    }
+    throw err;
+  }
 }
 
 function unavailable(
@@ -113,5 +130,8 @@ function moveCorruptAside(path: string): void {
     // in place rather than delete — fail-loud via the typed unavailable
     // return; the caller already has the disposition.
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    log(
+      `move-aside failed for ${path}: ${(err as Error).message} (left in place)`,
+    );
   }
 }

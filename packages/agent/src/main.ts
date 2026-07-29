@@ -100,7 +100,7 @@ function log(...args: unknown[]): void {
   process.stderr.write(`${args.map((a) => String(a)).join(" ")}\n`);
 }
 
-function usage(): never {
+function usage(exitCode = 1): never {
   process.stderr.write(
     [
       "drishti-agent — durable host-telemetry surface over stdio / unix socket.",
@@ -113,10 +113,11 @@ function usage(): never {
       "",
       "Files live under ~/.local/state/drishti/ (gate, socket, history.ring.json).",
       "The daemon idle-exits after 60 minutes with no connections.",
+      // stderrLog: reExecAsDetachedDaemon truncates on each spawn (keeps one .old).
       "",
     ].join("\n"),
   );
-  process.exit(1);
+  process.exit(exitCode);
 }
 
 /** Wrap an async tick so a fire that lands while a previous run is still in
@@ -206,24 +207,42 @@ export async function buildAgentRuntime(
   };
 
   // ── Durable history ring ──────────────────────────────────────────────
+  // Boot disposition: a one-shot incident shown to the first subscriber(s).
+  // After a corrupt load the file is already moved aside — resume an empty
+  // ok ring so sampling/persistence continue (F1: sticky halt would kill
+  // the feature for the life of a durable daemon). Unknown-version leaves
+  // the file alone (must not overwrite) but still samples in memory so
+  // live charts work while persistence is withheld.
   let historyView: HistoryView = { kind: "ok", samples: [] };
+  /** One-shot typed incident for first metricHistory yields after boot load. */
+  let bootIncident: MetricHistoryMsg | null = null;
+  /** When true, never flush to disk (unknown-version left the file alone). */
+  let persistWithheld = false;
   if (opts.ringPath !== undefined) {
     const loaded = loadHistoryRing(opts.ringPath);
-    historyView = loaded;
-    if (loaded.kind === "unavailable") {
+    if (loaded.kind === "ok") {
+      historyView = loaded;
+    } else {
+      bootIncident = { kind: "unavailable", reason: loaded.reason };
       log(
-        `history ring unavailable (${loaded.reason}) at ${opts.ringPath} — chart will report typed unavailability`,
+        `history ring unavailable (${loaded.reason}) at ${opts.ringPath} — reporting once, then ${loaded.reason === "unknown-version" ? "sampling in-memory only (persist withheld)" : "resuming a fresh ring (corrupt file already moved aside)"}`,
       );
+      if (loaded.reason === "unknown-version") {
+        // Leave the on-disk future-version file alone; sample in memory only.
+        persistWithheld = true;
+        historyView = { kind: "ok", samples: [] };
+      } else {
+        // Corrupt: file was moved aside — free path, start a fresh ok ring.
+        historyView = { kind: "ok", samples: [] };
+      }
     }
   }
   const historyBus: Channel<MetricHistoryMsg> =
     inMemoryChannel<MetricHistoryMsg>();
 
   const flushRing = (): void => {
-    if (opts.ringPath === undefined) return;
-    // Only persist a healthy ring. An unavailable disposition must not
-    // overwrite an unknown-version file with an empty v=1 ring (that would
-    // silently destroy a future-compatible file the reader left alone).
+    if (opts.ringPath === undefined || persistWithheld) return;
+    // Only persist a healthy ring. Never overwrite an unknown-version file.
     if (historyView.kind !== "ok") return;
     try {
       saveHistoryRing(opts.ringPath, historyView.samples);
@@ -296,6 +315,14 @@ export async function buildAgentRuntime(
         ): AsyncIterable<MetricHistoryMsg> {
           metricHistoryLeases += 1;
           try {
+            // Subscribe BEFORE the snapshot so a tick between snapshot and
+            // tail cannot drop a sample for this subscriber (F7).
+            const tail = historyBus.subscribe(signal);
+            // One-shot boot incident (corrupt/unknown-version at load).
+            if (bootIncident !== null) {
+              yield bootIncident;
+              bootIncident = null;
+            }
             if (historyView.kind === "unavailable") {
               yield {
                 kind: "unavailable",
@@ -307,7 +334,7 @@ export async function buildAgentRuntime(
                 samples: [...historyView.samples],
               } satisfies MetricHistoryMsg;
             }
-            for await (const msg of historyBus.subscribe(signal)) {
+            for await (const msg of tail) {
               yield msg;
             }
           } finally {
@@ -453,9 +480,11 @@ export async function buildAgentRuntime(
  * Kept for main.test.ts — the production entry points are `--stdio` /
  * `--daemon` below.
  */
+/** Test seam: `serve` is required (no silent no-op default). Production
+ *  entry points use daemon/front modes, not this helper. */
 export async function serveAgent(
   reader: ProcReader,
-  serve: Serve = async () => {},
+  serve: Serve,
 ): Promise<void> {
   const runtime = await buildAgentRuntime(reader, { withControlCore: false });
   log("serving surface (test/injectable path)");
@@ -483,7 +512,7 @@ export async function serveAgent(
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  if (args.includes("-h") || args.includes("--help")) usage();
+  if (args.includes("-h") || args.includes("--help")) usage(0);
 
   const wantStdio = args.includes("--stdio");
   const brokenStdoutLog = args.includes("--broken-stdout-log");
