@@ -9,7 +9,8 @@
  *                             invokes.
  *   --daemon                  (or no flag) serve the agent surface over a
  *                             unix socket via `daemonMain` / `daemonProcessMain`.
- *                             Idle-exits after 60 minutes with no connections.
+ *                             Idle-exits after 60 minutes with no metricHistory
+ *                             stream leases (parent pump holds one per spawn).
  *   --broken-stdout-log       deliberately log a stray line to stdout before
  *                             any RPC (stdio front only). Smoke-test only.
  *
@@ -157,7 +158,12 @@ type Serve = (opts: {
 export interface AgentRuntime {
   // biome-ignore lint/suspicious/noExplicitAny: top-level oRPC router for daemonMain / serve.
   router: any;
-  /** True when no parent is subscribed to metricHistory (no live pump). */
+  /**
+   * `daemonMain` idleTimeout option name is fixed (`isIdle`). Semantics here:
+   * true when the metricHistory stream lease count is zero. The parent pump
+   * holds that stream for the spawn lifetime — this is NOT a generic TCP
+   * connection count.
+   */
   isIdle: () => boolean;
   /** Flush the history ring to disk (idempotent). */
   flushRing: () => void;
@@ -226,10 +232,10 @@ export async function buildAgentRuntime(
     }
   };
 
-  // Live parent connections — metricHistory stream refcount. The parent pump
-  // holds a metricHistory subscription for the life of each spawn (UW3); zero
-  // subscribers means the daemon is idle (eligible for idleTimeout exit).
-  let liveConnections = 0;
+  // metricHistory stream lease count. The parent pump holds that stream for
+  // the spawn lifetime (UW3); zero leases ⇒ no parent is pumping this daemon
+  // ⇒ eligible for daemonMain idleTimeout exit. Not a TCP connection count.
+  let metricHistoryLeases = 0;
 
   // The metrics SOURCE feeding the `alerts` reactor graph.
   let emitMetrics: ((f: MetricsFrame) => void) | null = null;
@@ -292,7 +298,7 @@ export async function buildAgentRuntime(
           _input: Record<string, never>,
           signal: AbortSignal | undefined,
         ): AsyncIterable<MetricHistoryMsg> {
-          liveConnections += 1;
+          metricHistoryLeases += 1;
           try {
             if (historyView.kind === "unavailable") {
               yield {
@@ -309,7 +315,7 @@ export async function buildAgentRuntime(
               yield msg;
             }
           } finally {
-            liveConnections -= 1;
+            metricHistoryLeases -= 1;
           }
         },
       },
@@ -426,7 +432,8 @@ export async function buildAgentRuntime(
 
   return {
     router,
-    isIdle: () => liveConnections === 0,
+    // Callback name required by daemonMain idleTimeout; body is lease-based.
+    isIdle: () => metricHistoryLeases === 0,
     flushRing,
     close: shutdown,
     done,
