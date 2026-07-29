@@ -127,11 +127,19 @@ fmt-check:
     {{ nix_shell }} nixpkgs-fmt --check .
 
 # Full bun suite with kolu's daemon spawn-guard env ON (KOLU_DAEMON_TESTS=1).
-# Linux odu only: GHA/macos keeps bare `just test` (gate OFF → named skip of
-# the heavy pool e2e). Same env as kolu `describeDaemon` / `just test-daemon`.
+# Declared on both platforms so `default` can depend on it (just rejects an
+# unknown dep on macos if the recipe is [linux]-only). Body is a no-op skip
+# off Linux; odu linux actually runs the suite. GHA uses bare `just test`
+# (gate OFF → named skip of the heavy pool e2e).
 [linux]
+[macos]
 test-daemon: install
-    KOLU_DAEMON_TESTS=1 {{ nix_shell }} bun test --conditions=browser
+    {{ nix_shell }} sh -c '\
+      if [ "$(uname -s)" = Linux ]; then \
+        KOLU_DAEMON_TESTS=1 bun test --conditions=browser; \
+      else \
+        echo "test-daemon: skip on $(uname -s) — pool e2e is odu-linux / KOLU_DAEMON_TESTS"; \
+      fi'
 
 # bun.nix freshness — regenerate from bun.lock into a tmpdir and diff
 # against the committed file. Fails the pipeline if bun.lock has moved
