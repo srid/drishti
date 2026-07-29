@@ -67,12 +67,13 @@ typecheck: install
 
 # Acceptance guard for issue #38: a client/server-only edit must NOT change the
 # agent's .drv hash — otherwise every remote re-copies + rebuilds the agent on
-# Fleet BUILD_ID stability (W2.5 / U5.1). Identity is the INNER wrapper hash.
-# Probes (throwaway worktrees; host tree untouched):
-#   (a) client .ts edit → BUILD_ID unchanged
-#   (b) REAL app-only devDependency + lock + bun.nix regen → all ids unchanged
-#   (c) agent-touching source edit → BUILD_ID rotates
-# Pinned via full agentBuildIdsJson map comparison for (b); x86_64 for (a)/(c).
+# Fleet BUILD_ID stability (W2.5 / U5.1 / U6.1). Identity is the INNER wrapper.
+# Probes (throwaway worktrees; host tree untouched); full map for freeze probes:
+#   (a) client .ts edit
+#   (b) REAL app-only devDependency + lock + bun.nix regen
+#   (c) root package.json only (manifest noise — not an agent input)
+#   (d) app-only script edit (scripts/ not in agent fileset except hydrate)
+#   (e) agent-touching source edit → BUILD_ID rotates
 drv-stability:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -97,7 +98,6 @@ drv-stability:
       git worktree add -q --detach "$wt" HEAD
       WT="$wt" bash -c "$mutator"
       git -C "$wt" -c user.email=ci@drishti -c user.name=ci add -A
-      # Allow empty commit only if mutator made no git-visible change (should not).
       git -C "$wt" -c user.email=ci@drishti -c user.name=ci \
         commit -qm "drv-stability probe: $name" || true
       after_map=$(nix eval --raw --no-eval-cache "$wt#agentBuildIdsJson")
@@ -138,21 +138,30 @@ drv-stability:
 
     # (a) client-only source edit
     run_probe "client-ts" 0 \
-      'printf "\n// drv-stability probe — client edit must not churn agent BUILD_ID\n" >> "$WT/packages/app/src/client/theme.ts"'
+      'printf "\n// drv-stability probe — client edit must not churn agent BUILD_ID\n" >> "$WT/packages/app/src/client/theme.ts"' \
+      1
 
-    # (b) REAL app-only devDependency: add a package, regenerate root lock + bun.nix.
-    # Agent projection (agent.lock / agent.bun.nix) is untouched → ids frozen.
-    # bun/nixpkgs-fmt come from nix develop (shebang recipes lack PATH).
+    # (b) REAL app-only devDependency + root lock/bun.nix regen
     run_probe "app-only-devDep" 0 \
       'set -euo pipefail
        cd "$WT"
        nix develop --accept-flake-config -c bun add -d left-pad@1.3.0 --cwd packages/app
        nix develop --accept-flake-config -c nix run .#bun2nix -- -l bun.lock -o bun.nix
        nix develop --accept-flake-config -c nixpkgs-fmt bun.nix >/dev/null
-       git diff --exit-code packages/agent/agent.lock packages/agent/agent.bun.nix
+       git diff --exit-code packages/agent/agent.lock packages/agent/agent.bun.nix packages/agent/agent.package.json
       ' 1
 
-    # (c) agent-touching edit must rotate
+    # (c) root package.json only (U6.1 — not an agent input)
+    run_probe "root-manifest-only" 0 \
+      'printf "\n  , \"//drv-stability\": \"root package.json only\"\n" >> "$WT/package.json"' \
+      1
+
+    # (d) app-only script (U6.1 — scripts/ except hydrate is not an agent input)
+    run_probe "app-only-script" 0 \
+      'printf "\n// drv-stability probe — app-only script must not churn agent BUILD_ID\n" >> "$WT/scripts/gen-pwa-icons.ts"' \
+      1
+
+    # (e) agent-touching edit must rotate
     run_probe "agent-touch" 1 \
       'printf "\n// drv-stability probe — agent touch must rotate BUILD_ID\n" >> "$WT/packages/agent/src/main.ts"'
 

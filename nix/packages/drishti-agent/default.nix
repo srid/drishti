@@ -1,23 +1,21 @@
 # drishti-agent build derivation — the remote-side binary's staged tree.
 #
-# This is the keystone of issue #38 / U5.1. The agent consumes a POSITIVE
-# dependency projection — never the shared root bun.nix with a denylist:
+# This is the keystone of issue #38 / U5.1 / U6.1. The agent consumes a
+# POSITIVE dependency projection and a MINIMAL source fileset:
 #
-#   1. `src` — packages/agent + packages/common + workspace package.json.
-#      Root bun.lock / bunfig.toml / bun.nix are NOT in the fileset.
+#   1. `src` — packages/agent + packages/common + agent.package.json +
+#      agent.lock + agent.bunfig.toml + hydrate-kolu-packages.sh only.
+#      Root package.json and the rest of scripts/ are NOT inputs (U6.1).
 #
-#   2. `bunDeps` — fetchBunDeps over packages/agent/agent.bun.nix only
-#      (generated from the agent-scoped lock). App-only npm FODs never enter
-#      the attrset, so an unlisted app-only key mutation of root bun.nix
-#      cannot rotate fleet BUILD_ID.
+#   2. `bunDeps` — fetchBunDeps over packages/agent/agent.bun.nix only.
 #
-#   3. Install metadata — packages/agent/agent.lock + agent.bunfig.toml.
-#      Regenerated only when agent/common deps change
+#   3. Install metadata — agent.lock + agent.bunfig.toml + agent.package.json
+#      regenerated only when agent/common deps change
 #      (`just regenerate-agent-deps`).
 #
 # Acceptance (`just ci::drv-stability`):
-#   (a) real app-only devDependency + lock/bun.nix regen → BUILD_ID unchanged
-#   (b) agent-touching source edit → BUILD_ID rotates
+#   app-only / root-manifest / app-script edits → BUILD_ID unchanged
+#   agent-touching source edit → BUILD_ID rotates
 #
 # UW3: accidental agent-drv change is a fleet-wide daemon restart.
 { stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-daemon, osfacts-client }:
@@ -25,11 +23,12 @@ let
   src = lib.fileset.toSource {
     root = ../../..;
     fileset = lib.fileset.unions [
-      ../../../package.json
-      ../../../tsconfig.base.json
       ../../../packages/agent
       ../../../packages/common
-      ../../../scripts
+      # Single hydrate script — not the whole scripts/ directory (U6.1).
+      ../../../scripts/hydrate-kolu-packages.sh
+      # tsconfig.base is extended by packages/*/tsconfig.json.
+      ../../../tsconfig.base.json
     ];
   };
 in
@@ -40,8 +39,7 @@ stdenv.mkDerivation {
 
   nativeBuildInputs = [ bun bun2nix.hook ];
 
-  # POSITIVE projection: only packages/agent/agent.bun.nix — never import
-  # the root bun.nix (no denylist of app-test packages).
+  # POSITIVE projection: only packages/agent/agent.bun.nix.
   bunDeps = bun2nix.fetchBunDeps {
     bunNix = ../../../packages/agent/agent.bun.nix;
   };
@@ -53,22 +51,15 @@ stdenv.mkDerivation {
   dontUseBunBuild = true;
   dontBuild = true;
 
-  # Agent-scoped lock + bunfig; replace package.json so it matches the
-  # agent lock workspaces (no packages/app, no root typescript/@types/bun).
+  # Exact agent-workspace manifest (not a postPatch rewrite of root package.json).
   postPatch = ''
+    cp packages/agent/agent.package.json package.json
     cp packages/agent/agent.lock bun.lock
     cp packages/agent/agent.bunfig.toml bunfig.toml
-    cat > package.json <<'EOF'
-    {
-      "name": "drishti-agent-workspace",
-      "private": true,
-      "type": "module",
-      "workspaces": ["packages/agent", "packages/common"],
-      "overrides": {
-        "@babel/helper-module-imports": "^7.29.7"
-      }
-    }
-    EOF
+    # hydrate script lives under scripts/ in the install layout
+    mkdir -p scripts
+    # fileset places hydrate-kolu-packages.sh at scripts/ relative to root
+    test -f scripts/hydrate-kolu-packages.sh
   '';
 
   postBunNodeModulesInstallPhase = ''
