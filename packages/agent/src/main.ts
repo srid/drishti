@@ -195,7 +195,16 @@ async function main(): Promise<void> {
 // exercise `serveAgent` / `buildAgentRuntime` directly) doesn't spawn the agent.
 if (import.meta.main) {
   main().catch((err) => {
-    log(`fatal: ${(err as Error).message}\n${(err as Error).stack ?? ""}`);
+    // Stable fatal prefix for the parent's boot-refusal classifier (UI phase):
+    // the stdio front / session log must carry this EXACT prefix so a terminal
+    // misconfiguration (e.g. daemonHome non-0700) is never retried as "host
+    // unreachable". Message after the prefix is the daemonHome text verbatim.
+    const msg = (err as Error).message;
+    process.stderr.write(`drishti-agent: fatal: ${msg}\n`);
+    const stack = (err as Error).stack;
+    if (stack !== undefined && stack.length > 0) {
+      process.stderr.write(`${stack}\n`);
+    }
     process.exit(1);
   });
 }

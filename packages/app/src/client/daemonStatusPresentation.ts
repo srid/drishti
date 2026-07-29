@@ -22,6 +22,7 @@ export type DaemonChipKind =
   | "drained-with-persist-failure"
   | "unconverged"
   | "link-failed"
+  | "boot-refused"
   | "off-nix"
   | "disconnected"
   | "warming"
@@ -75,6 +76,12 @@ const CHIP_BY_ANOMALY: Record<
     tone: "down",
     showNudge: false,
   },
+  "boot-refused": {
+    kind: "boot-refused",
+    label: "boot refused",
+    tone: "down",
+    showNudge: true,
+  },
 };
 
 /**
@@ -107,6 +114,14 @@ export function chipFromDaemonStatus(
   }
 
   const outcome = status.outcome;
+  if (outcome?.kind === "boot-refused") {
+    return {
+      kind: "boot-refused",
+      label: "boot refused",
+      tone: "down",
+      showNudge: true,
+    };
+  }
   if (
     outcome?.kind === "resolve-failed" &&
     outcome.resolutionKind === "unavailable"
@@ -243,6 +258,8 @@ export function outcomeSummary(
       return `last admit: adopted-stale (${outcome.anomalyKind})`;
     case "resolve-failed":
       return `last admit: resolve-failed (${outcome.resolutionKind})`;
+    case "boot-refused":
+      return `boot refused: ${outcome.message}`;
     default: {
       const _e: never = outcome;
       return _e;

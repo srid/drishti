@@ -119,6 +119,24 @@ describe("chipFromDaemonStatus (every kind)", () => {
     expect(c.tone).toBe("muted");
   });
 
+  it("boot-refused is down with nudge and shows message in outcomeSummary", () => {
+    const msg =
+      "daemonHome: /x is not a private owner-only directory (must be owned by the current user with mode 0700)";
+    const c = chipFromDaemonStatus(
+      base({
+        phase: "failed",
+        anomaly: { kind: "boot-refused", detail: msg, error: msg },
+        outcome: { kind: "boot-refused", message: msg },
+      }),
+    );
+    expect(c.kind).toBe("boot-refused");
+    expect(c.tone).toBe("down");
+    expect(c.showNudge).toBe(true);
+    expect(outcomeSummary({ kind: "boot-refused", message: msg })).toContain(
+      "not a private owner-only directory",
+    );
+  });
+
   it("disconnected / warming phases", () => {
     expect(
       chipFromDaemonStatus(base({ phase: "disconnected" })).kind,

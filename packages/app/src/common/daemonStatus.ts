@@ -35,6 +35,11 @@ export const HostOutcomeSchema = z.discriminatedUnion("kind", [
     kind: z.literal("resolve-failed"),
     resolutionKind: z.string(),
   }),
+  z.object({
+    kind: z.literal("boot-refused"),
+    /** Verbatim agent fatal message (after prefix). */
+    message: z.string(),
+  }),
 ]);
 export type HostOutcomeWire = z.infer<typeof HostOutcomeSchema>;
 

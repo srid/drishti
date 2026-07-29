@@ -25,6 +25,10 @@ export function projectConvergenceAnomaly(
   if (c.kind === "drained-with-persist-failure") {
     return { ...base, error: c.error };
   }
+  if (c.kind === "boot-refused") {
+    // Verbatim agent fatal rides as detail + error (UI shows message, no parse).
+    return { ...base, error: c.message };
+  }
   if (c.kind === "link-failed") {
     return base;
   }
@@ -94,6 +98,8 @@ export function projectOutcome(
       return { kind: "adopted-stale", anomalyKind: o.anomalyKind };
     case "resolve-failed":
       return { kind: "resolve-failed", resolutionKind: o.resolutionKind };
+    case "boot-refused":
+      return { kind: "boot-refused", message: o.message };
     default: {
       const _e: never = o;
       return _e;

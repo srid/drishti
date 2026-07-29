@@ -60,6 +60,7 @@ import {
 import { AGENT_SURFACE_VERSION, surface } from "drishti-common";
 import { saveHosts } from "./hostsStore";
 import { makeLogger } from "./log";
+import { withAgentBootBarrier } from "./withAgentBootBarrier";
 
 // Registry lifecycle events (host added/removed) get their own tag, like
 // every other subsystem — so they can be filtered out of the combined
@@ -123,6 +124,13 @@ export type DrishtiConvergence =
       readonly kind: "drained-with-persist-failure";
       readonly detail: string;
       readonly error: string;
+    }
+  /** Terminal agent-boot refusal (daemonHome / fatal misconfig) — no retry. */
+  | {
+      readonly kind: "boot-refused";
+      readonly detail: string;
+      /** Verbatim agent fatal message (after prefix). */
+      readonly message: string;
     };
 
 /** Captured final-flush failure from a drain that threw DRISHTI_PERSIST_FAILED. */
@@ -214,7 +222,9 @@ export type HostSessionOutcome =
       readonly kind: "resolve-failed";
       /** Discriminant of ResolveDrvError.resolution.kind */
       readonly resolutionKind: ResolveDrvError["resolution"]["kind"];
-    };
+    }
+  /** Terminal agent boot refusal — message is the fatal text after the prefix. */
+  | { readonly kind: "boot-refused"; readonly message: string };
 
 /** Frozen-fragment identity stashed at admit for the daemon dialog (UI phase). */
 export type HostDaemonIdentity = {
@@ -732,6 +742,18 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
           combinedByScopedClient.set(scopedClient, active);
           return { ...conn, client: scopedClient };
         };
+        // Terminal agent-boot refusal (daemonHome non-0700 etc.): capture fatal
+        // stderr, set typed outcome, throw ConnectError(terminal) — zero retries.
+        const connectOnce = withAgentBootBarrier(rawConnector, {
+          onBootRefused: (message) => {
+            outcome = { kind: "boot-refused", message };
+            convergence = {
+              kind: "boot-refused",
+              detail: message,
+              message,
+            };
+          },
+        });
         const admit = makeAgentAdmit({
           combinedByScopedClient,
           getBudget: () => budget,
@@ -750,7 +772,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
           },
         });
         const base = makeSession<AgentAppClient, SshProv>({
-          connectOnce: rawConnector,
+          connectOnce,
           initialConnection: "probing",
           connectTimeoutMs: CONNECT_TIMEOUT_MS,
           admit,
@@ -877,6 +899,18 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         return { ...conn, client: scopedClient };
       };
 
+      // Terminal agent-boot refusal: fatal stderr ⇒ typed outcome, zero retries.
+      const connectOnce = withAgentBootBarrier(rawConnector, {
+        onBootRefused: (message) => {
+          outcome = { kind: "boot-refused", message };
+          convergence = {
+            kind: "boot-refused",
+            detail: message,
+            message,
+          };
+        },
+      });
+
       const admit = makeAgentAdmit({
         combinedByScopedClient,
         getBudget: () => {
@@ -904,7 +938,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
       });
 
       const base = makeSession<AgentAppClient, SshProv>({
-        connectOnce: rawConnector,
+        connectOnce,
         // `sshConnector` PROVISIONS (nix-copies the agent closure before
         // dialing), so its true opening phase is the connector's FIRST
         // provisioning phase, "probing" (the remote connector advances
