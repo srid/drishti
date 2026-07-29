@@ -67,29 +67,39 @@ typecheck: install
 
 # Acceptance guard for issue #38: a client/server-only edit must NOT change the
 # agent's .drv hash — otherwise every remote re-copies + rebuilds the agent on
-# the next reconnect. We snapshot drishti-agent.drvPath, replay a client-only
-# edit in a throwaway git worktree (so this host's tree is never touched), and
-# assert the drvPath is byte-identical. Pinned to x86_64-linux's drvPath: pure
-# cross-arch eval makes the evaluating platform irrelevant, so one check on any
-# host covers the whole agentDrvBySystem map. `--no-eval-cache` so a warm eval
-# cache can't mask a regression.
+# the next reconnect. Identity is the INNER wrapper hash (W2.5 BUILD_ID) — not
+# the outer agent .drv (which legitimately carries COMMIT_HASH / monorepo rev
+# and advances on any commit, client-only included). Snapshot
+# drishtiAgentBuildId, replay a client-only edit in a throwaway git worktree
+# (so this host's tree is never touched), and assert the id is byte-identical.
+# Pinned to x86_64-linux: pure cross-arch eval makes the evaluating platform
+# irrelevant. `--no-eval-cache` so a warm eval cache can't mask a regression.
 drv-stability:
     #!/usr/bin/env bash
     set -euo pipefail
-    attr='packages.x86_64-linux.drishti-agent.drvPath'
-    base=$(nix eval --raw --no-eval-cache ".#$attr")
+    # BUILD_ID is hash(inner wrapper path) — the sole convergeAdmit identity key.
+    # agentBuildIdsJson is the per-system map the parent already bakes.
+    extract_id() {
+      # JSON: {"x86_64-linux":"<id>",...} — pull the x86_64-linux value.
+      sed -n 's/.*"x86_64-linux"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+    }
+    base=$(nix eval --raw --no-eval-cache '.#agentBuildIdsJson' | extract_id)
+    if [ -z "$base" ]; then
+      echo "drv-stability: FAIL — empty x86_64-linux BUILD_ID from agentBuildIdsJson"
+      exit 1
+    fi
     tmp=$(mktemp -d)
     wt="$tmp/wt"
     trap 'git worktree remove --force "$wt" 2>/dev/null || true; rm -rf "$tmp"' EXIT
     git worktree add -q --detach "$wt" HEAD
-    printf '\n// drv-stability probe — client edit must not churn the agent\n' \
+    printf '\n// drv-stability probe — client edit must not churn agent BUILD_ID\n' \
       >> "$wt/packages/app/src/client/theme.ts"
     git -C "$wt" -c user.email=ci@drishti -c user.name=ci commit -qam 'drv-stability probe'
-    after=$(nix eval --raw --no-eval-cache "$wt#$attr")
+    after=$(nix eval --raw --no-eval-cache "$wt#agentBuildIdsJson" | extract_id)
     if [ "$base" = "$after" ]; then
-      echo "drv-stability: PASS — agent .drv unchanged across a client edit ($base)"
+      echo "drv-stability: PASS — agent BUILD_ID unchanged across a client edit ($base)"
     else
-      echo "drv-stability: FAIL — a client edit churned the agent .drv"
+      echo "drv-stability: FAIL — a client edit churned the agent BUILD_ID (identity)"
       echo "  before: $base"
       echo "  after:  $after"
       exit 1
@@ -120,6 +130,26 @@ agent-boots:
       printf '%s\n' "$out"
       exit 1
     fi
+    # Joint invariant (W2.5 outer stamp): non-empty BUILD_ID ⇒ non-empty COMMIT_HASH.
+    # MUTATION: drop --set DRISHTI_AGENT_COMMIT_HASH from the outer agent wrapper ⇒ red.
+    # makeWrapper writes env into the launcher script — probe it directly.
+    wrap=./result/bin/drishti-agent
+    if ! grep -q 'DRISHTI_AGENT_BUILD_ID' "$wrap"; then
+      echo "agent-boots: FAIL — outer wrapper missing DRISHTI_AGENT_BUILD_ID"
+      exit 1
+    fi
+    if ! grep -q 'DRISHTI_AGENT_COMMIT_HASH' "$wrap"; then
+      echo "agent-boots: FAIL — outer wrapper missing DRISHTI_AGENT_COMMIT_HASH (joint invariant)"
+      exit 1
+    fi
+    build_id=$(grep -oE 'DRISHTI_AGENT_BUILD_ID=[^[:space:]"]+' "$wrap" | head -1 | cut -d= -f2- | tr -d \"\')
+    commit=$(grep -oE 'DRISHTI_AGENT_COMMIT_HASH=[^[:space:]"]+' "$wrap" | head -1 | cut -d= -f2- | tr -d \"\')
+    if [ -n "$build_id" ] && [ -z "$commit" ]; then
+      echo "agent-boots: FAIL — joint invariant: non-empty BUILD_ID requires non-empty COMMIT_HASH"
+      echo "  BUILD_ID=$build_id COMMIT_HASH=<empty>"
+      exit 1
+    fi
+    echo "agent-boots: PASS — joint identity stamp present (BUILD_ID + COMMIT_HASH)"
 
 # Check formatting without modifying (nixpkgs-fmt). Accepts a directory
 # argument and recurses, so `.` covers every *.nix at any depth.

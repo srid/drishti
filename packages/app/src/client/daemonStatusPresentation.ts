@@ -43,6 +43,39 @@ export type DaemonChipPresentation = {
   readonly showNudge: boolean;
 };
 
+/**
+ * Glance surfaces (tabs / fleet cards): QUIET WHEN HEALTHY (kaval shape).
+ *
+ * The connection label already paints connected / failed / disconnected /
+ * probing. The daemon chip appears ONLY when it adds information beyond
+ * that label — not a second green "running" pill beside "connected", and
+ * not a second "link failed"/"failed" pair.
+ *
+ * Dialog always has full detail on demand (this gate is glance-only).
+ */
+export function chipGlanceVisible(p: DaemonChipPresentation): boolean {
+  switch (p.kind) {
+    case "adopted-stale":
+    case "boot-refused":
+    case "skew-refused":
+    case "cross-supervisor":
+    case "drained-with-persist-failure":
+    case "unconverged":
+    case "off-nix":
+      return true;
+    case "clean":
+    case "link-failed":
+    case "disconnected":
+    case "warming":
+    case "unknown":
+      return false;
+    default: {
+      const _e: never = p.kind;
+      return _e;
+    }
+  }
+}
+
 function chipFromAnomaly(anomaly: ConvergenceAnomalyWire): DaemonChipPresentation {
   switch (anomaly.kind) {
     case "adopted-stale":

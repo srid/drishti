@@ -4,11 +4,13 @@
  */
 import type { Component, JSX } from "solid-js";
 import { Show } from "solid-js";
+// Show used by chip nudge + FleetDaemonStatusChip quiet-when-healthy gate.
 import type { DaemonStatus } from "../common/daemonStatus";
 import {
   type DaemonChipPresentation,
   CHIP_TONE_CLASS,
   chipFromDaemonStatus,
+  chipGlanceVisible,
 } from "./daemonStatusPresentation";
 import { useDaemonStatusStore } from "./daemonStatusStore";
 
@@ -54,16 +56,20 @@ export const DaemonStatusChip: Component<{
 /**
  * Fleet-bound chip — reads status + dialog open from the shared store.
  * Used as a SIBLING of host-selection controls (U3.4: never nested in a button).
+ * QUIET WHEN HEALTHY (kaval): omitted when chip would only repeat connection.
  * MUTATION: status={null} here fails the rendered binding test (U3.2).
  */
 export const FleetDaemonStatusChip: Component<{ host: string }> = (props) => {
   const store = useDaemonStatusStore();
   const status = () => store.byHost()[props.host] ?? null;
+  const visible = () => chipGlanceVisible(chipFromDaemonStatus(status()));
   return (
-    <DaemonStatusChip
-      status={status()}
-      onClick={() => store.setDialogHost(props.host)}
-    />
+    <Show when={visible()}>
+      <DaemonStatusChip
+        status={status()}
+        onClick={() => store.setDialogHost(props.host)}
+      />
+    </Show>
   );
 };
 

@@ -22,6 +22,7 @@ import { DaemonDialog } from "./DaemonDialog";
 import {
   type DaemonChipKind,
   chipFromDaemonStatus,
+  chipGlanceVisible,
   type RenewUiState,
   applyRenewResult,
   applyRenewStart,
@@ -244,8 +245,9 @@ describe("U3.2 / U3.3 rendered DaemonDialog", () => {
       stateRoot: "/s",
       contractVersion: "1.0",
       startedAt: 1,
-      commit: "c",
-      buildId: "b",
+      // Non-empty commit + buildId (joint invariant of the outer agent stamp).
+      commit: "abc1234deadbeef",
+      buildId: "bld-known-id",
     },
   });
 
@@ -294,6 +296,10 @@ describe("U3.2 / U3.3 rendered DaemonDialog", () => {
     ));
     expect(screen.getByText("h1.example")).toBeTruthy();
     expect(screen.getByText("/s")).toBeTruthy();
+    // Outer agent wrapper stamps COMMIT_HASH — dialog must paint the commit
+    // when identity carries a non-empty value (not the honest-unknown dash).
+    expect(screen.getByText("abc1234deadbeef")).toBeTruthy();
+    expect(screen.getByText("bld-known-id")).toBeTruthy();
     const renew = screen.getByTestId("daemon-dialog-renew");
     const reconnect = screen.getByTestId("daemon-dialog-reconnect");
     await fireEvent.click(renew);
@@ -371,6 +377,8 @@ describe("U3.2 store binding — FleetDaemonStatusChip", () => {
     },
   });
 
+  const cleanHealthy = status({ phase: "connected" });
+
   it("selected host store status reaches rendered chip props", async () => {
     let opened: string | undefined;
     const store = mockStore({
@@ -395,9 +403,23 @@ describe("U3.2 store binding — FleetDaemonStatusChip", () => {
     expect(opened).toBe("host-a");
   });
 
+  it("QUIET WHEN HEALTHY: clean connected host has no glance chip", () => {
+    // Assertion, not accident — healthy must not paint a green "running" pill.
+    expect(chipGlanceVisible(chipFromDaemonStatus(cleanHealthy))).toBe(false);
+    const store = mockStore({ byHost: { "host-ok": cleanHealthy } });
+    render(() => (
+      <DaemonStatusCtx.Provider value={store}>
+        <FleetDaemonStatusChip host="host-ok" />
+      </DaemonStatusCtx.Provider>
+    ));
+    expect(screen.queryByTestId("daemon-status-chip")).toBeNull();
+    expect(screen.queryByTestId("daemon-status-chip-label")).toBeNull();
+  });
+
   it("status={null} binding fails rendered assertion (mutation target)", () => {
     // Production FleetDaemonStatusChip reads store.byHost()[host].
     // Mutating it to status={null} paints unknown — this is the red.
+    // (Direct DaemonStatusChip still paints; glance gate hides null/unknown.)
     render(() => <DaemonStatusChip status={null} />);
     expect(screen.getByTestId("daemon-status-chip-label").textContent).toBe(
       "daemon…",
@@ -465,6 +487,23 @@ describe("U3.4 no nested buttons — sibling chip + selection", () => {
     await fireEvent.click(screen.getByTestId("daemon-status-chip"));
     expect(opened).toBe("tab-host");
     expect(selected).toBe(1);
+  });
+
+  it("tab placement: healthy host has no chip (quiet-when-healthy)", () => {
+    const store = mockStore({
+      byHost: { "tab-ok": status({ phase: "connected" }) },
+    });
+    render(() => (
+      <DaemonStatusCtx.Provider value={store}>
+        <div data-testid="tab-chip-tab-ok">
+          <button type="button" data-testid="tab-select-tab-ok">
+            tab-ok
+          </button>
+          <FleetDaemonStatusChip host="tab-ok" />
+        </div>
+      </DaemonStatusCtx.Provider>
+    ));
+    expect(screen.queryByTestId("daemon-status-chip")).toBeNull();
   });
 
   it("production TabChip and HostCard keep FleetDaemonStatusChip as a sibling (not nested)", () => {

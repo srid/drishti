@@ -77,15 +77,19 @@ let
     then resolvedPkgs.callPackage ./nix/packages/drishti-agent { bun2nix = b2n; }
     else throw "drishti agent build derivation needs `b2n` (lib.mkBun2nix output) — invoke via flake.nix";
 
-  # Identity env for the durable daemon (UW3). BUILD_ID is the hash of the
-  # ACTUAL shipped wrapper derivation WITHOUT the id env itself (W2.5) — so any
-  # dep/flag change on the inner wrapper rotates the id automatically; a
-  # hand-synchronized input list cannot drift from makeWrapper. A client-only
-  # monorepo commit must NOT churn this id (drv-stability / issue #38). Do NOT
-  # bake monorepo `self.rev` into the agent wrapper.
+  # Identity env for the durable daemon (UW3). Two-stage wrapper (W2.5):
   #
-  # Two-stage: inner wrapper carries bun/osfacts/entrypoint; id = hash(inner);
-  # outer only stamps DRISHTI_AGENT_BUILD_ID so the id is not self-referential.
+  #   INNER — bun / osfacts / entrypoint. Its store path is the sole input to
+  #           BUILD_ID. A client-only monorepo commit must NOT churn this
+  #           (drv-stability / issue #38): no monorepo rev here.
+  #   OUTER — stamps BUILD_ID (hash of the inner path) AND COMMIT_HASH (monorepo
+  #           `rev`). The outer path may change when `rev` advances; that is
+  #           ZERO identity cost — convergeAdmit keys on BUILD_ID only, so no
+  #           drain / no id rotation. Pre-W2.5 the single wrapper could not
+  #           carry `rev` without rotating the id; that reasoning is obsolete.
+  #
+  # Joint invariant: a nix-built agent with non-empty BUILD_ID must also carry
+  # a non-empty COMMIT_HASH (identity fragment serves both; CI pins this).
   drishti-agent-inner = resolvedPkgs.runCommand "drishti-agent-inner"
     {
       nativeBuildInputs = [ resolvedPkgs.makeWrapper ];
@@ -104,7 +108,8 @@ let
     } ''
     mkdir -p $out/bin
     makeWrapper ${drishti-agent-inner}/bin/drishti-agent $out/bin/drishti-agent \
-      --set DRISHTI_AGENT_BUILD_ID "${drishtiAgentBuildId}"
+      --set DRISHTI_AGENT_BUILD_ID "${drishtiAgentBuildId}" \
+      --set DRISHTI_AGENT_COMMIT_HASH "${rev}"
   '';
 
   drishti-client = resolvedPkgs.runCommand "drishti-client"

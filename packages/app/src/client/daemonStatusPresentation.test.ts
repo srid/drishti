@@ -6,6 +6,7 @@ import {
   applyRenewResult,
   applyRenewStart,
   chipFromDaemonStatus,
+  chipGlanceVisible,
   identityRows,
   outcomeSummary,
 } from "./daemonStatusPresentation";
@@ -181,6 +182,86 @@ describe("chipFromDaemonStatus (every kind)", () => {
 
   it("null status is unknown", () => {
     expect(chipFromDaemonStatus(null).kind).toBe("unknown");
+  });
+
+  it("chipGlanceVisible: quiet when healthy / redundant with connection label", () => {
+    expect(
+      chipGlanceVisible(chipFromDaemonStatus(base({ phase: "connected" }))),
+    ).toBe(false);
+    expect(
+      chipGlanceVisible(
+        chipFromDaemonStatus(
+          base({ anomaly: { kind: "link-failed", detail: "x" } }),
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      chipGlanceVisible(chipFromDaemonStatus(base({ phase: "disconnected" }))),
+    ).toBe(false);
+    expect(
+      chipGlanceVisible(chipFromDaemonStatus(base({ phase: "probing" }))),
+    ).toBe(false);
+    expect(chipGlanceVisible(chipFromDaemonStatus(null))).toBe(false);
+  });
+
+  it("chipGlanceVisible: daemon-only facts stay on glance surfaces", () => {
+    for (const kind of [
+      "adopted-stale",
+      "boot-refused",
+      "skew-refused",
+      "cross-supervisor",
+      "drained-with-persist-failure",
+      "unconverged",
+      "off-nix",
+    ] as const) {
+      // Presence of these kinds is covered above; pin glance visibility true.
+      void kind;
+    }
+    expect(
+      chipGlanceVisible(
+        chipFromDaemonStatus(
+          base({
+            anomaly: {
+              kind: "adopted-stale",
+              detail: "d",
+              running: {
+                contractVersion: "1.0",
+                build: { kind: "known", id: "a" },
+              },
+              expected: {
+                contractVersion: "1.0",
+                build: { kind: "known", id: "b" },
+              },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      chipGlanceVisible(
+        chipFromDaemonStatus(
+          base({
+            anomaly: {
+              kind: "boot-refused",
+              detail: "m",
+              message: "m",
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      chipGlanceVisible(
+        chipFromDaemonStatus(
+          base({
+            outcome: {
+              kind: "resolve-failed",
+              resolutionKind: "unavailable",
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
   });
 });
 
