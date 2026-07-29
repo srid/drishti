@@ -17,6 +17,8 @@ import { useSurfaceApp } from "@kolu/surface-app/solid";
 import { createPwaInstall, installInstructions } from "@kolu/solid-pwa-install";
 import { createSignal, For, Show } from "solid-js";
 import type { View } from "./view";
+import { DaemonStatusChip } from "./DaemonStatusChip";
+import { useDaemonStatusStore } from "./daemonStatusStore";
 import { HostDot } from "./HostDot";
 import { otherTheme, type Theme } from "./theme";
 import { hostMap } from "./wire";
@@ -171,6 +173,9 @@ function TabChip(props: {
 }) {
   const entry = hostMap.entry(props.host);
   const state = () => entry.state();
+  // U2.2: per-host daemon chip on every tab — shared fleet poll, not HostView-only.
+  const daemonStore = useDaemonStatusStore();
+  const daemonStatus = () => daemonStore.byHost()[props.host] ?? null;
   // The host's raised-alert set (kolu W5 `alerts` cell) — read straight off
   // `hostMap` the same way the dot reads `state()`, so the chip needs no new
   // prop threaded through `TabStrip`. A compact red count pip mirrors the fleet
@@ -191,6 +196,10 @@ function TabChip(props: {
       >
         <HostDot state={state} />
         <span class="font-semibold">{props.host}</span>
+        <DaemonStatusChip
+          status={daemonStatus()}
+          onClick={() => daemonStore.setDialogHost(props.host)}
+        />
         <Show when={state().kind === "connected" && alertCount() > 0}>
           <span
             data-testid={`tab-alert-${props.host}`}

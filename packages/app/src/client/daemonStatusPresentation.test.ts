@@ -119,22 +119,52 @@ describe("chipFromDaemonStatus (every kind)", () => {
     expect(c.tone).toBe("muted");
   });
 
-  it("boot-refused is down with nudge and shows message in outcomeSummary", () => {
+  it("boot-refused is down WITHOUT adopted-stale Renew nudge (U2.6)", () => {
     const msg =
       "daemonHome: /x is not a private owner-only directory (must be owned by the current user with mode 0700)";
     const c = chipFromDaemonStatus(
       base({
         phase: "failed",
-        anomaly: { kind: "boot-refused", detail: msg, error: msg },
+        anomaly: { kind: "boot-refused", detail: msg, message: msg },
         outcome: { kind: "boot-refused", message: msg },
       }),
     );
     expect(c.kind).toBe("boot-refused");
     expect(c.tone).toBe("down");
-    expect(c.showNudge).toBe(true);
+    expect(c.showNudge).toBe(false);
     expect(outcomeSummary({ kind: "boot-refused", message: msg })).toContain(
       "not a private owner-only directory",
     );
+    const b = anomalyBanner({
+      kind: "boot-refused",
+      detail: msg,
+      message: msg,
+    });
+    expect(b?.bootRefusedMessage).toBe(msg);
+  });
+
+  it("unconverged and link-failed chip kinds (U2.7 every arm)", () => {
+    expect(
+      chipFromDaemonStatus(
+        base({
+          anomaly: {
+            kind: "unconverged",
+            detail: "x",
+            running: null,
+            expected: {
+              contractVersion: "1.0",
+              build: { kind: "known", id: "e" },
+            },
+            cause: { kind: "identity-unverifiable" },
+          },
+        }),
+      ).kind,
+    ).toBe("unconverged");
+    expect(
+      chipFromDaemonStatus(
+        base({ anomaly: { kind: "link-failed", detail: "ssh died" } }),
+      ).kind,
+    ).toBe("link-failed");
   });
 
   it("disconnected / warming phases", () => {
@@ -215,7 +245,18 @@ describe("renew + poll folds", () => {
 
   it("poll error retains standing status", () => {
     const prev = base({
-      anomaly: { kind: "skew-refused", detail: "x" },
+      anomaly: {
+        kind: "skew-refused",
+        detail: "x",
+        running: {
+          contractVersion: "2.0",
+          build: { kind: "known", id: "r" },
+        },
+        expected: {
+          contractVersion: "1.0",
+          build: { kind: "known", id: "e" },
+        },
+      },
     });
     const next = applyDaemonStatusError(prev, "network");
     expect(next.status?.anomaly?.kind).toBe("skew-refused");

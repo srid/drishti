@@ -3,6 +3,9 @@
  *
  * UI reads ONLY these discriminants — never free-form Error.message /
  * reason prose (UW3 campaign standing law).
+ *
+ * U2.5: ConvergenceAnomalyWire is a CLOSED discriminated union — each arm
+ * preserves required evidence; an added server arm is an exhaustiveness failure.
  */
 import { z } from "zod";
 
@@ -16,28 +19,40 @@ export const DaemonIdentitySchema = z.object({
 });
 export type DaemonIdentity = z.infer<typeof DaemonIdentitySchema>;
 
-/** HostSession.outcome() as wire JSON. */
+const AxisSchema = z.enum(["build", "contract"]);
+
+/** HostSession.outcome() as wire JSON — closed kinds. */
 export const HostOutcomeSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("replaced"),
-    axis: z.enum(["build", "contract"]),
+    axis: AxisSchema,
   }),
   z.object({
     kind: z.literal("refused"),
-    anomalyKind: z.string(),
+    anomalyKind: z.enum([
+      "adopted-stale",
+      "skew-refused",
+      "unconverged",
+      "cross-supervisor",
+    ]),
   }),
   z.object({ kind: z.literal("adopted") }),
   z.object({
     kind: z.literal("adopted-stale"),
-    anomalyKind: z.string(),
+    anomalyKind: z.literal("adopted-stale"),
   }),
   z.object({
     kind: z.literal("resolve-failed"),
-    resolutionKind: z.string(),
+    resolutionKind: z.enum([
+      "unavailable",
+      "source-unbaked",
+      "nix-unavailable",
+      "network-exhausted",
+    ]),
   }),
   z.object({
     kind: z.literal("boot-refused"),
-    /** Verbatim agent fatal message (after prefix). */
+    /** Verbatim agent fatal message (prefixed line payload only). */
     message: z.string(),
   }),
 ]);
@@ -54,31 +69,112 @@ const ConvergenceIdentityWireSchema = z.object({
 });
 
 const InstanceKeyWireSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("instance"), key: z.union([z.string(), z.number()]) }),
+  z.object({
+    kind: z.literal("instance"),
+    key: z.union([z.string(), z.number()]),
+  }),
   z.object({ kind: z.literal("pre-instance") }),
 ]);
 
+/** Framework UnconvergedCause — closed on the wire (U2.5). */
+export const UnconvergedCauseWireSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("budget-exhausted"),
+    axis: AxisSchema,
+    attempts: z.number(),
+    maxAttempts: z.number(),
+  }),
+  z.object({
+    kind: z.literal("drain-not-taken"),
+    axis: AxisSchema,
+    ceilingMs: z.number(),
+    rejection: z.string().nullable(),
+  }),
+  z.object({
+    kind: z.literal("adopt-bind-failed"),
+    axis: AxisSchema.nullable(),
+  }),
+  z.object({ kind: z.literal("identity-unverifiable") }),
+  z.object({
+    kind: z.literal("probe-failed"),
+    message: z.string(),
+  }),
+]);
+export type UnconvergedCauseWire = z.infer<typeof UnconvergedCauseWireSchema>;
+
 /**
- * Standing convergence anomaly — kind is the discriminant; typed evidence
- * fields ride only on the arms that carry them (never parsed from detail).
+ * Standing convergence anomaly — CLOSED discriminated union.
+ * Required evidence per arm; never optional "maybe present" fields.
  */
-export const ConvergenceAnomalyWireSchema = z.object({
-  kind: z.string(),
-  detail: z.string(),
-  error: z.string().optional(),
-  running: ConvergenceIdentityWireSchema.optional(),
-  expected: ConvergenceIdentityWireSchema.optional(),
-  drained: InstanceKeyWireSchema.optional(),
-  observed: InstanceKeyWireSchema.optional(),
-});
+export const ConvergenceAnomalyWireSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("adopted-stale"),
+    detail: z.string(),
+    running: ConvergenceIdentityWireSchema,
+    expected: ConvergenceIdentityWireSchema,
+  }),
+  z.object({
+    kind: z.literal("skew-refused"),
+    detail: z.string(),
+    running: ConvergenceIdentityWireSchema,
+    expected: ConvergenceIdentityWireSchema,
+  }),
+  z.object({
+    kind: z.literal("unconverged"),
+    detail: z.string(),
+    running: ConvergenceIdentityWireSchema.nullable(),
+    expected: ConvergenceIdentityWireSchema,
+    cause: UnconvergedCauseWireSchema,
+  }),
+  z.object({
+    kind: z.literal("cross-supervisor"),
+    detail: z.string(),
+    drained: InstanceKeyWireSchema,
+    observed: InstanceKeyWireSchema,
+    running: ConvergenceIdentityWireSchema,
+  }),
+  z.object({
+    kind: z.literal("link-failed"),
+    detail: z.string(),
+  }),
+  z.object({
+    kind: z.literal("drained-with-persist-failure"),
+    detail: z.string(),
+    error: z.string(),
+  }),
+  z.object({
+    kind: z.literal("boot-refused"),
+    detail: z.string(),
+    /** Verbatim agent fatal message (same as outcome.message). */
+    message: z.string(),
+  }),
+]);
 export type ConvergenceAnomalyWire = z.infer<typeof ConvergenceAnomalyWireSchema>;
+
+/** Runtime parse pin for closed wire (U2.5 mutation: open schema fails this). */
+export function parseConvergenceAnomalyWire(
+  value: unknown,
+): ConvergenceAnomalyWire {
+  return ConvergenceAnomalyWireSchema.parse(value);
+}
+
+/** Session phase words the pool/session publish. */
+export const SessionPhaseSchema = z.enum([
+  "probing",
+  "provisioning",
+  "connecting",
+  "connected",
+  "disconnected",
+  "failed",
+  "unknown",
+]);
+export type SessionPhaseWire = z.infer<typeof SessionPhaseSchema>;
 
 /** Full per-host daemon status for the UI chip + dialog. */
 export const DaemonStatusSchema = z.object({
   anomaly: ConvergenceAnomalyWireSchema.nullable(),
   outcome: HostOutcomeSchema.nullable(),
   identity: DaemonIdentitySchema.nullable(),
-  /** Session phase word (connection authority) — structural, not prose. */
-  phase: z.string(),
+  phase: SessionPhaseSchema,
 });
 export type DaemonStatus = z.infer<typeof DaemonStatusSchema>;

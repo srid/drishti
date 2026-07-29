@@ -545,11 +545,13 @@ function attachDaemonSession(args: {
   base.onState((s) => {
     if (s.phase === "failed") {
       const current = args.getConvergence();
-      // Standing refuse anomalies keep their binding for renew (W3.4).
+      // Standing terminal/human-action anomalies keep their binding (W3.4 / U2.1).
+      // boot-refused is terminal human-action state — never overwrite to link-failed.
       const standingRefuse =
         current?.kind === "skew-refused" ||
         current?.kind === "cross-supervisor" ||
-        current?.kind === "unconverged";
+        current?.kind === "unconverged" ||
+        current?.kind === "boot-refused";
       if (!standingRefuse) {
         args.setConvergence({
           kind: "link-failed",
@@ -566,7 +568,8 @@ function attachDaemonSession(args: {
         current?.kind === "skew-refused" ||
         current?.kind === "cross-supervisor" ||
         current?.kind === "unconverged" ||
-        current?.kind === "drained-with-persist-failure";
+        current?.kind === "drained-with-persist-failure" ||
+        current?.kind === "boot-refused";
       if (!standingRefuse) {
         args.setActiveCombined(null);
       }

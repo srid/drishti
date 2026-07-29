@@ -1,12 +1,17 @@
 /**
  * Project HostSession supervision state to the admin wire DaemonStatus.
  * Pure — unit-tested; admin-router is a thin call site.
+ *
+ * U2.5: closed arm projection — each wire arm's required evidence is set
+ * exhaustively (no open optional soup).
  */
 import type {
   ConvergenceAnomalyWire,
   DaemonIdentity,
   DaemonStatus,
   HostOutcomeWire,
+  SessionPhaseWire,
+  UnconvergedCauseWire,
 } from "../common/daemonStatus";
 import type {
   DrishtiConvergence,
@@ -14,74 +19,133 @@ import type {
   HostSessionOutcome,
 } from "./hostRegistry";
 
-/** Project a standing DrishtiConvergence to typed wire (no prose parsing). */
+function projectBuild(
+  build: { kind: "known"; id: string } | { kind: "off-nix" },
+): { kind: "known"; id: string } | { kind: "off-nix" } {
+  return build.kind === "known"
+    ? { kind: "known", id: build.id }
+    : { kind: "off-nix" };
+}
+
+function projectIdentity(id: {
+  contractVersion: string;
+  build: { kind: "known"; id: string } | { kind: "off-nix" };
+}): { contractVersion: string; build: ReturnType<typeof projectBuild> } {
+  return {
+    contractVersion: id.contractVersion,
+    build: projectBuild(id.build),
+  };
+}
+
+function projectInstanceKey(
+  k:
+    | { kind: "instance"; key: string | number }
+    | { kind: "pre-instance" }
+    | string,
+):
+  | { kind: "instance"; key: string | number }
+  | { kind: "pre-instance" } {
+  if (typeof k === "string") return { kind: "instance", key: k };
+  if (k.kind === "instance") return { kind: "instance", key: k.key };
+  return { kind: "pre-instance" };
+}
+
+function projectUnconvergedCause(
+  cause: Extract<DrishtiConvergence, { kind: "unconverged" }>["cause"],
+): UnconvergedCauseWire {
+  switch (cause.kind) {
+    case "budget-exhausted":
+      return {
+        kind: "budget-exhausted",
+        axis: cause.axis,
+        attempts: cause.attempts,
+        maxAttempts: cause.maxAttempts,
+      };
+    case "drain-not-taken":
+      return {
+        kind: "drain-not-taken",
+        axis: cause.axis,
+        ceilingMs: cause.ceilingMs,
+        rejection: cause.rejection,
+      };
+    case "adopt-bind-failed":
+      return { kind: "adopt-bind-failed", axis: cause.axis };
+    case "identity-unverifiable":
+      return { kind: "identity-unverifiable" };
+    case "probe-failed":
+      return { kind: "probe-failed", message: cause.message };
+    default: {
+      const _e: never = cause;
+      throw new Error(
+        `projectUnconvergedCause: unreachable ${JSON.stringify(_e)}`,
+      );
+    }
+  }
+}
+
+/** Project a standing DrishtiConvergence to typed closed wire (no prose parsing). */
 export function projectConvergenceAnomaly(
   c: DrishtiConvergence,
 ): ConvergenceAnomalyWire {
-  const base: ConvergenceAnomalyWire = {
-    kind: c.kind,
-    detail: c.detail,
-  };
-  if (c.kind === "drained-with-persist-failure") {
-    return { ...base, error: c.error };
-  }
-  if (c.kind === "boot-refused") {
-    // Verbatim agent fatal rides as detail + error (UI shows message, no parse).
-    return { ...base, error: c.message };
-  }
-  if (c.kind === "link-failed") {
-    return base;
-  }
-  // Framework ConvergenceAnomaly arms carry running / expected / keys.
-  if ("running" in c && c.running !== undefined && c.running !== null) {
-    const running = c.running;
-    base.running = {
-      contractVersion: running.contractVersion,
-      build:
-        running.build.kind === "known"
-          ? { kind: "known", id: running.build.id }
-          : { kind: "off-nix" },
-    };
-  }
-  if ("expected" in c && c.expected !== undefined && c.expected !== null) {
-    const expected = c.expected;
-    base.expected = {
-      contractVersion: expected.contractVersion,
-      build:
-        expected.build.kind === "known"
-          ? { kind: "known", id: expected.build.id }
-          : { kind: "off-nix" },
-    };
-  }
-  if ("drained" in c && c.drained !== undefined) {
-    const d = c.drained as
-      | { kind: "instance"; key: string | number }
-      | { kind: "pre-instance" }
-      | string;
-    // InstanceKey may be branded string or structured depending on kolu pin.
-    if (typeof d === "string") {
-      base.drained = { kind: "instance", key: d };
-    } else if (d.kind === "instance") {
-      base.drained = { kind: "instance", key: d.key };
-    } else {
-      base.drained = { kind: "pre-instance" };
+  switch (c.kind) {
+    case "link-failed":
+      return { kind: "link-failed", detail: c.detail };
+    case "drained-with-persist-failure":
+      return {
+        kind: "drained-with-persist-failure",
+        detail: c.detail,
+        error: c.error,
+      };
+    case "boot-refused":
+      return {
+        kind: "boot-refused",
+        detail: c.detail,
+        message: c.message,
+      };
+    case "adopted-stale":
+      return {
+        kind: "adopted-stale",
+        detail: c.detail,
+        running: projectIdentity(c.running),
+        expected: projectIdentity(c.expected),
+      };
+    case "skew-refused":
+      return {
+        kind: "skew-refused",
+        detail: c.detail,
+        running: projectIdentity(c.running),
+        expected: projectIdentity(c.expected),
+      };
+    case "unconverged":
+      return {
+        kind: "unconverged",
+        detail: c.detail,
+        running: c.running === null ? null : projectIdentity(c.running),
+        expected: projectIdentity(c.expected),
+        cause: projectUnconvergedCause(c.cause),
+      };
+    case "cross-supervisor":
+      return {
+        kind: "cross-supervisor",
+        detail: c.detail,
+        drained: projectInstanceKey(c.drained),
+        observed: projectInstanceKey(c.observed),
+        running: projectIdentity(c.running),
+      };
+    default: {
+      const _e: never = c;
+      throw new Error(
+        `projectConvergenceAnomaly: unreachable ${JSON.stringify(_e)}`,
+      );
     }
   }
-  if ("observed" in c && c.observed !== undefined) {
-    const o = c.observed as
-      | { kind: "instance"; key: string | number }
-      | { kind: "pre-instance" }
-      | string;
-    if (typeof o === "string") {
-      base.observed = { kind: "instance", key: o };
-    } else if (o.kind === "instance") {
-      base.observed = { kind: "instance", key: o.key };
-    } else {
-      base.observed = { kind: "pre-instance" };
-    }
-  }
-  return base;
 }
+
+type RefusedKind = Extract<HostOutcomeWire, { kind: "refused" }>["anomalyKind"];
+type ResolveKind = Extract<
+  HostOutcomeWire,
+  { kind: "resolve-failed" }
+>["resolutionKind"];
 
 export function projectOutcome(
   o: HostSessionOutcome | null,
@@ -91,13 +155,19 @@ export function projectOutcome(
     case "replaced":
       return { kind: "replaced", axis: o.axis };
     case "refused":
-      return { kind: "refused", anomalyKind: o.anomalyKind };
+      return {
+        kind: "refused",
+        anomalyKind: o.anomalyKind as RefusedKind,
+      };
     case "adopted":
       return { kind: "adopted" };
     case "adopted-stale":
-      return { kind: "adopted-stale", anomalyKind: o.anomalyKind };
+      return { kind: "adopted-stale", anomalyKind: "adopted-stale" };
     case "resolve-failed":
-      return { kind: "resolve-failed", resolutionKind: o.resolutionKind };
+      return {
+        kind: "resolve-failed",
+        resolutionKind: o.resolutionKind as ResolveKind,
+      };
     case "boot-refused":
       return { kind: "boot-refused", message: o.message };
     default: {
@@ -105,6 +175,22 @@ export function projectOutcome(
       return _e;
     }
   }
+}
+
+const KNOWN_PHASES = new Set<SessionPhaseWire>([
+  "probing",
+  "provisioning",
+  "connecting",
+  "connected",
+  "disconnected",
+  "failed",
+  "unknown",
+]);
+
+function projectPhase(phase: string): SessionPhaseWire {
+  return KNOWN_PHASES.has(phase as SessionPhaseWire)
+    ? (phase as SessionPhaseWire)
+    : "unknown";
 }
 
 export function projectDaemonStatus(session: {
@@ -118,12 +204,14 @@ export function projectDaemonStatus(session: {
     anomaly: c === null ? null : projectConvergenceAnomaly(c),
     outcome: projectOutcome(session.outcome()),
     identity: session.identity(),
-    phase: session.currentState().phase,
+    phase: projectPhase(session.currentState().phase),
   };
 }
 
 /** Empty status for unknown/missing host. */
-export function emptyDaemonStatus(phase = "unknown"): DaemonStatus {
+export function emptyDaemonStatus(
+  phase: SessionPhaseWire = "unknown",
+): DaemonStatus {
   return {
     anomaly: null,
     outcome: null,

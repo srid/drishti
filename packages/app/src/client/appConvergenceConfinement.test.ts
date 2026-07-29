@@ -41,26 +41,26 @@ describe("App.tsx convergence confinement (W4.5)", () => {
   });
 });
 
-describe("App.tsx daemon status UI confinement", () => {
-  it("polls hosts.daemonStatus and folds via pure helpers", () => {
-    expect(appSrc).toMatch(/hosts\.daemonStatus\s*\(/);
-    expect(appSrc).toMatch(/applyDaemonStatusOk\s*\(/);
-    expect(appSrc).toMatch(/applyDaemonStatusError\s*\(/);
-    expect(appSrc).toMatch(/applyRenewResult\s*\(/);
-    expect(appSrc).toMatch(/DaemonStatusChip/);
-    expect(appSrc).toMatch(/DaemonDialog/);
-  });
-
-  it("renew result is state, not only console.error", () => {
-    expect(appSrc).toMatch(/setRenewState\s*\(\s*applyRenewResult/);
-    // No renew path that only console.errors without setRenewState.
-    expect(appSrc).not.toMatch(
-      /hosts\.renew[\s\S]{0,200}console\.error\s*\(\s*`renew/,
+describe("App.tsx daemon status UI confinement (U2.2 / U2.7)", () => {
+  it("single fleet store + dialog wiring (not six loose name regexes alone)", () => {
+    expect(appSrc).toMatch(/createDaemonStatusStore\s*\(/);
+    expect(appSrc).toMatch(/startDaemonStatusPoll\s*\(/);
+    expect(appSrc).toMatch(/DaemonStatusCtx\.Provider/);
+    expect(appSrc).toMatch(
+      /DaemonDialog[\s\S]{0,400}onRenew=\{\(\)\s*=>\s*\{[\s\S]*daemonStore\.renew/,
     );
+    expect(appSrc).toMatch(
+      /DaemonStatusChip[\s\S]{0,80}status=\{(?:props\.)?daemonStatus\(\)\}/,
+    );
+    // HostView must not open a second hosts.daemonStatus poll.
+    const hostView = appSrc.slice(
+      appSrc.indexOf("function HostView"),
+      appSrc.indexOf("function Header"),
+    );
+    expect(hostView).not.toMatch(/hosts\.daemonStatus\s*\(/);
   });
 
   it("chip presentation is not inlined as string match on detail", () => {
-    // Forbidden: UI parsing anomaly.detail for chip kind.
     expect(appSrc).not.toMatch(/anomaly\.detail\s*\.\s*includes\s*\(/);
     expect(appSrc).not.toMatch(/detail\s*\.\s*startsWith\s*\(/);
   });

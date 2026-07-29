@@ -76,12 +76,11 @@ import { DaemonDialog } from "./DaemonDialog";
 import { DaemonStatusChip } from "./DaemonStatusChip";
 import type { DaemonStatus } from "../common/daemonStatus";
 import {
-  applyDaemonStatusError,
-  applyDaemonStatusOk,
-  applyRenewResult,
-  applyRenewStart,
-  type RenewUiState,
-} from "./daemonStatusPresentation";
+  createDaemonStatusStore,
+  DaemonStatusCtx,
+  startDaemonStatusPoll,
+  useDaemonStatusStore,
+} from "./daemonStatusStore";
 import {
   connectionOf,
   connectionPhaseOf,
@@ -799,6 +798,16 @@ function MultiHostApp() {
   // subscriptions warm; a tab genuinely left in the background drops them.
   const visible = createVisibilityGate(pageVisible, VISIBILITY_GRACE_MS);
 
+  // U2.2: single fleet-wide daemon status poll — TabChip / HostCard / HostView
+  // share this map (no second authority when a host is selected).
+  const daemonStore = createDaemonStatusStore();
+  startDaemonStatusPoll(daemonStore, hostList);
+  const dialogHost = () => daemonStore.dialogHost();
+  const dialogStatus = (): DaemonStatus | null => {
+    const h = dialogHost();
+    return h === null ? null : (daemonStore.byHost()[h] ?? null);
+  };
+
   return (
     // The app fills exactly one viewport (`h-dvh` + flex column) so the page
     // itself never scrolls — only the inner process list does, keeping the
@@ -807,6 +816,7 @@ function MultiHostApp() {
     // StatusFooter (plus the phone home-indicator inset it absorbs), so the
     // last table rows / fleet cards are never hidden under the bar. The
     // baseline is the shared --status-footer-height constant from styles.css.
+    <DaemonStatusCtx.Provider value={daemonStore}>
     <div class="flex h-dvh flex-col bg-gray-50 p-2 pb-[calc(var(--status-footer-height)+env(safe-area-inset-bottom))] font-mono text-sm dark:bg-gray-950">
       {/* Reactive head, kolu's app-shell pattern over `@solidjs/meta`: the tab
           title is the server's own `drishti@<host>` identity (read from the
@@ -815,6 +825,27 @@ function MultiHostApp() {
           address-bar tint disagreed with the page when the toggle overrode it. */}
       <Title>{appName() ?? APP_TITLE}</Title>
       <Meta name="theme-color" content={brandColorForTheme(theme())} />
+      <DaemonDialog
+        open={dialogHost() !== null}
+        onOpenChange={(open) => {
+          if (!open) daemonStore.setDialogHost(null);
+        }}
+        host={dialogHost() ?? ""}
+        status={dialogStatus()}
+        renewState={
+          dialogHost() === null
+            ? { kind: "idle" }
+            : (daemonStore.renewByHost()[dialogHost()!] ?? { kind: "idle" })
+        }
+        onRenew={() => {
+          const h = dialogHost();
+          if (h !== null) daemonStore.renew(h);
+        }}
+        onReconnect={() => {
+          const h = dialogHost();
+          if (h !== null) daemonStore.reconnect(h);
+        }}
+      />
       <div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-gray-300 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
         <TabStrip
           hosts={hostList()}
@@ -872,6 +903,7 @@ function MultiHostApp() {
       </div>
       <StatusFooter health={adminHealth} />
     </div>
+    </DaemonStatusCtx.Provider>
   );
 }
 
@@ -900,6 +932,8 @@ function FleetView(props: {
 function HostCard(props: { host: string; onSelect: () => void }) {
   const entry = hostMap.entry(props.host);
   const system = entry.cells.system.use({});
+  const daemonStore = useDaemonStatusStore();
+  const daemonStatus = () => daemonStore.byHost()[props.host] ?? null;
   // The host's raised-alert set (kolu W5 `alerts` cell). A minimal pip on the
   // card surfaces "this host is in trouble" at a glance, alongside the OS
   // notification the app-scope `watchByEntry` fires — same source of truth. The
@@ -957,6 +991,10 @@ function HostCard(props: { host: string; onSelect: () => void }) {
         <span class="truncate font-semibold" title={props.host}>
           {props.host}
         </span>
+        <DaemonStatusChip
+          status={daemonStatus()}
+          onClick={() => daemonStore.setDialogHost(props.host)}
+        />
         <Show when={entryState().kind === "connected" && alertCount() > 0}>
           <span
             class="shrink-0 rounded-full bg-red-500/15 px-1.5 text-xs font-semibold text-red-600 dark:text-red-400"
@@ -1186,8 +1224,12 @@ function HostView(props: {
       .catch((err) => console.error(`reconnect ${props.host} failed`, err));
   };
 
-  // W3.4 / UI phase: standing convergence + full daemon status for chip/dialog.
-  // Poll fold is pure (convergenceProjection / daemonStatusPresentation).
+  // W3.4 / U2.2: daemon status comes from the fleet store (single writer);
+  // local convergence mirror for the standing banner only.
+  const daemonStore = useDaemonStatusStore();
+  const daemonStatus = () => daemonStore.byHost()[props.host] ?? null;
+  const daemonPollError = () =>
+    daemonStore.pollErrorByHost()[props.host] ?? null;
   const [convergence, setConvergence] = createSignal<{
     kind: string;
     detail: string;
@@ -1196,62 +1238,29 @@ function HostView(props: {
   const [convergencePollError, setConvergencePollError] = createSignal<
     string | null
   >(null);
-  const [daemonStatus, setDaemonStatus] = createSignal<DaemonStatus | null>(
-    null,
-  );
-  const [daemonPollError, setDaemonPollError] = createSignal<string | null>(
-    null,
-  );
-  const [daemonDialogOpen, setDaemonDialogOpen] = createSignal(false);
-  const [renewState, setRenewState] = createSignal<RenewUiState>({
-    kind: "idle",
+  // Mirror store status → banner convergence (no second poll).
+  createEffect(() => {
+    const s = daemonStatus();
+    if (s === null) return;
+    const next = applyConvergencePollOk(
+      { anomaly: convergence(), pollError: convergencePollError() },
+      s.anomaly,
+    );
+    setConvergence(next.anomaly);
+    setConvergencePollError(next.pollError);
   });
-  const pollConvergence = () => {
-    void adminRpc()
-      .hosts.daemonStatus({ host: props.host })
-      .then((r) => {
-        const folded = applyDaemonStatusOk(r);
-        setDaemonStatus(folded.status);
-        setDaemonPollError(folded.pollError);
-        const next = applyConvergencePollOk(
-          { anomaly: convergence(), pollError: convergencePollError() },
-          r.anomaly,
-        );
-        setConvergence(next.anomaly);
-        setConvergencePollError(next.pollError);
-      })
-      .catch((err) => {
-        const msg = (err as Error).message;
-        const folded = applyDaemonStatusError(daemonStatus(), msg);
-        setDaemonStatus(folded.status);
-        setDaemonPollError(folded.pollError);
-        const next = applyConvergencePollError(
-          { anomaly: convergence(), pollError: convergencePollError() },
-          msg,
-        );
-        setConvergence(next.anomaly);
-        setConvergencePollError(next.pollError);
-      });
-  };
-  pollConvergence();
-  const convIv = setInterval(pollConvergence, 5_000);
-  onCleanup(() => clearInterval(convIv));
+  createEffect(() => {
+    const err = daemonPollError();
+    if (err === null || err === undefined) return;
+    const next = applyConvergencePollError(
+      { anomaly: convergence(), pollError: convergencePollError() },
+      err,
+    );
+    setConvergence(next.anomaly);
+    setConvergencePollError(next.pollError);
+  });
   const onRenew = () => {
-    setRenewState(applyRenewStart(renewState()));
-    void adminRpc()
-      .hosts.renew({ host: props.host })
-      .then((r) => {
-        setRenewState(applyRenewResult(r));
-        pollConvergence();
-      })
-      .catch((err) => {
-        setRenewState(
-          applyRenewResult({
-            ok: false,
-            error: (err as Error).message,
-          }),
-        );
-      });
+    daemonStore.renew(props.host);
   };
 
   // The live process table, consumed as a declarative value-bearing reactive
@@ -1479,16 +1488,7 @@ function HostView(props: {
         entryState={entryState}
         count={allPids().length}
         daemonStatus={daemonStatus()}
-        onDaemonClick={() => setDaemonDialogOpen(true)}
-      />
-      <DaemonDialog
-        open={daemonDialogOpen()}
-        onOpenChange={setDaemonDialogOpen}
-        host={props.host}
-        status={daemonStatus()}
-        renewState={renewState()}
-        onRenew={onRenew}
-        onReconnect={onReconnect}
+        onDaemonClick={() => daemonStore.setDialogHost(props.host)}
       />
       {/* The readiness gate is the entry's own connection PHASE (`connectionPhaseOf`,
           the same word the header paints) — the per-host `SurfaceHealth`
@@ -1516,7 +1516,7 @@ function HostView(props: {
             <button
               type="button"
               class="rounded border border-amber-600/50 px-2 py-0.5 font-medium hover:bg-amber-500/20"
-              onClick={() => setDaemonDialogOpen(true)}
+              onClick={() => daemonStore.setDialogHost(props.host)}
             >
               Details
             </button>

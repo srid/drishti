@@ -64,20 +64,48 @@ export const DaemonDialog: Component<{
           </div>
 
           <div class="space-y-3 px-3 py-3 text-xs text-gray-700 dark:text-gray-300">
+            {/* U2.6: adopted-stale Renew nudge ONLY — never for boot-refused. */}
             <Show when={chip().showNudge}>
               <div
                 class="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-900 dark:text-amber-200"
                 role="status"
               >
                 <div class="font-medium">Action needed</div>
-                <div class="mt-0.5 text-fg-3 text-amber-800/80 dark:text-amber-300/80">
+                <div class="mt-0.5 text-amber-800/80 dark:text-amber-300/80">
                   Budget gave up — riding a stale resident build. Renew to drain
                   and replace when ready.
                 </div>
               </div>
             </Show>
 
-            <Show when={banner()}>
+            {/* U2.6: boot-refused gets its own recovery copy (fix named cause; no Renew). */}
+            <Show when={banner()?.bootRefusedMessage}>
+              {(msg) => (
+                <div
+                  class="rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-800 dark:text-red-200"
+                  role="status"
+                >
+                  <div class="font-medium">Agent boot refused</div>
+                  <div class="mt-0.5 font-mono text-[10px] opacity-90">
+                    {msg()}
+                  </div>
+                  <div class="mt-1 text-[10px] opacity-80">
+                    Fix the named cause on the host (e.g. chmod 0700 the state
+                    directory), then Reconnect. Renew cannot drain a daemon that
+                    never started.
+                  </div>
+                </div>
+              )}
+            </Show>
+
+            <Show
+              when={(() => {
+                const b = banner();
+                return b !== null && b.bootRefusedMessage === undefined
+                  ? b
+                  : false;
+              })()}
+            >
               {(b) => (
                 <div
                   classList={{

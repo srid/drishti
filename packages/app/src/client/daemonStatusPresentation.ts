@@ -2,13 +2,17 @@
  * Pure presentation for per-host daemon status chip + dialog (kaval shape).
  *
  * Reads ONLY typed DaemonStatus discriminants — never Error.message / reason
- * prose. Unit-tested for every chip kind; App.tsx is a thin call site.
+ * prose. Unit-tested for every closed chip kind; App.tsx is a thin call site.
+ *
+ * U2.5: closed switch over ConvergenceAnomalyWire.kind — no Record fallback.
+ * U2.6: showNudge is adopted-stale ONLY.
  */
 import type {
   ConvergenceAnomalyWire,
   DaemonIdentity,
   DaemonStatus,
   HostOutcomeWire,
+  UnconvergedCauseWire,
 } from "../common/daemonStatus";
 
 export type DaemonChipTone = "ok" | "warn" | "down" | "warming" | "muted";
@@ -32,61 +36,74 @@ export type DaemonChipPresentation = {
   readonly kind: DaemonChipKind;
   readonly label: string;
   readonly tone: DaemonChipTone;
-  /** adopted-stale human-action nudge (kaval update-nudge philosophy). */
+  /**
+   * adopted-stale human-action nudge ONLY (U2.6) — never boot-refused.
+   * Boot refusal uses its own dialog copy, not this flag.
+   */
   readonly showNudge: boolean;
 };
 
-const CHIP_BY_ANOMALY: Record<
-  string,
-  Pick<DaemonChipPresentation, "kind" | "label" | "tone" | "showNudge">
-> = {
-  "adopted-stale": {
-    kind: "adopted-stale",
-    label: "stale build",
-    tone: "warn",
-    showNudge: true,
-  },
-  "skew-refused": {
-    kind: "skew-refused",
-    label: "contract refused",
-    tone: "down",
-    showNudge: false,
-  },
-  "cross-supervisor": {
-    kind: "cross-supervisor",
-    label: "foreign supervisor",
-    tone: "down",
-    showNudge: false,
-  },
-  "drained-with-persist-failure": {
-    kind: "drained-with-persist-failure",
-    label: "persist failed",
-    tone: "warn",
-    showNudge: false,
-  },
-  unconverged: {
-    kind: "unconverged",
-    label: "unconverged",
-    tone: "down",
-    showNudge: false,
-  },
-  "link-failed": {
-    kind: "link-failed",
-    label: "link failed",
-    tone: "down",
-    showNudge: false,
-  },
-  "boot-refused": {
-    kind: "boot-refused",
-    label: "boot refused",
-    tone: "down",
-    showNudge: true,
-  },
-};
+function chipFromAnomaly(anomaly: ConvergenceAnomalyWire): DaemonChipPresentation {
+  switch (anomaly.kind) {
+    case "adopted-stale":
+      return {
+        kind: "adopted-stale",
+        label: "stale build",
+        tone: "warn",
+        showNudge: true,
+      };
+    case "skew-refused":
+      return {
+        kind: "skew-refused",
+        label: "contract refused",
+        tone: "down",
+        showNudge: false,
+      };
+    case "cross-supervisor":
+      return {
+        kind: "cross-supervisor",
+        label: "foreign supervisor",
+        tone: "down",
+        showNudge: false,
+      };
+    case "drained-with-persist-failure":
+      return {
+        kind: "drained-with-persist-failure",
+        label: "persist failed",
+        tone: "warn",
+        showNudge: false,
+      };
+    case "unconverged":
+      return {
+        kind: "unconverged",
+        label: "unconverged",
+        tone: "down",
+        showNudge: false,
+      };
+    case "link-failed":
+      return {
+        kind: "link-failed",
+        label: "link failed",
+        tone: "down",
+        showNudge: false,
+      };
+    case "boot-refused":
+      return {
+        kind: "boot-refused",
+        label: "boot refused",
+        tone: "down",
+        showNudge: false,
+      };
+    default: {
+      const _e: never = anomaly;
+      return _e;
+    }
+  }
+}
 
 /**
  * Map typed DaemonStatus → chip presentation.
- * Priority: standing anomaly → resolve-failed off-nix → phase.
+ * Priority: standing anomaly → resolve-failed off-nix / boot-refused outcome → phase.
  */
 export function chipFromDaemonStatus(
   status: DaemonStatus | null | undefined,
@@ -100,17 +117,8 @@ export function chipFromDaemonStatus(
     };
   }
 
-  const anomaly = status.anomaly;
-  if (anomaly !== null) {
-    const row = CHIP_BY_ANOMALY[anomaly.kind];
-    if (row !== undefined) return row;
-    // Unknown anomaly kind: still typed as down, label = kind discriminant only.
-    return {
-      kind: "unknown",
-      label: anomaly.kind,
-      tone: "down",
-      showNudge: false,
-    };
+  if (status.anomaly !== null) {
+    return chipFromAnomaly(status.anomaly);
   }
 
   const outcome = status.outcome;
@@ -119,7 +127,7 @@ export function chipFromDaemonStatus(
       kind: "boot-refused",
       label: "boot refused",
       tone: "down",
-      showNudge: true,
+      showNudge: false,
     };
   }
   if (
@@ -180,7 +188,8 @@ export const CHIP_TONE_CLASS: Record<DaemonChipTone, string> = {
   down: "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300",
   warming:
     "border-amber-500/30 bg-amber-500/5 text-amber-700 animate-pulse dark:text-amber-400",
-  muted: "border-gray-300 bg-gray-100 text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400",
+  muted:
+    "border-gray-300 bg-gray-100 text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400",
 };
 
 export type BannerPresentation = {
@@ -188,46 +197,102 @@ export type BannerPresentation = {
   readonly tone: "warn" | "down";
   /** Structured evidence lines (never from detail prose parsing). */
   readonly evidence: readonly string[];
+  /**
+   * When set, dialog shows boot-refusal recovery copy (U2.6) — not the
+   * adopted-stale Renew nudge.
+   */
+  readonly bootRefusedMessage?: string;
 };
+
+function causeEvidence(cause: UnconvergedCauseWire): string[] {
+  switch (cause.kind) {
+    case "budget-exhausted":
+      return [
+        `cause budget-exhausted · axis ${cause.axis} · ${cause.attempts}/${cause.maxAttempts}`,
+      ];
+    case "drain-not-taken":
+      return [
+        `cause drain-not-taken · axis ${cause.axis} · ceiling ${cause.ceilingMs}ms` +
+          (cause.rejection !== null ? ` · ${cause.rejection}` : ""),
+      ];
+    case "adopt-bind-failed":
+      return [
+        `cause adopt-bind-failed · axis ${cause.axis ?? "null"}`,
+      ];
+    case "identity-unverifiable":
+      return ["cause identity-unverifiable"];
+    case "probe-failed":
+      return [`cause probe-failed · ${cause.message}`];
+    default: {
+      const _e: never = cause;
+      return [_e];
+    }
+  }
+}
 
 /** Dialog banner from typed anomaly arms only. */
 export function anomalyBanner(
   anomaly: ConvergenceAnomalyWire | null,
 ): BannerPresentation | null {
   if (anomaly === null) return null;
-  const row = CHIP_BY_ANOMALY[anomaly.kind];
-  const title = row?.label ?? anomaly.kind;
-  const tone: "warn" | "down" =
-    row?.tone === "warn" ? "warn" : "down";
-  const evidence: string[] = [];
-  if (anomaly.running !== undefined && anomaly.expected !== undefined) {
-    if (
-      anomaly.kind === "adopted-stale" ||
-      anomaly.kind === "skew-refused"
-    ) {
-      evidence.push(
-        `running ${buildLabel(anomaly.running.build)} · expected ${buildLabel(anomaly.expected.build)}`,
-      );
-      if (anomaly.kind === "skew-refused") {
-        evidence.push(
+  switch (anomaly.kind) {
+    case "adopted-stale":
+      return {
+        title: "stale build",
+        tone: "warn",
+        evidence: [
+          `running ${buildLabel(anomaly.running.build)} · expected ${buildLabel(anomaly.expected.build)}`,
+          anomaly.detail,
+        ],
+      };
+    case "skew-refused":
+      return {
+        title: "contract refused",
+        tone: "down",
+        evidence: [
           `contract ${anomaly.running.contractVersion} → ${anomaly.expected.contractVersion}`,
-        );
-      }
+          anomaly.detail,
+        ],
+      };
+    case "cross-supervisor":
+      return {
+        title: "foreign supervisor",
+        tone: "down",
+        evidence: [
+          `drained ${instanceLabel(anomaly.drained)} · observed ${instanceLabel(anomaly.observed)}`,
+          anomaly.detail,
+        ],
+      };
+    case "unconverged":
+      return {
+        title: "unconverged",
+        tone: "down",
+        evidence: [...causeEvidence(anomaly.cause), anomaly.detail],
+      };
+    case "drained-with-persist-failure":
+      return {
+        title: "persist failed",
+        tone: "warn",
+        evidence: [anomaly.error, anomaly.detail],
+      };
+    case "link-failed":
+      return {
+        title: "link failed",
+        tone: "down",
+        evidence: [anomaly.detail],
+      };
+    case "boot-refused":
+      return {
+        title: "boot refused",
+        tone: "down",
+        evidence: [anomaly.message],
+        bootRefusedMessage: anomaly.message,
+      };
+    default: {
+      const _e: never = anomaly;
+      return _e;
     }
   }
-  if (anomaly.drained !== undefined && anomaly.observed !== undefined) {
-    evidence.push(
-      `drained ${instanceLabel(anomaly.drained)} · observed ${instanceLabel(anomaly.observed)}`,
-    );
-  }
-  if (anomaly.error !== undefined) {
-    evidence.push(anomaly.error);
-  }
-  // detail is human garnish — show as last evidence line without parsing.
-  if (anomaly.detail.length > 0) {
-    evidence.push(anomaly.detail);
-  }
-  return { title, tone, evidence };
 }
 
 function buildLabel(

@@ -30,7 +30,8 @@ import { withAgentBootBarrier } from "./withAgentBootBarrier";
 const agentMain = join(import.meta.dir, "../../../agent/src/main.ts");
 
 describe("extractAgentBootFatal", () => {
-  it("captures message after the stable prefix (verbatim)", () => {
+  it("captures ONLY the prefixed line payload (verbatim; stack is separate)", () => {
+    // U2.4: message is the fatal line payload exactly — not stack/diagnostic tail.
     const msg =
       "daemonHome: /tmp/x is not a private owner-only directory (must be owned by the current user with mode 0700)";
     expect(
@@ -38,8 +39,9 @@ describe("extractAgentBootFatal", () => {
         "noise",
         `drishti-agent: fatal: ${msg}`,
         "    at main",
+        "Error: daemonHome: ...",
       ]),
-    ).toBe(`${msg}\n    at main`);
+    ).toBe(msg);
   });
 
   it("returns null when no fatal prefix is present (transport path)", () => {

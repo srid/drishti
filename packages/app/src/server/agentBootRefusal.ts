@@ -16,30 +16,26 @@ export const AGENT_FATAL_PREFIXES = [
 ] as const;
 
 /**
- * Extract the agent fatal block from remote-origin stderr lines.
- * Returns the message AFTER the prefix (daemonHome text verbatim), or null.
+ * Extract the agent fatal MESSAGE from remote-origin stderr lines.
+ *
+ * VERBATIM (U2.4): only the payload of the prefixed fatal line — never the
+ * stack/diagnostic tail that follows on subsequent lines. The stack may ride a
+ * separate field later; it must not substitute for `message`.
  */
 export function extractAgentBootFatal(
   remoteLines: readonly string[],
   prefixes: readonly string[] = AGENT_FATAL_PREFIXES,
 ): string | null {
-  let start = -1;
-  let matchedPrefix = "";
   for (let i = remoteLines.length - 1; i >= 0; i--) {
     const line = remoteLines[i] ?? "";
     for (const p of prefixes) {
       if (line.startsWith(p)) {
-        start = i;
-        matchedPrefix = p;
-        break;
+        const message = line.slice(p.length).trimStart();
+        return message.length > 0 ? message : null;
       }
     }
-    if (start !== -1) break;
   }
-  if (start === -1) return null;
-  const opening = (remoteLines[start] ?? "").slice(matchedPrefix.length).trimStart();
-  const block = [opening, ...remoteLines.slice(start + 1)].join("\n").trim();
-  return block.length > 0 ? block : null;
+  return null;
 }
 
 /**
