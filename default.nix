@@ -75,9 +75,13 @@ let
     else throw "drishti agent build derivation needs `b2n` (lib.mkBun2nix output) — invoke via flake.nix";
 
   # Identity env for the durable daemon (UW3). BUILD_ID flips iff the agent
-  # closure changes — the convergence kit's build-mismatch axis. COMMIT_HASH
-  # is the navigable git ref for UI/diagnostics. Off-nix both read as "" via
-  # readBakedIdentity("DRISHTI_AGENT").
+  # *closure* changes — the convergence kit's build-mismatch axis. It is a
+  # pure hash of `drishtiAgentBuilt` so a client-only monorepo commit cannot
+  # churn the agent wrapper (drv-stability / issue #38). Do NOT bake monorepo
+  # `self.rev` into this wrapper — that would rehash the agent (and trigger a
+  # fleet-wide drain) on every app edit. COMMIT_HASH stays unset here (reads
+  # as "" / off-nix navigable identity via readBakedIdentity); the parent
+  # wrapper still carries the monorepo rev for UI diagnostics.
   drishtiAgentBuildId = builtins.hashString "sha256" (toString drishtiAgentBuilt);
   drishti-agent = resolvedPkgs.runCommand "drishti-agent"
     {
@@ -88,8 +92,7 @@ let
     makeWrapper ${resolvedPkgs.bun}/bin/bun $out/bin/drishti-agent \
       --add-flags "${drishtiAgentBuilt}/lib/drishti/packages/agent/src/main.ts" \
       --set DRISHTI_OSFACTS_BIN "${resolvedPkgs.osfacts}/bin/osfacts" \
-      --set DRISHTI_AGENT_BUILD_ID "${drishtiAgentBuildId}" \
-      --set DRISHTI_AGENT_COMMIT_HASH "${rev}"
+      --set DRISHTI_AGENT_BUILD_ID "${drishtiAgentBuildId}"
   '';
 
   drishti-client = resolvedPkgs.runCommand "drishti-client"
