@@ -336,15 +336,26 @@ export function awaitExitViaProcessOracle(
 }
 
 /**
+ * W9: derive replaced-axis from structured contract versions already held at
+ * admit time — never from verdict.reason prose.
+ *
+ * For a `replaced` verdict, convergeAdmit only drains when either the contract
+ * axis or the build axis fired. Contracts differ ⇒ contract axis; equal
+ * (compatible) contracts ⇒ build axis. Silent default-to-build is forbidden.
+ */
+export function replacedAxisFromContracts(
+  runningContractVersion: string,
+  bakedContractVersion: string,
+): "build" | "contract" {
+  return runningContractVersion !== bakedContractVersion
+    ? "contract"
+    : "build";
+}
+
+/**
  * Admit factory: probe identity, run convergeAdmit, bind active on adopt.
  * Internal — bound by the production makeSession assembly (W4.1 dial e2e).
  */
-function replacedAxis(reason: string): "build" | "contract" {
-  // Framework reason strings from convergeAdmit (kolu surface-daemon-supervisor).
-  if (reason.includes("newer contract")) return "contract";
-  return "build";
-}
-
 function makeAgentAdmit(args: {
   combinedByScopedClient: WeakMap<AgentAppClient, ActiveCombined>;
   /** Budget is minted on first drv resolve (when system is known). */
@@ -390,6 +401,9 @@ function makeAgentAdmit(args: {
     };
 
     const admitLog: DaemonLogger = stderrLogger();
+    // Baked contract version for this budget — always AGENT_SURFACE_VERSION via
+    // drishtiAgentConvergencePolicy (policyOf is package-private upstream).
+    const bakedContractVersion = AGENT_SURFACE_VERSION;
     const verdict = await convergeAdmit({
       running: {
         ...probe.identity,
@@ -432,10 +446,13 @@ function makeAgentAdmit(args: {
           drainCapture.failure,
         );
         args.setConvergence(projected);
-        // W8.2: structured replaced verdict as session data (not pin Error.message).
+        // W8.2 / W9: structured replaced + axis from running vs baked contracts.
         args.setOutcome({
           kind: "replaced",
-          axis: replacedAxis(verdict.reason),
+          axis: replacedAxisFromContracts(
+            probe.identity.contractVersion,
+            bakedContractVersion,
+          ),
         });
         return { kind: "replaced", reason: verdict.reason };
       }

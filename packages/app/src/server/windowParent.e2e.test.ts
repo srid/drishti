@@ -50,6 +50,10 @@ const highContractMain = join(
   import.meta.dir,
   "../../../agent/src/fixtures/highContractMain.ts",
 );
+const lowContractMain = join(
+  import.meta.dir,
+  "../../../agent/src/fixtures/lowContractMain.ts",
+);
 
 const temps: string[] = [];
 const children: ChildProcess[] = [];
@@ -614,6 +618,127 @@ describe("W6.4 real refuse + renew via production pool", () => {
   );
 });
 
+describe("W9 contract-axis replaced outcome via production pool", () => {
+  it.skipIf(!daemonTestsEnabled)(
+    "contract-older resident: first pin rejects + outcome axis contract",
+    async () => {
+      const fixture = await fixtureAgent();
+      if (fixture === null) {
+        throw new Error("fixtureAgent required under KOLU_DAEMON_TESTS=1");
+      }
+
+      const home = mkdtempSync(join(tmpdir(), "drishti-contract-axis-e2e-"));
+      temps.push(home);
+      mkdirSync(join(home, ".local", "state"), {
+        recursive: true,
+        mode: 0o700,
+      });
+      const binDir = join(home, "bin");
+      mkdirSync(binDir, { recursive: true });
+      writeSshShim(binDir);
+
+      // Resident serves older contract (0.9.0); parent baked is 1.0 → drain-replace.
+      const prevEnv = {
+        ...process.env,
+        HOME: home,
+        XDG_STATE_HOME: join(home, ".local", "state"),
+        DRISHTI_AGENT_BUILD_ID: `contract-prev-${fixture.buildId.slice(0, 8)}`,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      };
+      const frontPrev = nodeSpawn(
+        process.execPath,
+        [lowContractMain, "--stdio"],
+        {
+          env: prevEnv,
+          stdio: ["pipe", "pipe", "pipe"],
+        },
+      );
+      children.push(frontPrev);
+
+      process.env.HOME = home;
+      process.env.XDG_STATE_HOME = join(home, ".local", "state");
+      const dh = daemonHome({ app: "drishti", placement: "state" });
+      const sockDeadline = Date.now() + 20_000;
+      while (Date.now() < sockDeadline) {
+        if (existsSync(dh.socketPath) && existsSync(dh.gatePath)) break;
+        await delay(50);
+      }
+      expect(existsSync(dh.socketPath)).toBe(true);
+      const prevPid = Number.parseInt(readFileSync(dh.gatePath, "utf8"), 10);
+
+      process.env.DRISHTI_AGENT_BUILD_ID = fixture.buildId;
+      process.env.DRISHTI_E2E_HOME = home;
+      process.env.DRISHTI_E2E_XDG_STATE_HOME = join(home, ".local", "state");
+      process.env.DRISHTI_E2E_BUILD_ID = fixture.buildId;
+      process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
+
+      const host = "localhost";
+      const hostsFile = join(home, "hosts.json");
+      writeFileSync(hostsFile, JSON.stringify({ hosts: [] }));
+      const pool = buildHostPool({
+        initialHosts: [host],
+        hostsFile,
+        buildIdBySystem: { [fixture.system]: fixture.buildId },
+        resolveDrvPath: async () => ({
+          derivation: directAgentDerivation(
+            fixture.drvPath,
+            fixture.binaryCache,
+          ),
+          system: fixture.system,
+        }),
+      });
+      pools.push(pool);
+      const session = pool.getSession(host)!;
+
+      let firstPinRejected = false;
+      try {
+        await session.pin();
+      } catch {
+        firstPinRejected = true;
+      }
+      expect(firstPinRejected).toBe(true);
+
+      // W9: structured contract-axis projection (not refuse, not build).
+      const outDeadline = Date.now() + 15_000;
+      let out = session.outcome();
+      while (Date.now() < outDeadline) {
+        out = session.outcome();
+        if (out?.kind === "replaced") break;
+        await delay(50);
+      }
+      expect(out).not.toBeNull();
+      expect(out!.kind).toBe("replaced");
+      if (out !== null && out.kind === "replaced") {
+        expect(out.axis).toBe("contract");
+      }
+
+      // Previous older-contract resident must be gone after drain.
+      const drainDeadline = Date.now() + 45_000;
+      let prevGone = false;
+      while (Date.now() < drainDeadline) {
+        try {
+          process.kill(prevPid, 0);
+        } catch {
+          prevGone = true;
+          break;
+        }
+        await delay(100);
+      }
+      expect(prevGone).toBe(true);
+
+      try {
+        session.destroy();
+      } catch {
+        //
+      }
+      await pool.destroyAll();
+      const idx = pools.indexOf(pool);
+      if (idx >= 0) pools.splice(idx, 1);
+    },
+    120_000,
+  );
+});
+
 describe("W4.1 / W4.4 production assembly confinement", () => {
   const src = readFileSync(join(import.meta.dir, "hostRegistry.ts"), "utf8");
 
@@ -647,12 +772,12 @@ describe("W4.1 / W4.4 production assembly confinement", () => {
     expect(block).not.toMatch(/setActiveCombined\(\s*null\s*\)/);
   });
 
-  it("W8.2 e2e asserts structured replaced outcome (source pin of pin)", () => {
-    // The build-axis e2e must assert outcome().kind === "replaced" + axis build,
-    // not only process death / phase / history (W8.2 ruling).
+  it("W8.2/W9 e2e asserts structured replaced outcome for BOTH axes (source pin)", () => {
+    // Build-axis and contract-axis legs must assert outcome axis, not prose.
     const e2e = readFileSync(join(import.meta.dir, "windowParent.e2e.test.ts"), "utf8");
     expect(e2e).toMatch(/firstPinRejected/);
     expect(e2e).toMatch(/out!\.kind\)\.toBe\("replaced"\)/);
     expect(e2e).toMatch(/out\.axis\)\.toBe\("build"\)/);
+    expect(e2e).toMatch(/out\.axis\)\.toBe\("contract"\)/);
   });
 });

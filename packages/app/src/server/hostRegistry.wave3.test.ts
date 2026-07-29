@@ -13,6 +13,7 @@ import {
   captureDrainPersistFailure,
   convergenceFromDrainPersistFailure,
   expectProvisionedBuildId,
+  replacedAxisFromContracts,
 } from "./hostRegistry";
 
 const fakeResolve = async () => ({
@@ -301,8 +302,8 @@ describe("W5.2 standing drained-with-persist-failure after adopt", () => {
   });
 });
 
-describe("W8.2 production projects replaced verdict as session data", () => {
-  it("replaced arm setOutcome kind replaced + axis (source pin)", () => {
+describe("W8.2 / W9 production projects replaced verdict as session data", () => {
+  it("replaced arm setOutcome kind replaced + axis from contracts (source pin)", () => {
     const src = require("node:fs").readFileSync(
       require("node:path").join(import.meta.dir, "hostRegistry.ts"),
       "utf8",
@@ -310,9 +311,25 @@ describe("W8.2 production projects replaced verdict as session data", () => {
     const block = src.match(/case "replaced":\s*\{([\s\S]*?)return \{ kind: "replaced"/);
     expect(block).not.toBeNull();
     expect(block![1]).toMatch(
-      /setOutcome\(\{\s*kind:\s*"replaced",\s*axis:\s*replacedAxis/,
+      /setOutcome\(\{\s*kind:\s*"replaced",\s*axis:\s*replacedAxisFromContracts/,
     );
-    expect(src).toMatch(/function replacedAxis\(/);
-    expect(src).toMatch(/return "build"/);
+    expect(block![1]).toMatch(/probe\.identity\.contractVersion/);
+    // W9: no prose classifier on verdict.reason.
+    expect(src).not.toMatch(/includes\(["']newer contract["']\)/);
+    expect(src).not.toMatch(/verdict\.reason.*replacedAxis|replacedAxis\(verdict\.reason/);
+  });
+});
+
+describe("W9 replacedAxisFromContracts (structured axis, both arms)", () => {
+  it("equal contract versions ⇒ build axis (build-replacement arm)", () => {
+    // Mutation (a): always return "contract" ⇒ this assertion reds.
+    expect(replacedAxisFromContracts("1.0", "1.0")).toBe("build");
+    expect(replacedAxisFromContracts("2.3", "2.3")).toBe("build");
+  });
+
+  it("differing contract versions ⇒ contract axis (contract-replacement arm)", () => {
+    // Mutation (b): always return "build" ⇒ this assertion reds.
+    expect(replacedAxisFromContracts("0.9.0", "1.0")).toBe("contract");
+    expect(replacedAxisFromContracts("9.9.9", "1.0")).toBe("contract");
   });
 });
