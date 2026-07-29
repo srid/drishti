@@ -36,11 +36,14 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.11.1",
+    "@solidjs/testing-library": "^0.8.10",
     "@types/babel__core": "^7.20.5",
     "@types/bun": "^1.2.0",
     "@types/node": "^22.0.0",
     "@types/split2": "^4.2.3",
     "@types/ws": "^8.18.1",
+    "happy-dom": "^20.11.1",
     "typescript": "^5.8.0"
   }
 }

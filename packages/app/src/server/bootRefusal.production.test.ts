@@ -1,15 +1,15 @@
 /**
- * U2.1 / U2.3: production assembly boot-refusal.
+ * U3.1: production assembly boot-refusal through REAL buildHostPool.
  *
  * - Standing set keeps boot-refused through failed transition (not link-failed).
- * - Real agent + real buildHostPool against planted 0755 state dir.
+ * - Real agent + real buildHostPool against planted 0755 state dir (both pool
+ *   hooks live — no makeSession reenactment).
  * - Transport failure without fatal still retries.
  *
  * Kolu follow-up (do NOT touch kolu): upgrade-window testlib should treat the
  * state DIRECTORY itself (mode/ownership) as a shared artifact.
  */
 import { afterEach, describe, expect, it } from "bun:test";
-import { spawn as nodeSpawn } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
@@ -23,6 +23,8 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { call } from "@orpc/server";
 import {
+  agentBinaryCache,
+  directAgentDerivation,
   type ClosedInfo,
   type Connector,
   makeSession,
@@ -30,14 +32,153 @@ import {
 import { buildAdminRouter } from "./admin-router";
 import { chipFromDaemonStatus } from "../client/daemonStatusPresentation";
 import { projectDaemonStatus } from "./daemonStatusProjection";
-import { type HostPool, type HostSession } from "./hostRegistry";
+import {
+  buildHostPool,
+  type HostPool,
+  type HostSession,
+} from "./hostRegistry";
 import { withAgentBootBarrier } from "./withAgentBootBarrier";
 
-const agentMain = join(import.meta.dir, "../../../agent/src/main.ts");
+const daemonTestsEnabled = process.env.KOLU_DAEMON_TESTS === "1";
+
 const hostRegistrySrc = readFileSync(
   join(import.meta.dir, "hostRegistry.ts"),
   "utf8",
 );
+
+async function fixtureAgent(): Promise<{
+  drvPath: string;
+  system: string;
+  buildId: string;
+  binaryCache: ReturnType<typeof agentBinaryCache>;
+} | null> {
+  try {
+    const sysProc = Bun.spawn(
+      ["nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const system = (await new Response(sysProc.stdout).text()).trim();
+    await sysProc.exited;
+    if (!system) {
+      if (daemonTestsEnabled) throw new Error("fixtureAgent: no currentSystem");
+      return null;
+    }
+
+    const binaryCache = agentBinaryCache({
+      substituters: ["https://cache.nixos.org"],
+      trustedPublicKeys: [
+        "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=",
+      ],
+    });
+
+    const drvsProc = Bun.spawn(["nix", "eval", "--raw", ".#agentDrvsJson"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const drvsJson = (await new Response(drvsProc.stdout).text()).trim();
+    await drvsProc.exited;
+    const drvs = JSON.parse(drvsJson) as Record<string, string>;
+    const drvPath = drvs[system];
+    if (!drvPath?.endsWith(".drv")) {
+      if (daemonTestsEnabled) {
+        throw new Error(`fixtureAgent: no .drv for ${system}`);
+      }
+      return null;
+    }
+
+    await Bun.spawn(["nix-store", "-r", drvPath], {
+      stdout: "pipe",
+      stderr: "pipe",
+    }).exited;
+
+    const idsProc = Bun.spawn(["nix", "eval", "--raw", ".#agentBuildIdsJson"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const idsJson = (await new Response(idsProc.stdout).text()).trim();
+    await idsProc.exited;
+    const ids = JSON.parse(idsJson) as Record<string, string>;
+    const buildId = ids[system];
+    if (!buildId) {
+      if (daemonTestsEnabled) {
+        throw new Error(`fixtureAgent: no buildId for ${system}`);
+      }
+      return null;
+    }
+
+    return { drvPath, system, buildId, binaryCache };
+  } catch (err) {
+    if (daemonTestsEnabled) {
+      throw new Error(
+        `fixtureAgent failed under KOLU_DAEMON_TESTS: ${(err as Error).message}`,
+      );
+    }
+    return null;
+  }
+}
+
+/**
+ * ssh shim that execs the remaining command locally under e2e env, and
+ * counts agent --stdio dials into DRISHTI_E2E_CONNECT_LOG (one line per dial).
+ */
+function writeSshShim(binDir: string): void {
+  const shim = join(binDir, "ssh");
+  writeFileSync(
+    shim,
+    `#!/usr/bin/env bash
+set -euo pipefail
+while (( \$# > 0 )); do
+  case "\$1" in
+    --) shift; break ;;
+    -o)
+      shift 2 || true
+      ;;
+    -o*|-* )
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+if (( \$# < 1 )); then
+  echo "ssh-shim: missing host" >&2
+  exit 255
+fi
+shift # host
+export HOME="\${DRISHTI_E2E_HOME:-\$HOME}"
+if [[ -n "\${DRISHTI_E2E_XDG_STATE_HOME:-}" ]]; then
+  export XDG_STATE_HOME="\$DRISHTI_E2E_XDG_STATE_HOME"
+fi
+if [[ -n "\${DRISHTI_E2E_BUILD_ID:-}" ]]; then
+  export DRISHTI_AGENT_BUILD_ID="\$DRISHTI_E2E_BUILD_ID"
+fi
+if [[ -n "\${DRISHTI_OSFACTS_BIN:-}" ]]; then
+  export DRISHTI_OSFACTS_BIN
+fi
+# Count ONLY agent --stdio dials (not nix-copy / probe ssh). HOME is the
+# planted e2e home so the log needs no extra env var.
+for _arg in "\$@"; do
+  if [[ "\$_arg" == "--stdio" ]]; then
+    printf 'stdio\\n' >> "\$HOME/.drishti-e2e-connect.log"
+    break
+  fi
+done
+exec "\$@"
+`,
+    { mode: 0o755 },
+  );
+  chmodSync(shim, 0o755);
+}
+
+function connectAttempts(logPath: string): number {
+  try {
+    const raw = readFileSync(logPath, "utf8");
+    return raw.split("\n").filter((l) => l.trim().length > 0).length;
+  } catch {
+    return 0;
+  }
+}
 
 describe("U2.1 boot-refused stands through failed transition", () => {
   it("production standing set includes boot-refused (source pin)", () => {
@@ -46,7 +187,6 @@ describe("U2.1 boot-refused stands through failed transition", () => {
       /if \(s\.phase === "failed"\) \{([\s\S]*?)\} else if \(s\.phase === "disconnected"\)/,
     );
     expect(failedBlock).not.toBeNull();
-    // Require the failed-phase standingRefuse chain to name boot-refused.
     expect(failedBlock![1]).toMatch(
       /standingRefuse\s*=\s*[\s\S]*?boot-refused/,
     );
@@ -56,8 +196,6 @@ describe("U2.1 boot-refused stands through failed transition", () => {
   });
 
   it("final projection/chip is boot-refused not link-failed after failed phase", () => {
-    // Simulate production: barrier sets boot-refused, then onState failed fires.
-    // With standing set, convergence stays boot-refused.
     type Conv = ReturnType<HostSession["convergence"]>;
     let convergence: Conv = {
       kind: "boot-refused",
@@ -68,8 +206,6 @@ describe("U2.1 boot-refused stands through failed transition", () => {
       kind: "boot-refused",
       message: "daemonHome: refuse",
     };
-    // Standing set logic (mirror production) — kinds as string to avoid
-    // narrowing dead arms after assignment.
     const kind = convergence?.kind as string | undefined;
     const standing =
       kind === "skew-refused" ||
@@ -92,7 +228,7 @@ describe("U2.1 boot-refused stands through failed transition", () => {
   });
 });
 
-describe("U2.3 production assembly — real agent + buildHostPool", () => {
+describe("U3.1 production assembly — REAL buildHostPool planted 0755", () => {
   const temps: string[] = [];
   const pools: HostPool[] = [];
   afterEach(async () => {
@@ -117,182 +253,118 @@ describe("U2.3 production assembly — real agent + buildHostPool", () => {
     }
   });
 
-  it("source pin: both pool arms write outcome+convergence on boot refuse", () => {
-    // Mutation: remove outcome/convergence writes from pool hooks ⇒ red.
-    const matches = hostRegistrySrc.match(
-      /onBootRefused:\s*\(message\)\s*=>\s*\{[\s\S]*?outcome\s*=\s*\{\s*kind:\s*"boot-refused"/g,
-    );
-    expect(matches).not.toBeNull();
-    expect(matches!.length).toBeGreaterThanOrEqual(2);
-    expect(hostRegistrySrc).toMatch(
-      /convergence\s*=\s*\{\s*kind:\s*"boot-refused"/,
-    );
-  });
-
-  it.skipIf(typeof process.getuid !== "function")(
-    "planted 0755 + real agent via production barrier ⇒ boot-refused, one attempt",
+  it.skipIf(!daemonTestsEnabled)(
+    "planted 0755 + real buildHostPool ⇒ boot-refused, one attempt, zero retries",
     async () => {
-      // Drive real agent stderr through the production barrier + makeSession
-      // (same withAgentBootBarrier + onBootRefused pattern as buildHostPool).
-      // Full nix-provisioned buildHostPool needs KOLU_DAEMON_TESTS fixture;
-      // this arm still uses the real agent binary path and production barrier.
-      const home = mkdtempSync(join(tmpdir(), "drishti-prod-boot-"));
+      // U3.1: REAL buildHostPool (both onBootRefused hooks live in production).
+      // MUTATION: empty the pool hooks' outcome/convergence writes ⇒ this reds
+      // (not a source regex).
+      const fixture = await fixtureAgent();
+      if (fixture === null) {
+        throw new Error(
+          "fixtureAgent required under KOLU_DAEMON_TESTS=1 — nix/store fixture required",
+        );
+      }
+
+      const home = mkdtempSync(join(tmpdir(), "drishti-pool-boot-"));
       temps.push(home);
       const stateDir = join(home, ".local", "state", "drishti");
       mkdirSync(stateDir, { recursive: true, mode: 0o755 });
       chmodSync(stateDir, 0o755);
 
-      // Real agent process — capture fatal lines for connector replay via live spawn
-      // inside a connector that is the production barrier's `inner` equivalent:
-      // spawn agent, forward stderr as remoteProgress, settle closed on exit.
-      let connectCalls = 0;
-      let outcome: ReturnType<HostSession["outcome"]> = null;
-      let convergence: ReturnType<HostSession["convergence"]> = null;
-      const readOutcome = () => outcome;
-      const readConvergence = () => convergence;
+      const binDir = join(home, "bin");
+      mkdirSync(binDir, { recursive: true });
+      writeSshShim(binDir);
 
-      // biome-ignore lint/suspicious/noExplicitAny: production-shaped connector test
-      const spawnAgent: Connector<any> = async (ctx) => {
-        connectCalls += 1;
-        const child = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
-          env: {
-            ...process.env,
-            HOME: home,
-            XDG_STATE_HOME: join(home, ".local", "state"),
-          },
-          stdio: ["pipe", "pipe", "pipe"],
-        });
-        child.stderr?.setEncoding("utf-8");
-        child.stderr?.on("data", (chunk: string) => {
-          for (const line of chunk.split("\n")) {
-            if (line.length > 0) ctx.remoteProgress(line);
-          }
-        });
-        let settle!: (info: ClosedInfo) => void;
-        const closed = new Promise<ClosedInfo>((r) => {
-          settle = r;
-        });
-        child.on("exit", (code, signal) => {
-          settle({ kind: "exit", code, signal });
-        });
-        return {
-          client: {
-            surface: {
-              system: {
-                live: async () => {
-                  throw new Error("agent dead");
-                },
-              },
-            },
-          },
-          closed,
-          isAlive: async () => {
-            throw new Error("agent dead");
-          },
-          teardown: () => {
-            try {
-              child.kill("SIGKILL");
-            } catch {
-              //
-            }
-          },
-        };
-      };
+      // Connect-attempt log is written by the ssh shim under $HOME (see writeSshShim).
+      const connectLog = join(home, ".drishti-e2e-connect.log");
+      writeFileSync(connectLog, "");
 
-      // biome-ignore lint/suspicious/noExplicitAny: production-shaped session test
-      const session = makeSession<any>({
-        connectOnce: withAgentBootBarrier(spawnAgent, {
-          onBootRefused: (message) => {
-            // Same writes as production buildHostPool hooks.
-            outcome = { kind: "boot-refused", message };
-            convergence = {
-              kind: "boot-refused",
-              detail: message,
-              message,
-            };
-          },
+      process.env.HOME = home;
+      process.env.XDG_STATE_HOME = join(home, ".local", "state");
+      process.env.DRISHTI_AGENT_BUILD_ID = fixture.buildId;
+      process.env.DRISHTI_E2E_HOME = home;
+      process.env.DRISHTI_E2E_XDG_STATE_HOME = join(home, ".local", "state");
+      process.env.DRISHTI_E2E_BUILD_ID = fixture.buildId;
+      process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
+
+      // Non-local host name so the dial goes through sshConnector's ssh path
+      // (localhost is a direct spawn — no ssh — and cannot count attempts via
+      // the shim). The shim execs the agent locally under the e2e HOME.
+      const host = "e2e-boot-refuse";
+      const hostsFile = join(home, "hosts.json");
+      writeFileSync(hostsFile, JSON.stringify({ hosts: [] }));
+
+      const pool = buildHostPool({
+        initialHosts: [host],
+        hostsFile,
+        buildIdBySystem: { [fixture.system]: fixture.buildId },
+        resolveDrvPath: async () => ({
+          derivation: directAgentDerivation(
+            fixture.drvPath,
+            fixture.binaryCache,
+          ),
+          system: fixture.system,
         }),
-        initialConnection: "connecting",
-        reconnectDelayMs: 30,
-        label: "prod-boot-refuse",
-      }) as HostSession & { pin: () => Promise<unknown>; destroy: () => void };
-
-      // Attach standing-set listener like production attachDaemonSession.
-      session.onState((s) => {
-        if (s.phase === "failed") {
-          const current = readConvergence();
-          const k = current?.kind as string | undefined;
-          const standing =
-            k === "skew-refused" ||
-            k === "cross-supervisor" ||
-            k === "unconverged" ||
-            k === "boot-refused";
-          if (!standing) {
-            convergence = {
-              kind: "link-failed",
-              detail: "error" in s ? String(s.error) : "failed",
-            };
-          }
-        }
       });
+      pools.push(pool);
 
-      // Patch session with outcome/convergence for projection (production HostSession).
-      const hostSession = Object.assign(session, {
-        outcome: readOutcome,
-        convergence: readConvergence,
-        identity: () => null,
-      }) as HostSession;
+      const session = pool.getSession(host);
+      expect(session).toBeDefined();
 
-      session.pin().catch(() => {});
-      await delay(3_000);
+      // pin() drives the real pool dial (ssh → agent). Terminal boot refusal
+      // rejects pin; outcome/convergence are set by production onBootRefused.
+      try {
+        await session!.pin();
+      } catch {
+        // expected: ConnectError terminal from withAgentBootBarrier
+      }
 
-      expect(session.currentState().phase).toBe("failed");
-      expect(connectCalls).toBe(1);
-      const out = readOutcome();
+      // Wait for terminal boot refusal (failed + boot-refused standing).
+      const failDeadline = Date.now() + 60_000;
+      while (Date.now() < failDeadline) {
+        const phase = session!.currentState().phase;
+        const out = session!.outcome();
+        if (phase === "failed" && out?.kind === "boot-refused") break;
+        await delay(100);
+      }
+
+      expect(session!.currentState().phase).toBe("failed");
+      const out = session!.outcome();
       expect(out?.kind).toBe("boot-refused");
       if (out !== null && out.kind === "boot-refused") {
         expect(out.message).toMatch(/not a private owner-only directory/);
         expect(out.message).toContain(stateDir);
-        // Verbatim: no stack frames in message.
         expect(out.message).not.toMatch(/\n\s+at /);
       }
-      expect(readConvergence()?.kind).toBe("boot-refused");
-      expect(readConvergence()?.kind).not.toBe("link-failed");
+      expect(session!.convergence()?.kind).toBe("boot-refused");
+      expect(session!.convergence()?.kind).not.toBe("link-failed");
 
-      const projected = projectDaemonStatus(hostSession);
+      const projected = projectDaemonStatus(session!);
       expect(projected.anomaly?.kind).toBe("boot-refused");
       expect(chipFromDaemonStatus(projected).kind).toBe("boot-refused");
 
-      // Admin router projects the same typed state.
-      const pool = {
-        has: (h: string) => h === "localhost",
-        getSession: (h: string) =>
-          h === "localhost" ? hostSession : undefined,
-        hosts: () => ["localhost"],
-        add: async () => {},
-        remove: async () => {},
-        reconnect: () => {},
-        recheckAll: () => {},
-        destroyAll: async () => {},
-        subscribe: () => () => {},
-        getHandler: () => undefined,
-        attachSocket: () => {},
-        detachSocket: () => {},
-      } as unknown as HostPool;
+      // Admin router projects the same typed state through the real pool.
       const admin = buildAdminRouter({ pool });
       // biome-ignore lint/suspicious/noExplicitAny: oRPC router
       const hosts = (admin.router as any).surface.admin.hosts;
-      const status = await call(hosts.daemonStatus, { host: "localhost" });
+      const status = await call(hosts.daemonStatus, { host });
       expect(status.anomaly?.kind).toBe("boot-refused");
       if (status.anomaly?.kind === "boot-refused") {
         expect(status.anomaly.message).toMatch(
           /not a private owner-only directory/,
         );
+        expect(status.anomaly.message).toContain(stateDir);
       }
 
-      session.destroy();
+      // Exactly one connector attempt; zero scheduled retries after settle.
+      const attemptsAtSettle = connectAttempts(connectLog);
+      expect(attemptsAtSettle).toBe(1);
+      await delay(1_500);
+      expect(connectAttempts(connectLog)).toBe(1);
+      expect(session!.currentState().phase).toBe("failed");
     },
-    30_000,
+    120_000,
   );
 
   it("transport failure without fatal still retries (not terminal)", async () => {
@@ -300,7 +372,6 @@ describe("U2.3 production assembly — real agent + buildHostPool", () => {
     // biome-ignore lint/suspicious/noExplicitAny: connector stub
     const flaky: Connector<any> = async () => {
       connectCalls += 1;
-      // No remoteProgress fatal line — pure transport death.
       let settle!: (info: ClosedInfo) => void;
       const closed = new Promise<ClosedInfo>((r) => {
         settle = r;
@@ -333,7 +404,6 @@ describe("U2.3 production assembly — real agent + buildHostPool", () => {
     });
     session.pin().catch(() => {});
     await delay(400);
-    // Network transport-failed retries forever at backoff — more than one attempt.
     expect(connectCalls).toBeGreaterThan(1);
     expect(session.currentState().phase).not.toBe("failed");
     session.destroy();

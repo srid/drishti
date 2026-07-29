@@ -5,3 +5,7 @@
 # its own node_modules — surface-nix-host would resolve nothing from root.
 [install]
 linker = "hoisted"
+
+# Client component tests need happy-dom + Solid JSX (see test-setup.ts).
+[test]
+preload = ["./packages/app/src/client/test-setup.ts"]

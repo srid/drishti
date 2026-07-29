@@ -30,8 +30,11 @@ export function extractAgentBootFatal(
     const line = remoteLines[i] ?? "";
     for (const p of prefixes) {
       if (line.startsWith(p)) {
-        const message = line.slice(p.length).trimStart();
-        return message.length > 0 ? message : null;
+        // U3.5: exact post-prefix slice — do NOT trimStart a nonempty payload
+        // (leading whitespace in the fatal message is part of verbatim).
+        const message = line.slice(p.length);
+        if (message.trim().length === 0) return null;
+        return message;
       }
     }
   }

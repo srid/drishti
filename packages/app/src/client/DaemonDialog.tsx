@@ -29,6 +29,10 @@ export const DaemonDialog: Component<{
   const banner = () => anomalyBanner(props.status?.anomaly ?? null);
   const rows = () => identityRows(props.status?.identity ?? null);
   const outcome = () => outcomeSummary(props.status?.outcome ?? null);
+  // U3.3: boot-refused has no resident to drain — Renew is not offered.
+  const isBootRefused = () =>
+    props.status?.anomaly?.kind === "boot-refused" ||
+    props.status?.outcome?.kind === "boot-refused";
 
   return (
     <Show when={props.open}>
@@ -183,19 +187,24 @@ export const DaemonDialog: Component<{
             </button>
             <button
               type="button"
+              data-testid="daemon-dialog-reconnect"
               class="rounded border border-gray-300 px-2.5 py-1 text-[11px] font-medium hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
               onClick={() => props.onReconnect()}
             >
               Reconnect
             </button>
-            <button
-              type="button"
-              class="rounded border border-indigo-500/50 bg-indigo-500/10 px-2.5 py-1 text-[11px] font-medium text-indigo-800 hover:bg-indigo-500/20 dark:text-indigo-200"
-              disabled={props.renewState.kind === "pending"}
-              onClick={() => props.onRenew()}
-            >
-              Renew agent
-            </button>
+            {/* U3.3: boot-refused has no resident to drain — Renew is not offered. */}
+            <Show when={!isBootRefused()}>
+              <button
+                type="button"
+                data-testid="daemon-dialog-renew"
+                class="rounded border border-indigo-500/50 bg-indigo-500/10 px-2.5 py-1 text-[11px] font-medium text-indigo-800 hover:bg-indigo-500/20 dark:text-indigo-200"
+                disabled={props.renewState.kind === "pending"}
+                onClick={() => props.onRenew()}
+              >
+                Renew agent
+              </button>
+            </Show>
           </div>
         </div>
       </div>

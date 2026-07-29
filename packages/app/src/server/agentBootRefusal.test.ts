@@ -56,6 +56,19 @@ describe("extractAgentBootFatal", () => {
       expect(extractAgentBootFatal([`${p}boom`])).toBe("boom");
     }
   });
+
+  it("U3.5: preserves meaningful leading whitespace in the payload (verbatim)", () => {
+    // Exact post-prefix slice — do NOT trimStart a nonempty payload.
+    expect(
+      extractAgentBootFatal(["drishti-agent: fatal:   spaced cause"]),
+    ).toBe("  spaced cause");
+    expect(
+      extractAgentBootFatal(["drishti-agent: fatal: \tleading tab"]),
+    ).toBe("\tleading tab");
+    // Empty / whitespace-only after prefix is still null (no message).
+    expect(extractAgentBootFatal(["drishti-agent: fatal: "])).toBeNull();
+    expect(extractAgentBootFatal(["drishti-agent: fatal:   "])).toBeNull();
+  });
 });
 
 describe("withAgentBootBarrier", () => {

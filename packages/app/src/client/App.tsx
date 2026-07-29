@@ -73,7 +73,10 @@ import {
   convergenceBannerVisible,
 } from "./convergenceProjection";
 import { DaemonDialog } from "./DaemonDialog";
-import { DaemonStatusChip } from "./DaemonStatusChip";
+import {
+  DaemonStatusChip,
+  FleetDaemonStatusChip,
+} from "./DaemonStatusChip";
 import type { DaemonStatus } from "../common/daemonStatus";
 import {
   createDaemonStatusStore,
@@ -932,8 +935,6 @@ function FleetView(props: {
 function HostCard(props: { host: string; onSelect: () => void }) {
   const entry = hostMap.entry(props.host);
   const system = entry.cells.system.use({});
-  const daemonStore = useDaemonStatusStore();
-  const daemonStatus = () => daemonStore.byHost()[props.host] ?? null;
   // The host's raised-alert set (kolu W5 `alerts` cell). A minimal pip on the
   // card surfaces "this host is in trouble" at a glance, alongside the OS
   // notification the app-scope `watchByEntry` fires — same source of truth. The
@@ -980,65 +981,77 @@ function HostCard(props: { host: string; onSelect: () => void }) {
     return `/ · ${gb.used}/${gb.total} GB · ${disk().toFixed(0)}%`;
   });
 
+  // U3.4: outer surface is layout chrome, not a button. Host selection and the
+  // daemon chip are sibling controls — never nest chip button inside selection.
   return (
-    <button
-      type="button"
-      onClick={props.onSelect}
-      class="flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3 text-left transition-colors hover:border-indigo-400 hover:bg-white dark:border-gray-800 dark:bg-gray-900/40 dark:hover:border-indigo-500 dark:hover:bg-gray-900"
+    <div
+      data-testid={`host-card-${props.host}`}
+      class="flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3 transition-colors hover:border-indigo-400 hover:bg-white dark:border-gray-800 dark:bg-gray-900/40 dark:hover:border-indigo-500 dark:hover:bg-gray-900"
     >
       <div class="flex items-center gap-2">
-        <HostDot state={entryState} class="shrink-0" />
-        <span class="truncate font-semibold" title={props.host}>
-          {props.host}
-        </span>
-        <DaemonStatusChip
-          status={daemonStatus()}
-          onClick={() => daemonStore.setDialogHost(props.host)}
-        />
-        <Show when={entryState().kind === "connected" && alertCount() > 0}>
-          <span
-            class="shrink-0 rounded-full bg-red-500/15 px-1.5 text-xs font-semibold text-red-600 dark:text-red-400"
-            title={`${alertCount()} alert${alertCount() === 1 ? "" : "s"}`}
-          >
-            {alertCount()}
+        <button
+          type="button"
+          data-testid={`host-card-select-${props.host}`}
+          onClick={props.onSelect}
+          class="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <HostDot state={entryState} class="shrink-0" />
+          <span class="truncate font-semibold" title={props.host}>
+            {props.host}
           </span>
-        </Show>
-        <span class={`ml-auto shrink-0 text-xs ${STATE[state()].text}`}>
-          {state()}
-        </span>
+          <Show when={entryState().kind === "connected" && alertCount() > 0}>
+            <span
+              class="shrink-0 rounded-full bg-red-500/15 px-1.5 text-xs font-semibold text-red-600 dark:text-red-400"
+              title={`${alertCount()} alert${alertCount() === 1 ? "" : "s"}`}
+            >
+              {alertCount()}
+            </span>
+          </Show>
+          <span class={`ml-auto shrink-0 text-xs ${STATE[state()].text}`}>
+            {state()}
+          </span>
+        </button>
+        <FleetDaemonStatusChip host={props.host} />
       </div>
 
-      <Show
-        when={entryState().kind === "connected"}
-        fallback={
-          <div class="py-3 text-center text-xs text-gray-400 dark:text-gray-500">
-            {STATE[state()].label}
-          </div>
-        }
+      <button
+        type="button"
+        data-testid={`host-card-body-${props.host}`}
+        onClick={props.onSelect}
+        class="flex w-full flex-col gap-2 text-left"
       >
-        <CardMetric
-          label="cpu"
-          pct={cpuPct()}
-          detail={`${cpuPct().toFixed(0)}% · ${coreCount()} cores`}
-        />
-        <CardMetric label="mem" pct={mem()} detail={memText()} />
-        <CardMetric label="swap" pct={swap()} detail={swapText()} />
-        <CardMetric label="disk" pct={disk()} detail={diskText()} />
-        <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400">
-          <span>
-            load{" "}
-            <span class="font-semibold text-gray-700 dark:text-gray-300">
-              {sys().loadAvg[0].toFixed(2)}
-            </span>{" "}
-            {sys().loadAvg[1].toFixed(2)} {sys().loadAvg[2].toFixed(2)}
-          </span>
-          <span>
-            up {formatUptime(sys().uptime)} · {sys().os}
-          </span>
-        </div>
-        <HostCardSparkline host={props.host} />
-      </Show>
-    </button>
+        <Show
+          when={entryState().kind === "connected"}
+          fallback={
+            <div class="py-3 text-center text-xs text-gray-400 dark:text-gray-500">
+              {STATE[state()].label}
+            </div>
+          }
+        >
+          <CardMetric
+            label="cpu"
+            pct={cpuPct()}
+            detail={`${cpuPct().toFixed(0)}% · ${coreCount()} cores`}
+          />
+          <CardMetric label="mem" pct={mem()} detail={memText()} />
+          <CardMetric label="swap" pct={swap()} detail={swapText()} />
+          <CardMetric label="disk" pct={disk()} detail={diskText()} />
+          <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400">
+            <span>
+              load{" "}
+              <span class="font-semibold text-gray-700 dark:text-gray-300">
+                {sys().loadAvg[0].toFixed(2)}
+              </span>{" "}
+              {sys().loadAvg[1].toFixed(2)} {sys().loadAvg[2].toFixed(2)}
+            </span>
+            <span>
+              up {formatUptime(sys().uptime)} · {sys().os}
+            </span>
+          </div>
+          <HostCardSparkline host={props.host} />
+        </Show>
+      </button>
+    </div>
   );
 }
 

@@ -17,8 +17,7 @@ import { useSurfaceApp } from "@kolu/surface-app/solid";
 import { createPwaInstall, installInstructions } from "@kolu/solid-pwa-install";
 import { createSignal, For, Show } from "solid-js";
 import type { View } from "./view";
-import { DaemonStatusChip } from "./DaemonStatusChip";
-import { useDaemonStatusStore } from "./daemonStatusStore";
+import { FleetDaemonStatusChip } from "./DaemonStatusChip";
 import { HostDot } from "./HostDot";
 import { otherTheme, type Theme } from "./theme";
 import { hostMap } from "./wire";
@@ -173,9 +172,6 @@ function TabChip(props: {
 }) {
   const entry = hostMap.entry(props.host);
   const state = () => entry.state();
-  // U2.2: per-host daemon chip on every tab — shared fleet poll, not HostView-only.
-  const daemonStore = useDaemonStatusStore();
-  const daemonStatus = () => daemonStore.byHost()[props.host] ?? null;
   // The host's raised-alert set (kolu W5 `alerts` cell) — read straight off
   // `hostMap` the same way the dot reads `state()`, so the chip needs no new
   // prop threaded through `TabStrip`. A compact red count pip mirrors the fleet
@@ -186,20 +182,22 @@ function TabChip(props: {
   const alerts = entry.cells.alerts.use({});
   const alertCount = () => (alerts.value()?.items ?? []).length;
 
+  // U3.4: host selection and daemon chip are SIBLING controls — never nest the
+  // chip button inside the selection button (invalid interactive markup).
   return (
-    <div class={`${TAB_BASE} ${props.active ? TAB_ACTIVE : TAB_INACTIVE}`}>
+    <div
+      class={`${TAB_BASE} ${props.active ? TAB_ACTIVE : TAB_INACTIVE}`}
+      data-testid={`tab-chip-${props.host}`}
+    >
       <button
         type="button"
+        data-testid={`tab-select-${props.host}`}
         class="flex items-center gap-2"
         onClick={props.onSelect}
         title={`${props.host} — ${state().kind}`}
       >
         <HostDot state={state} />
         <span class="font-semibold">{props.host}</span>
-        <DaemonStatusChip
-          status={daemonStatus()}
-          onClick={() => daemonStore.setDialogHost(props.host)}
-        />
         <Show when={state().kind === "connected" && alertCount() > 0}>
           <span
             data-testid={`tab-alert-${props.host}`}
@@ -210,6 +208,7 @@ function TabChip(props: {
           </span>
         </Show>
       </button>
+      <FleetDaemonStatusChip host={props.host} />
       <button
         type="button"
         class="ml-1 text-gray-400 hover:text-red-500"
