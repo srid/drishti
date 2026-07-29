@@ -107,8 +107,11 @@ agent-boots:
     #!/usr/bin/env bash
     set -euo pipefail
     nix build .#drishti-agent
-    out=$(./result/bin/drishti-agent 2>&1 || true)
-    if printf '%s' "$out" | grep -q "drishti-agent — exposes"; then
+    # UW3: bare invocation is the durable daemon (hangs waiting for
+    # connections). --help loads the full module graph and prints usage,
+    # proving runtime resolution without starting the daemon.
+    out=$(./result/bin/drishti-agent --help 2>&1 || true)
+    if printf '%s' "$out" | grep -q "drishti-agent —"; then
       echo "agent-boots: PASS — the built agent's module graph resolves at runtime"
     else
       echo "agent-boots: FAIL — the built agent did not boot (runtime module error?):"
