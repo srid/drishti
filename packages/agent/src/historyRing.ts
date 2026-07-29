@@ -35,6 +35,11 @@ import {
 } from "drishti-common/alerts";
 import type { HistoryView } from "drishti-common/history";
 import { z } from "zod";
+import {
+  NO_BASELINES,
+  RingBaselinesSchema,
+  type RingBaselines,
+} from "./ringBaselines";
 
 function log(...args: unknown[]): void {
   process.stderr.write(
@@ -52,20 +57,31 @@ export const HISTORY_RING_FILE = "history.ring.json";
 const CurrentRingFileSchema = z.object({
   v: z.literal(HISTORY_RING_VERSION),
   samples: z.array(MetricSampleSchema),
-  /** Optional hysteresis fold state (W4) — absent ⇒ NO_ALERTS on restore. */
+  /** Optional hysteresis fold state — absent ⇒ NO_ALERTS on restore. */
   alerts: AlertsSchema.optional(),
+  /** Optional rate baselines (process + host) — absent ⇒ cold first tick. */
+  baselines: RingBaselinesSchema.optional(),
 });
 
 export type HistoryRingFile = {
   samples: MetricSample[];
   alerts: Alerts;
+  baselines: RingBaselines;
 };
 
-/** Load disposition — HistoryView plus restored alert fold state. */
+/** Load disposition — HistoryView plus restored alert + baseline fold state. */
 export type HistoryRingLoad =
-  | (HistoryView & { kind: "ok"; alerts: Alerts })
-  | (HistoryView & { kind: "unavailable"; alerts: Alerts })
-  | (HistoryView & { kind: "degraded"; alerts: Alerts });
+  | (HistoryView & { kind: "ok"; alerts: Alerts; baselines: RingBaselines })
+  | (HistoryView & {
+      kind: "unavailable";
+      alerts: Alerts;
+      baselines: RingBaselines;
+    })
+  | (HistoryView & {
+      kind: "degraded";
+      alerts: Alerts;
+      baselines: RingBaselines;
+    });
 
 /** Load a history ring from `path`. Missing file is honest empty. Unknown
  *  version leaves the file alone. Garbage is moved aside, never deleted. */
@@ -76,7 +92,12 @@ export function loadHistoryRing(path: string): HistoryRingLoad {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
-      return { kind: "ok", samples: [], alerts: NO_ALERTS };
+      return {
+        kind: "ok",
+        samples: [],
+        alerts: NO_ALERTS,
+        baselines: NO_BASELINES,
+      };
     }
     log(`read failed (${code ?? "unknown"}): ${(err as Error).message}`);
     return unavailable("unreadable");
@@ -113,14 +134,16 @@ export function loadHistoryRing(path: string): HistoryRingLoad {
     kind: "ok",
     samples: shape.data.samples,
     alerts: shape.data.alerts ?? NO_ALERTS,
+    baselines: shape.data.baselines ?? NO_BASELINES,
   };
 }
 
-/** Atomic write of samples + alert fold state. Throws on failure. */
+/** Atomic write of samples + alert fold + rate baselines. Throws on failure. */
 export function saveHistoryRing(
   path: string,
   samples: readonly MetricSample[],
   alerts: Alerts = NO_ALERTS,
+  baselines: RingBaselines = NO_BASELINES,
 ): void {
   const dir = dirname(path);
   const tmp = join(dir, `.history.ring.json.${process.pid}.${Date.now()}.tmp`);
@@ -128,6 +151,7 @@ export function saveHistoryRing(
     v: HISTORY_RING_VERSION,
     samples: [...samples],
     alerts,
+    baselines,
   } satisfies z.infer<typeof CurrentRingFileSchema>);
   writeFileSync(tmp, body, { encoding: "utf8", mode: 0o600 });
   try {
@@ -145,7 +169,13 @@ export function saveHistoryRing(
 function unavailable(
   reason: MetricHistoryUnavailableReason,
 ): HistoryRingLoad {
-  return { kind: "unavailable", reason, samples: [], alerts: NO_ALERTS };
+  return {
+    kind: "unavailable",
+    reason,
+    samples: [],
+    alerts: NO_ALERTS,
+    baselines: NO_BASELINES,
+  };
 }
 
 /** Move a corrupt ring aside. NEVER deletes — a future autopsy may need it. */

@@ -55,7 +55,7 @@ export interface ProcessFrame {
   sourceErrors: SourceErrorFact[];
 }
 
-interface ProcessBaseline {
+export interface ProcessBaseline {
   takenMs: number;
   cpuTimes: Map<Pid, number>;
 }
@@ -70,6 +70,15 @@ export interface ProcReader {
   readSourceErrors: () => Promise<Map<string, SourceErrorFact>>;
   readCpuCores: () => Promise<Map<CoreId, CpuCore>>;
   readNetwork: () => Promise<Map<IfaceName, NetInterface>>;
+  /**
+   * Snapshot rate baselines for durable ring persistence (W2.4). Optional on
+   * test doubles that do not own rate state.
+   */
+  exportBaselines?: () => import("./ringBaselines").RingBaselines;
+  /** Restore rate baselines after boot from the durable ring. */
+  importBaselines?: (
+    baselines: import("./ringBaselines").RingBaselines,
+  ) => void;
 }
 
 export interface NetCounters {
@@ -250,7 +259,7 @@ export function processesFromOsfacts(
   };
 }
 
-interface HostBaseline {
+export interface HostBaseline {
   takenMs: number;
   cpus: Map<number, CpuCounters>;
   networks: Map<string, NetCounters>;
@@ -348,6 +357,42 @@ export function createOsfactsReader(
   let hostCache: { takenMs: number; promise: Promise<HostFrame> } | undefined;
   let processBaseline: ProcessBaseline | undefined;
   let hostBaseline: HostBaseline | undefined;
+
+  const exportBaselines = (): import("./ringBaselines").RingBaselines => {
+    const out: import("./ringBaselines").RingBaselines = {};
+    if (processBaseline !== undefined) {
+      out.process = {
+        takenMs: processBaseline.takenMs,
+        cpuTimes: [...processBaseline.cpuTimes.entries()],
+      };
+    }
+    if (hostBaseline !== undefined) {
+      out.host = {
+        takenMs: hostBaseline.takenMs,
+        cpus: [...hostBaseline.cpus.entries()],
+        networks: [...hostBaseline.networks.entries()],
+      };
+    }
+    return out;
+  };
+
+  const importBaselines = (
+    baselines: import("./ringBaselines").RingBaselines,
+  ): void => {
+    if (baselines.process !== undefined) {
+      processBaseline = {
+        takenMs: baselines.process.takenMs,
+        cpuTimes: new Map(baselines.process.cpuTimes),
+      };
+    }
+    if (baselines.host !== undefined) {
+      hostBaseline = {
+        takenMs: baselines.host.takenMs,
+        cpus: new Map(baselines.host.cpus),
+        networks: new Map(baselines.host.networks),
+      };
+    }
+  };
 
   const processFrame = (): Promise<ProcessFrame> => {
     const takenMs = now();
@@ -499,6 +544,8 @@ export function createOsfactsReader(
     readSourceErrors,
     readCpuCores: async () => (await hostFrame()).cpuCores,
     readNetwork: async () => (await hostFrame()).networkInterfaces,
+    exportBaselines,
+    importBaselines,
   };
 }
 

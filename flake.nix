@@ -67,10 +67,9 @@
             (import ./default.nix { inherit pkgs b2n; }).drishti-agent.drvPath)
         perSystemAttrs;
 
-      # Per-system agent BUILD_ID — same shipped-wrapper hash as
-      # `drishtiAgentBuildId` in default.nix (agent tree + bun + osfacts + flags).
-      # Parent convergeAdmit uses this so a multi-arch host expects the build
-      # id of the agent it actually provisions — not the parent-arch only id.
+      # Per-system agent BUILD_ID — hash of that system's real inner wrapper
+      # derivation (W2.5). Parent convergeAdmit uses this so a multi-arch host
+      # expects the build id of the agent it actually provisions.
       agentBuildIdBySystem = builtins.mapAttrs
         (_: { pkgs, b2n }:
           (import ./default.nix { inherit pkgs b2n; }).drishtiAgentBuildId)

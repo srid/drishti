@@ -359,19 +359,27 @@ function attachDaemonSession(args: {
 const NEVER_EXITS: Promise<void> = new Promise(() => {});
 
 /**
- * W6: resolve the expected agent BUILD_ID for a provisioned host.
+ * W2.6: resolve the expected agent BUILD_ID for a host.
  *
- * - Non-empty `buildIdBySystem` ⇒ provisioned path: system MUST have an entry
- *   (fail-fast; no silent "" fallback).
- * - Empty map ⇒ genuine off-nix: use `fallbackBuildId` (may be "" / can't-judge).
+ * - `provisioning: true` (parent holds a drv map) ⇒ build-ids map MUST be
+ *   non-empty and MUST contain the probed system. No single-ID / "" fallback.
+ * - `provisioning: false` (genuine off-nix, no drv map) ⇒ can't-judge via
+ *   fallbackBuildId (may be "").
  */
 export function expectProvisionedBuildId(args: {
   system: string | undefined;
   buildIdBySystem: Readonly<Record<string, string>>;
   fallbackBuildId: string;
+  /** True when the parent holds a drv map and is provisioning agents. */
+  provisioning: boolean;
 }): string {
-  const keys = Object.keys(args.buildIdBySystem);
-  if (keys.length > 0) {
+  if (args.provisioning) {
+    const keys = Object.keys(args.buildIdBySystem);
+    if (keys.length === 0) {
+      throw new Error(
+        "drishti agent provision: drv map is present but BUILD_IDS map is empty — cannot admit without per-system expected build ids",
+      );
+    }
     if (args.system === undefined) {
       throw new Error(
         "drishti agent provision: remote system unknown but BUILD_IDS map is present — cannot select expected build id",
@@ -394,6 +402,10 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
   // the expected build id can match the host's probed system (multi-arch).
   const fallbackBuildId = process.env.DRISHTI_AGENT_BUILD_ID ?? "";
   const buildIdBySystem = opts.buildIdBySystem ?? {};
+  // Presence of a non-empty ids map (or explicit flag later) means we are on
+  // the provisioned path. Production main always passes a non-empty map when
+  // DRVS is set; empty map is genuine off-nix / unit tests.
+  const provisioning = Object.keys(buildIdBySystem).length > 0;
 
   return buildRemotePool<HostSession, undefined>({
     initialHosts: opts.initialHosts,
@@ -420,23 +432,30 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         // spawn env (kolu#1884 / #1872). drishti dials "localhost" for real (every
         // host, including localhost, dials through this connector — see below), so a
         // localhost drishti-agent must run with EXACTLY this composed env, never
-        // drishti-server's ambient `process.env` (identity vars, secrets). drishti
-        // can't import kolu-pty's `composeSpawnEnv`, so it picks a clean base inline,
-        // omitting any UNSET key (an empty HOME/PATH would misdirect lookups). Unused
-        // on a real ssh host, where the local ssh client legitimately inherits.
+        // drishti-server's ambient `process.env` (identity vars, secrets). Thread
+        // identity + state placement env the agent needs under a clean base.
         localEnv: Object.fromEntries(
-          (["HOME", "PATH"] as const)
+          (
+            [
+              "HOME",
+              "PATH",
+              "XDG_STATE_HOME",
+              "DRISHTI_OSFACTS_BIN",
+              "DRISHTI_AGENT_BUILD_ID",
+            ] as const
+          )
             .map((k): [string, string | undefined] => [k, process.env[k]])
             .filter((e): e is [string, string] => e[1] !== undefined),
         ),
         resolveDrvPath: async (context) => {
           const resolved = await opts.resolveDrvPath(host, context);
-          // W6: provisioned path fail-fast via expectProvisionedBuildId.
+          // W2.6: provisioned path fail-fast via expectProvisionedBuildId.
           if (budget === null) {
             expectedBuildId = expectProvisionedBuildId({
               system: resolved.system,
               buildIdBySystem,
               fallbackBuildId,
+              provisioning,
             });
             budget = createConnectorDrainBudget(
               drishtiAgentConvergencePolicy(expectedBuildId),

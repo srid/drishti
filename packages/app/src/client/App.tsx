@@ -1171,17 +1171,26 @@ function HostView(props: {
       .catch((err) => console.error(`reconnect ${props.host} failed`, err));
   };
 
-  // W7: standing convergence anomaly (adopt-stale / skew / …) + renew verb.
-  // Polled lightly; the anomaly is standing until renew/reconnect clears it.
+  // W2.7: standing convergence anomaly (adopt-stale / skew / cross-supervisor /
+  // link-failed) + renew verb. Standing law: a poll failure is its OWN typed
+  // state — never erase the standing anomaly with catch-to-null.
   const [convergence, setConvergence] = createSignal<{
     kind: string;
     detail: string;
   } | null>(null);
+  const [convergencePollError, setConvergencePollError] = createSignal<
+    string | null
+  >(null);
   const pollConvergence = () => {
     void adminRpc()
       .hosts.convergence({ host: props.host })
-      .then((r) => setConvergence(r.anomaly))
-      .catch(() => setConvergence(null));
+      .then((r) => {
+        setConvergence(r.anomaly);
+        setConvergencePollError(null);
+      })
+      .catch((err) => {
+        setConvergencePollError((err as Error).message);
+      });
   };
   pollConvergence();
   const convIv = setInterval(pollConvergence, 5_000);
@@ -1431,26 +1440,34 @@ function HostView(props: {
           erroring sub from a still-warming one — each subscription below
           already surfaces its OWN error via its member's declared `client.onError`
           policy (SR11), routed through the ONE `interpretClientError`. */}
+      {/* W2.7: standing convergence is visible even when disconnected
+          (refused skew / cross-supervisor never becomes phase=connected). */}
+      <Show when={convergence()}>
+        {(c) => (
+          <div class="flex items-center justify-between gap-3 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-800 dark:text-amber-300">
+            <span class="min-w-0 truncate">
+              <span class="font-semibold">{c().kind}</span>
+              {" — "}
+              {c().detail}
+            </span>
+            <button
+              type="button"
+              class="shrink-0 rounded border border-amber-600/50 px-2 py-0.5 font-medium hover:bg-amber-500/20"
+              onClick={onRenew}
+            >
+              Renew agent
+            </button>
+          </div>
+        )}
+      </Show>
+      <Show when={convergencePollError()}>
+        {(err) => (
+          <div class="border-b border-amber-500/30 bg-amber-500/5 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
+            Convergence poll failed — {err()} (standing anomaly retained)
+          </div>
+        )}
+      </Show>
       <Show when={phase() === "connected"} fallback={connectingView()}>
-        {/* W7: standing convergence anomaly + renew verb (minimal honest UI). */}
-        <Show when={convergence()}>
-          {(c) => (
-            <div class="flex items-center justify-between gap-3 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-800 dark:text-amber-300">
-              <span class="min-w-0 truncate">
-                <span class="font-semibold">{c().kind}</span>
-                {" — "}
-                {c().detail}
-              </span>
-              <button
-                type="button"
-                class="shrink-0 rounded border border-amber-600/50 px-2 py-0.5 font-medium hover:bg-amber-500/20"
-                onClick={onRenew}
-              >
-                Renew agent
-              </button>
-            </div>
-          )}
-        </Show>
         <AlertsPanel
           ids={raisedIds()}
           system={currentSystem()}

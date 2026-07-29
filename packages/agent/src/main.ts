@@ -80,16 +80,13 @@ import {
   saveHistoryRing,
 } from "./historyRing";
 import { createProcReader, type ProcReader } from "./proc";
+import { NO_BASELINES, type RingBaselines } from "./ringBaselines";
 
 const POLL_INTERVAL_MS = 2000;
-/** How often the durable ring is flushed to disk while running. Drain also flushes.
- *  Override via DRISHTI_RING_PERSIST_MS (test seam for W10 / e2e). */
-const RING_PERSIST_INTERVAL_MS = (() => {
-  const raw = process.env.DRISHTI_RING_PERSIST_MS;
-  if (raw === undefined || raw === "") return 30_000;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : 30_000;
-})();
+/** How often the durable ring is flushed to disk while running. Drain also
+ *  flushes. Baked 30s cadence (W2.9) — no env override knob. Tests that need a
+ *  different cadence pass `ringPersistMs` on the private build options only. */
+const RING_PERSIST_INTERVAL_MS = 30_000;
 /** Idle-exit after this many ms with no live parent connections. */
 const IDLE_TIMEOUT_MS = 60 * 60_000;
 
@@ -164,6 +161,12 @@ type Serve = (opts: {
   onFirstRequest: () => void;
 }) => Promise<unknown>;
 
+/** Outcome of a ring flush — drain must surface a failed final write (W2.8). */
+type FlushResult =
+  | { ok: true }
+  | { ok: false; error: string }
+  | { ok: true; skipped: true };
+
 interface AgentRuntime {
   // biome-ignore lint/suspicious/noExplicitAny: top-level oRPC router for daemonMain / serve.
   router: any;
@@ -174,8 +177,11 @@ interface AgentRuntime {
    * connection count.
    */
   isIdle: () => boolean;
-  /** Flush the history ring to disk (idempotent). Surfaces typed degraded on failure. */
-  flushRing: () => void;
+  /**
+   * Flush the history ring to disk (idempotent). Surfaces typed degraded on
+   * failure and RETURNS the result so drain can await honesty (W2.8).
+   */
+  flushRing: () => FlushResult;
   /** Tear down poll loops / surface sources. */
   close: () => Promise<void>;
   done: Promise<void>;
@@ -185,13 +191,18 @@ interface BuildAgentRuntimeOptions {
   /** Absolute path for the durable history ring. Required for daemon mode. */
   ringPath?: string;
   /** Fired after the ring is flushed on control-core drain (daemon mode). */
-  onDrain?: () => void | Promise<void>;
+  onDrain?: (flush: FlushResult) => void | Promise<void>;
   /** Daemon home — required when withControlCore is true. */
   stateRoot?: string;
   /** Whether to compose the control-core fragment (daemon mode). Tests omit it. */
   withControlCore?: boolean;
-  /** Test-only: inject saveHistoryRing failure (W10 mutation). */
+  /** Test-only: inject saveHistoryRing failure (W10 / W2.8). */
   saveRing?: typeof saveHistoryRing;
+  /**
+   * NON-EXPORTED internal test seam (W2.9): override the 30s persist cadence.
+   * Never env, never a public export. Production always uses 30s.
+   */
+  ringPersistMs?: number;
 }
 
 /**
@@ -226,6 +237,8 @@ async function buildAgentRuntime(
   let alertsSeed: Alerts = NO_ALERTS;
   /** Read current alerts from the cell once the runtime is built. */
   let readAlerts: () => Alerts = () => alertsSeed;
+  /** Read rate baselines for flush (W2.4). */
+  let readBaselines: () => RingBaselines = () => NO_BASELINES;
   /** When true, never flush to disk (file left alone: unknown-v / unreadable). */
   let persistWithheld = false;
   /**
@@ -237,12 +250,15 @@ async function buildAgentRuntime(
   let corruptAwaitingFresh = false;
   let freshSamples: MetricSample[] = [];
   const saveRing = opts.saveRing ?? saveHistoryRing;
+  const ringPersistMs = opts.ringPersistMs ?? RING_PERSIST_INTERVAL_MS;
 
   if (opts.ringPath !== undefined) {
     const loaded = loadHistoryRing(opts.ringPath);
     if (loaded.kind === "ok") {
       historyView = { kind: "ok", samples: loaded.samples };
       alertsSeed = loaded.alerts;
+      // W2.4: restore rate baselines so the first successor tick is not zeros.
+      reader.importBaselines?.(loaded.baselines);
     } else if (
       loaded.reason === "unknown-version" ||
       loaded.reason === "unreadable"
@@ -279,14 +295,23 @@ async function buildAgentRuntime(
     historyBus.publish(msg);
   };
 
-  const flushRing = (): void => {
-    if (opts.ringPath === undefined || persistWithheld) return;
+  readBaselines = () => reader.exportBaselines?.() ?? NO_BASELINES;
+
+  const flushRing = (): FlushResult => {
+    if (opts.ringPath === undefined || persistWithheld) {
+      return { ok: true, skipped: true };
+    }
     // Corrupt-awaiting-fresh: try to materialise the free path; success is
     // the legitimate transition out of standing unavailable.
     if (historyView.kind === "unavailable") {
-      if (!corruptAwaitingFresh) return;
+      if (!corruptAwaitingFresh) return { ok: true, skipped: true };
       try {
-        saveRing(opts.ringPath, freshSamples, readAlerts());
+        saveRing(
+          opts.ringPath,
+          freshSamples,
+          readAlerts(),
+          readBaselines(),
+        );
         corruptAwaitingFresh = false;
         historyView = { kind: "ok", samples: [...freshSamples] };
         publishHistory({
@@ -296,27 +321,30 @@ async function buildAgentRuntime(
         log(
           `history ring recovered after corrupt — fresh ring persisted (${freshSamples.length} samples)`,
         );
+        return { ok: true };
       } catch (err) {
-        log(
-          `history ring fresh-persist after corrupt failed: ${(err as Error).message}`,
-        );
+        const error = (err as Error).message;
+        log(`history ring fresh-persist after corrupt failed: ${error}`);
+        return { ok: false, error };
       }
-      return;
     }
     const samples =
       historyView.kind === "ok" || historyView.kind === "degraded"
         ? historyView.samples
         : [];
     try {
-      saveRing(opts.ringPath, samples, readAlerts());
+      saveRing(opts.ringPath, samples, readAlerts(), readBaselines());
       // Successful flush after a prior degrade recovers durability.
       if (historyView.kind === "degraded") {
         historyView = { kind: "ok", samples };
         publishHistory({ kind: "snapshot", samples: [...samples] });
       }
+      return { ok: true };
     } catch (err) {
-      log(`history ring flush failed: ${(err as Error).message}`);
-      // W10: typed degraded — samples still serve; durability loss is visible.
+      const error = (err as Error).message;
+      log(`history ring flush failed: ${error}`);
+      // W10 / W2.8: typed degraded — samples still serve; durability loss is
+      // visible; result is returned so drain cannot silently succeed.
       historyView = {
         kind: "degraded",
         reason: "persist-failed",
@@ -327,6 +355,7 @@ async function buildAgentRuntime(
         reason: "persist-failed",
         samples: [...samples],
       });
+      return { ok: false, error };
     }
   };
 
@@ -464,8 +493,11 @@ async function buildAgentRuntime(
           commit: identity.navigableCommit,
           buildId: identity.staleKey,
           onDrain: async () => {
-            flushRing();
-            await opts.onDrain?.();
+            // W2.8: await flush RESULT — a failed final write stays visible
+            // (degraded stream + drain callback sees ok:false). Do not abort
+            // past a silent void flush.
+            const flush = flushRing();
+            await opts.onDrain?.(flush);
           },
         });
         const runtime = implementSurfaces(
@@ -568,7 +600,7 @@ async function buildAgentRuntime(
     opts.ringPath !== undefined
       ? setInterval(() => {
           flushRing();
-        }, RING_PERSIST_INTERVAL_MS)
+        }, ringPersistMs)
       : null;
 
   const shutdown = async (): Promise<void> => {
@@ -672,8 +704,14 @@ async function main(): Promise<void> {
         ringPath: home.file(HISTORY_RING_FILE),
         stateRoot: home.dir,
         withControlCore: true,
-        onDrain: () => {
-          log("control-core drain — flushing ring and aborting lifetime");
+        onDrain: (flush) => {
+          if (!flush.ok) {
+            log(
+              `control-core drain — final flush FAILED (${flush.error}); lifetime aborts with degraded ring state visible`,
+            );
+          } else {
+            log("control-core drain — ring flushed; aborting lifetime");
+          }
           drainSignal.abort();
         },
       });

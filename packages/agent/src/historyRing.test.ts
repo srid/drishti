@@ -16,6 +16,7 @@ import {
   loadHistoryRing,
   saveHistoryRing,
 } from "./historyRing";
+import { NO_BASELINES } from "./ringBaselines";
 
 function sample(t: number): MetricSample {
   return { t, cpu: 10, mem: 20, swap: 0, disk: 30 };
@@ -46,7 +47,12 @@ describe("loadHistoryRing / saveHistoryRing", () => {
     saveHistoryRing(path, samples);
 
     const loaded = loadHistoryRing(path);
-    expect(loaded).toEqual({ kind: "ok", samples, alerts: NO_ALERTS });
+    expect(loaded).toEqual({
+      kind: "ok",
+      samples,
+      alerts: NO_ALERTS,
+      baselines: NO_BASELINES,
+    });
 
     const raw = JSON.parse(readFileSync(path, "utf8")) as {
       v: number;
@@ -81,7 +87,51 @@ describe("loadHistoryRing / saveHistoryRing", () => {
       kind: "ok",
       samples: [],
       alerts: NO_ALERTS,
+      baselines: NO_BASELINES,
     });
+  });
+
+  it("round-trips rate baselines (W2.4)", () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const path = join(dir, "history.ring.json");
+    const baselines = {
+      process: { takenMs: 1000, cpuTimes: [[1, 50] as [number, number]] },
+      host: {
+        takenMs: 1000,
+        cpus: [
+          [
+            0,
+            {
+              userUs: 1,
+              systemUs: 2,
+              idleUs: 3,
+              otherUs: 0,
+              model: "x",
+              frequencyMhz: null,
+            },
+          ] as [
+            number,
+            {
+              userUs: number;
+              systemUs: number;
+              idleUs: number;
+              otherUs: number;
+              model: string;
+              frequencyMhz: number | null;
+            },
+          ],
+        ],
+        networks: [["eth0", { rxBytes: 1, txBytes: 2 }] as [string, { rxBytes: number; txBytes: number }]],
+      },
+    };
+    saveHistoryRing(path, [sample(1)], { items: ["cpu"] }, baselines);
+    const loaded = loadHistoryRing(path);
+    expect(loaded.kind).toBe("ok");
+    if (loaded.kind === "ok") {
+      expect(loaded.baselines).toEqual(baselines);
+      expect(loaded.alerts).toEqual({ items: ["cpu"] });
+    }
   });
 
   it("returns unavailable unknown-version for a planted v+1 ring and leaves the file alone", () => {
@@ -100,6 +150,7 @@ describe("loadHistoryRing / saveHistoryRing", () => {
       reason: "unknown-version",
       samples: [],
       alerts: NO_ALERTS,
+      baselines: NO_BASELINES,
     });
 
     // File must still be the planted payload — never rewritten or deleted.
@@ -142,6 +193,7 @@ describe("loadHistoryRing / saveHistoryRing", () => {
       reason: "corrupt",
       samples: [],
       alerts: NO_ALERTS,
+      baselines: NO_BASELINES,
     });
 
     // Original path gone; a corrupt-* sibling remains.
@@ -200,6 +252,7 @@ describe("loadHistoryRing / saveHistoryRing", () => {
         reason: "unreadable",
         samples: [],
         alerts: NO_ALERTS,
+        baselines: NO_BASELINES,
       });
       // File still at the original path (no .corrupt-* sibling).
       chmodSync(path, 0o600);

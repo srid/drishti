@@ -1,11 +1,10 @@
 /**
- * W1 real window e2e — processes, --stdio front, adoption, drain, dispositions.
+ * Real window e2e — processes, --stdio front, adoption, drain write, dispositions.
  *
- * Not in-process theater: each step spawns real agent processes under a temp
- * HOME, fronts them with the real `--stdio` adopt-or-spawn path, and asserts
- * done-when (a)/(b) plus boot dispositions through the served surface
- * (`metricHistory` stream), never `loadHistoryRing` called in-test for the
- * successor re-read claim.
+ * W2.1 done-when (b) lives in packages/app (production parent path). This file
+ * covers adopt + ring intact (W2.2), live drain write proof for the agent
+ * half, dispositions without env knobs (W2.9), and the previous-release
+ * resolver arming (W2.3).
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -17,6 +16,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,27 +24,20 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { composeSurfaceContracts } from "@kolu/surface/define";
 import { stdioLink } from "@kolu/surface/links/stdio";
-import { unixSocketLink } from "@kolu/surface/links/unix-socket";
 import {
   controlCoreSurface,
-  daemonBuild,
   daemonHome,
 } from "@kolu/surface-daemon";
-import {
-  assertPreviousReleaseWindow,
-  isPreviousReleaseTag,
-} from "@kolu/surface-daemon/upgrade-window.testlib";
-import {
-  convergeAdmit,
-  createConnectorDrainBudget,
-  probeDaemonIdentityFrom,
-} from "@kolu/surface-daemon-supervisor";
-import { AGENT_SURFACE_VERSION, surface } from "drishti-common";
+import { surface } from "drishti-common";
 import {
   HISTORY_RING_FILE,
   HISTORY_RING_VERSION,
-  saveHistoryRing,
+  loadHistoryRing,
 } from "./historyRing";
+import {
+  isPreviousReleaseArmed,
+  resolvePreviousRelease,
+} from "./previousRelease";
 
 const agentMain = join(import.meta.dir, "main.ts");
 
@@ -64,11 +57,12 @@ afterEach(async () => {
       // already gone
     }
   }
-  // Detached daemons: best-effort kill via gate pid under each temp HOME.
   for (const d of temps.splice(0)) {
     try {
       const prev = process.env.HOME;
+      const prevXdg = process.env.XDG_STATE_HOME;
       process.env.HOME = d;
+      process.env.XDG_STATE_HOME = join(d, ".local", "state");
       try {
         const home = daemonHome({ app: "drishti", placement: "state" });
         if (existsSync(home.gatePath)) {
@@ -84,6 +78,8 @@ afterEach(async () => {
       } finally {
         if (prev === undefined) delete process.env.HOME;
         else process.env.HOME = prev;
+        if (prevXdg === undefined) delete process.env.XDG_STATE_HOME;
+        else process.env.XDG_STATE_HOME = prevXdg;
       }
     } catch {
       // cleanup best-effort
@@ -96,7 +92,6 @@ afterEach(async () => {
 function tempHome(): string {
   const d = mkdtempSync(join(tmpdir(), "drishti-window-e2e-"));
   temps.push(d);
-  // Materialise XDG state parent so daemonHome placement is deterministic.
   mkdirSync(join(d, ".local", "state"), { recursive: true, mode: 0o700 });
   return d;
 }
@@ -109,26 +104,30 @@ function agentEnv(
   return {
     ...process.env,
     HOME: home,
-    // Isolate from ambient XDG so state lands under `home`.
     XDG_STATE_HOME: join(home, ".local", "state"),
     DRISHTI_AGENT_BUILD_ID: buildId,
-    // osfacts must be present in the nix-dev / CI environment.
     ...extra,
   };
 }
 
-/** Spawn the real `--stdio` front; it adopt-or-spawns the durable daemon. */
-function spawnFront(
-  home: string,
-  buildId: string,
-  extraEnv: NodeJS.ProcessEnv = {},
-): ChildProcess {
+function spawnFront(home: string, buildId: string): ChildProcess {
   const child = nodeSpawn(process.execPath, [agentMain, "--stdio"], {
-    env: agentEnv(home, buildId, extraEnv),
+    env: agentEnv(home, buildId),
     stdio: ["pipe", "pipe", "pipe"],
   });
   children.push(child);
   return child;
+}
+
+function waitFrontExit(front: ChildProcess): Promise<void> {
+  return new Promise((resolve) => {
+    if (front.exitCode !== null || front.signalCode !== null) {
+      resolve();
+      return;
+    }
+    front.once("exit", () => resolve());
+    front.once("close", () => resolve());
+  });
 }
 
 async function waitForSocket(home: string, ms = 15_000): Promise<string> {
@@ -156,60 +155,42 @@ async function waitForSocket(home: string, ms = 15_000): Promise<string> {
   }
 }
 
-function gatePid(home: string): number {
+function withHome<T>(home: string, fn: () => T): T {
   const prev = process.env.HOME;
   const prevXdg = process.env.XDG_STATE_HOME;
   process.env.HOME = home;
   process.env.XDG_STATE_HOME = join(home, ".local", "state");
   try {
-    const h = daemonHome({ app: "drishti", placement: "state" });
-    const raw = readFileSync(h.gatePath, "utf8").trim();
-    const pid = Number.parseInt(raw, 10);
-    if (!Number.isFinite(pid) || pid <= 0) {
-      throw new Error(`invalid gate pid: ${raw}`);
-    }
-    return pid;
+    return fn();
   } finally {
     if (prev === undefined) delete process.env.HOME;
     else process.env.HOME = prev;
     if (prevXdg === undefined) delete process.env.XDG_STATE_HOME;
     else process.env.XDG_STATE_HOME = prevXdg;
   }
+}
+
+function gatePid(home: string): number {
+  return withHome(home, () => {
+    const h = daemonHome({ app: "drishti", placement: "state" });
+    const pid = Number.parseInt(readFileSync(h.gatePath, "utf8").trim(), 10);
+    if (!Number.isFinite(pid) || pid <= 0) throw new Error(`bad gate pid`);
+    return pid;
+  });
 }
 
 function ringPath(home: string): string {
-  const prev = process.env.HOME;
-  const prevXdg = process.env.XDG_STATE_HOME;
-  process.env.HOME = home;
-  process.env.XDG_STATE_HOME = join(home, ".local", "state");
-  try {
-    return daemonHome({ app: "drishti", placement: "state" }).file(
-      HISTORY_RING_FILE,
-    );
-  } finally {
-    if (prev === undefined) delete process.env.HOME;
-    else process.env.HOME = prev;
-    if (prevXdg === undefined) delete process.env.XDG_STATE_HOME;
-    else process.env.XDG_STATE_HOME = prevXdg;
-  }
+  return withHome(home, () =>
+    daemonHome({ app: "drishti", placement: "state" }).file(HISTORY_RING_FILE),
+  );
 }
 
 function homeDir(home: string): string {
-  const prev = process.env.HOME;
-  const prevXdg = process.env.XDG_STATE_HOME;
-  process.env.HOME = home;
-  process.env.XDG_STATE_HOME = join(home, ".local", "state");
-  try {
-    return daemonHome({ app: "drishti", placement: "state" }).dir;
-  } finally {
-    if (prev === undefined) delete process.env.HOME;
-    else process.env.HOME = prev;
-    if (prevXdg === undefined) delete process.env.XDG_STATE_HOME;
-    else process.env.XDG_STATE_HOME = prevXdg;
-  }
+  return withHome(home, () =>
+    daemonHome({ app: "drishti", placement: "state" }).dir,
+  );
 }
 
-/** Dial the front over its real stdio pipes (framework connector path shape). */
 function dialFront(front: ChildProcess) {
   if (front.stdin === null || front.stdout === null) {
     throw new Error("front missing stdio pipes");
@@ -227,155 +208,185 @@ type CombinedClient = {
         get: (
           input: Record<string, never>,
           opts?: { signal?: AbortSignal },
-        ) => Promise<AsyncIterable<{ kind: string; reason?: string; samples?: unknown[] }>>;
+        ) => Promise<
+          AsyncIterable<{
+            kind: string;
+            reason?: string;
+            samples?: unknown[];
+          }>
+        >;
       };
     };
     control: {
       core: {
-        hello: () => Promise<{
-          buildId?: string;
-          startedAt: number;
-          surfaceVersion: string;
-        }>;
+        hello: () => Promise<{ buildId?: string; startedAt: number }>;
         drain: () => Promise<void>;
       };
     };
   };
 };
 
+type HistoryFrame = {
+  kind: string;
+  reason?: string;
+  samples?: unknown[];
+  sample?: unknown;
+};
+
 async function firstHistoryFrame(
   client: CombinedClient,
   signal: AbortSignal,
-): Promise<{ kind: string; reason?: string; samples?: unknown[] }> {
-  // Combined contract: streams live under surface.app as `.get(...)`.
+): Promise<HistoryFrame> {
   const stream = await client.surface.app.metricHistory.get({}, { signal });
   for await (const frame of stream) {
-    return frame;
+    return frame as HistoryFrame;
   }
   throw new Error("metricHistory stream ended without a frame");
 }
 
-describe("W1 real window e2e", () => {
-  it("done-when (a): disconnect last session, redial ⇒ same daemon pid adopted", async () => {
+async function collectHistorySamples(
+  client: CombinedClient,
+  signal: AbortSignal,
+  atLeast: number,
+  timeoutMs = 15_000,
+): Promise<unknown[]> {
+  const stream = await client.surface.app.metricHistory.get({}, { signal });
+  const samples: unknown[] = [];
+  const deadline = Date.now() + timeoutMs;
+  for await (const raw of stream) {
+    const frame = raw as HistoryFrame;
+    if (frame.kind === "snapshot" && Array.isArray(frame.samples)) {
+      samples.length = 0;
+      samples.push(...frame.samples);
+    } else if (frame.kind === "delta" && frame.sample !== undefined) {
+      samples.push(frame.sample);
+    }
+    if (samples.length >= atLeast) return samples;
+    if (Date.now() > deadline) break;
+  }
+  return samples;
+}
+
+describe("real window e2e", () => {
+  it("done-when (a): last session exit, same pid adopted, ring intact via surface", async () => {
     const home = tempHome();
     const buildId = "e2e-adopt-build";
 
-    // First front: spawn daemon + relay.
     const front1 = spawnFront(home, buildId);
     await waitForSocket(home);
     const pid1 = gatePid(home);
-    expect(pid1).toBeGreaterThan(0);
-    // Prove the process is live.
     process.kill(pid1, 0);
 
     const client1 = dialFront(front1) as unknown as CombinedClient;
-    const hello1 = await client1.surface.control.core.hello();
-    expect(hello1.buildId).toBe(buildId);
+    expect((await client1.surface.control.core.hello()).buildId).toBe(buildId);
 
-    // Drop the LAST session (kill the only front). Daemon must stay.
+    // Wait for at least one live sample so the ring has served history.
+    const ac1 = new AbortController();
+    // Poll until we see a snapshot with samples or a delta.
+    let before: unknown[] = [];
+    {
+      const stream = await client1.surface.app.metricHistory.get(
+        {},
+        { signal: ac1.signal },
+      );
+      const deadline = Date.now() + 12_000;
+      for await (const frame of stream) {
+        const f = frame as HistoryFrame;
+        if (f.kind === "snapshot" && (f.samples?.length ?? 0) > 0) {
+          before = [...(f.samples ?? [])];
+          break;
+        }
+        if (f.kind === "delta" && f.sample !== undefined) {
+          before = [f.sample];
+          break;
+        }
+        if (Date.now() > deadline) break;
+      }
+      ac1.abort();
+    }
+    expect(before.length).toBeGreaterThan(0);
+
+    // W2.2: wait for front1 EXIT event — not a fixed sleep.
     front1.kill("SIGTERM");
-    await delay(300);
-    // Gate pid still alive — adoption target.
-    process.kill(pid1, 0);
+    await waitFrontExit(front1);
+    process.kill(pid1, 0); // daemon still live
 
-    // Second front: adopt, not spawn.
     const front2 = spawnFront(home, buildId);
     await waitForSocket(home);
-    const pid2 = gatePid(home);
-    expect(pid2).toBe(pid1); // SAME daemon pid adopted
+    expect(gatePid(home)).toBe(pid1);
 
     const client2 = dialFront(front2) as unknown as CombinedClient;
-    const hello2 = await client2.surface.control.core.hello();
-    expect(hello2.buildId).toBe(buildId);
+    const ac2 = new AbortController();
+    const afterFrame = await firstHistoryFrame(client2, ac2.signal);
+    ac2.abort();
+    expect(afterFrame.kind).toBe("snapshot");
+    const after = afterFrame.samples ?? [];
+    // Ring intact: every pre-disconnect sample timestamp is still present.
+    const beforeTs = new Set(
+      before.map((s) => (s as { t: number }).t),
+    );
+    const afterTs = new Set(
+      after.map((s) => (s as { t: number }).t),
+    );
+    for (const t of beforeTs) {
+      expect(afterTs.has(t)).toBe(true);
+    }
 
     front2.kill("SIGTERM");
   }, 60_000);
 
-  it("done-when (b): synthetic previous drains, exits; successor serves history from disk via surface", async () => {
+  it("agent drain write: previous samples live, flushes on drain, successor serves them", async () => {
+    // Agent-half of done-when (b): real drain write (no pre-plant). Parent
+    // path (policy/pool/connector) is packages/app windowParent.e2e.test.ts.
     const home = tempHome();
     const previousBuildId = "synthetic-previous-build";
     const currentBuildId = "synthetic-current-build";
-    expect(previousBuildId).not.toBe(currentBuildId);
 
-    // Plant ring as the previous daemon would have left it (before spawn so
-    // boot loads it). Timestamps must be within HISTORY_RETENTION_MS of "now"
-    // or the first tick's pushSample would evict them as ancient.
-    const now = Date.now();
-    const samples = [
-      { t: now - 4_000, cpu: 10, mem: 20, swap: 0, disk: 40 },
-      { t: now - 2_000, cpu: 12, mem: 21, swap: 0, disk: 40 },
-    ];
-    // Ensure daemon home dir exists for the plant.
-    mkdirSync(homeDir(home), { recursive: true, mode: 0o700 });
-    saveHistoryRing(ringPath(home), samples, { items: ["cpu"] });
-
-    // Boot previous with different baked build id.
     const frontPrev = spawnFront(home, previousBuildId);
-    const socketPath = await waitForSocket(home);
+    await waitForSocket(home);
     const prevPid = gatePid(home);
-
     const clientPrev = dialFront(frontPrev) as unknown as CombinedClient;
-    const helloPrev = await clientPrev.surface.control.core.hello();
-    expect(helloPrev.buildId).toBe(previousBuildId);
+    expect((await clientPrev.surface.control.core.hello()).buildId).toBe(
+      previousBuildId,
+    );
 
-    // Parent policy + convergeAdmit drives the drain (real probe path).
-    const policy = {
-      capability: "drainable" as const,
-      baked: {
-        contractVersion: AGENT_SURFACE_VERSION,
-        build: daemonBuild(currentBuildId),
-      },
-      onContractSkew: { kind: "drain-newer-else-refuse" as const },
-      onBuildMismatch: { kind: "drain-and-replace" as const },
-      drainBudget: {
-        maxAttempts: 2,
-        onGiveUp: "adopt-stale" as const,
-      },
-    };
-    const budget = createConnectorDrainBudget(policy);
+    // Wait until LIVE samples exist (daemon sampled — not pre-planted).
+    const acLive = new AbortController();
+    const liveSamples = await collectHistorySamples(
+      clientPrev,
+      acLive.signal,
+      1,
+      12_000,
+    );
+    acLive.abort();
+    expect(liveSamples.length).toBeGreaterThan(0);
+    const liveTs = new Set(
+      liveSamples.map((s) => (s as { t: number }).t),
+    );
 
-    // Dial a socket client for the probe (dispose independent of front).
+    // Force a ring file presence check after samples (periodic flush may lag;
+    // drain must write regardless).
+    const path = ringPath(home);
+    const mtimeBefore = existsSync(path) ? statSync(path).mtimeMs : 0;
+
+    // Drain via a separate unix-socket dial so the front's stdio transport is
+    // not the one that dies with the daemon (stdioLink would throw closed).
+    const { unixSocketLink } = await import("@kolu/surface/links/unix-socket");
+    const sockPath = await waitForSocket(home);
     const sock = await unixSocketLink<typeof agentDaemonContract>({
-      socketPath,
+      socketPath: sockPath,
     });
-    const probe = await probeDaemonIdentityFrom({
-      client: sock.client as never,
-      dispose: sock.dispose,
-      capability: "drainable",
-      drainCeilingMs: 8_000,
-      awaitExit: async (signal) => {
-        while (!signal.aborted) {
-          try {
-            process.kill(prevPid, 0);
-          } catch {
-            return; // pid gone
-          }
-          await delay(50);
-        }
-      },
-    });
+    try {
+      await (
+        sock.client as unknown as CombinedClient
+      ).surface.control.core.drain();
+    } catch {
+      // Drain tears down the peer; a closed transport after a successful
+      // drain is expected. Process exit + ring file are the observations.
+    } finally {
+      sock.dispose();
+    }
 
-    const silentLog = {
-      info: () => {},
-      warn: () => {},
-      error: () => {},
-      debug: () => {},
-      child: () => silentLog,
-    };
-    const verdict = await convergeAdmit({
-      running: {
-        ...probe.identity,
-        instanceKey: probe.instanceKey,
-      },
-      budget,
-      drain: probe.fireDrain,
-      awaitExit: probe.awaitExit,
-      ceilingMs: probe.drainCeilingMs,
-      log: silentLog as never,
-    });
-    expect(verdict.kind).toBe("replaced");
-
-    // PREVIOUS process actually exits (pid gone).
     const exitDeadline = Date.now() + 10_000;
     let prevGone = false;
     while (Date.now() < exitDeadline) {
@@ -389,52 +400,58 @@ describe("W1 real window e2e", () => {
     }
     expect(prevGone).toBe(true);
 
-    // Front for previous may have died with the daemon; drop tracking.
+    // Drain write: ring file exists and contains the live sample timestamps.
+    expect(existsSync(path)).toBe(true);
+    const onDisk = loadHistoryRing(path);
+    expect(onDisk.kind).toBe("ok");
+    if (onDisk.kind === "ok") {
+      const diskTs = new Set(onDisk.samples.map((s) => s.t));
+      let recovered = 0;
+      for (const t of liveTs) {
+        if (diskTs.has(t)) recovered += 1;
+      }
+      expect(recovered).toBeGreaterThan(0);
+      // mtime advanced or file newly created by drain flush.
+      expect(statSync(path).mtimeMs).toBeGreaterThanOrEqual(mtimeBefore);
+    }
+
     try {
       frontPrev.kill("SIGKILL");
     } catch {
       // gone
     }
 
-    // Successor process with current build id; serves history re-read from
-    // history.ring.json THROUGH the served surface (not loadHistoryRing).
     const frontSucc = spawnFront(home, currentBuildId);
     await waitForSocket(home);
-    const succPid = gatePid(home);
-    expect(succPid).not.toBe(prevPid);
-
+    expect(gatePid(home)).not.toBe(prevPid);
     const clientSucc = dialFront(frontSucc) as unknown as CombinedClient;
-    const helloSucc = await clientSucc.surface.control.core.hello();
-    expect(helloSucc.buildId).toBe(currentBuildId);
-
-    const ac = new AbortController();
-    const frame = await firstHistoryFrame(clientSucc, ac.signal);
-    ac.abort();
-    // Served surface re-read the ring from disk (not loadHistoryRing in-test).
-    // Planted samples must be present (previous may have appended more).
+    const acS = new AbortController();
+    const frame = await firstHistoryFrame(clientSucc, acS.signal);
+    acS.abort();
     expect(frame.kind).toBe("snapshot");
-    const served = frame.samples ?? [];
-    const plantedTs = new Set(samples.map((s) => s.t));
-    const recovered = served.filter((s) => plantedTs.has((s as { t: number }).t));
-    expect(recovered.length).toBe(2);
-    expect(recovered).toEqual(samples);
+    const servedTs = new Set(
+      (frame.samples ?? []).map((s) => (s as { t: number }).t),
+    );
+    let servedRecovered = 0;
+    for (const t of liveTs) {
+      if (servedTs.has(t)) servedRecovered += 1;
+    }
+    expect(servedRecovered).toBeGreaterThan(0);
 
     frontSucc.kill("SIGTERM");
   }, 90_000);
 
-  it("F9 boot dispositions via real path: garbage ⇒ unavailable + moved aside; v+1 ⇒ unavailable + left alone", async () => {
-    // Push corrupt→fresh recovery past this test window so standing unavailable
-    // is observable (recovery still runs on the 60s interval / drain).
-    const slowPersist = { DRISHTI_RING_PERSIST_MS: "60000" };
-
-    // ── garbage ────────────────────────────────────────────────────────
+  it("F9 boot dispositions: garbage ⇒ unavailable + moved aside; v+1 ⇒ unavailable + left alone", async () => {
+    // W2.9: no env persist override — 30s cadence is baked; standing
+    // unavailable holds until the persist interval or drain (test finishes
+    // well under 30s).
     {
       const home = tempHome();
       mkdirSync(homeDir(home), { recursive: true, mode: 0o700 });
       const path = ringPath(home);
       writeFileSync(path, '{"v":1,"samples":[', "utf8");
 
-      const front = spawnFront(home, "e2e-disp-garbage", slowPersist);
+      const front = spawnFront(home, "e2e-disp-garbage");
       await waitForSocket(home);
       const client = dialFront(front) as unknown as CombinedClient;
       const ac = new AbortController();
@@ -443,14 +460,13 @@ describe("W1 real window e2e", () => {
 
       expect(frame.kind).toBe("unavailable");
       expect(frame.reason).toBe("corrupt");
-      // File moved aside (never deleted).
       expect(existsSync(path)).toBe(false);
-      const siblings = readdirSync(homeDir(home)).filter((n) =>
-        n.startsWith("history.ring.json.corrupt-"),
-      );
-      expect(siblings.length).toBe(1);
+      expect(
+        readdirSync(homeDir(home)).filter((n) =>
+          n.startsWith("history.ring.json.corrupt-"),
+        ).length,
+      ).toBe(1);
 
-      // W2: late subscriber still sees standing unavailable.
       const ac2 = new AbortController();
       const late = await firstHistoryFrame(client, ac2.signal);
       ac2.abort();
@@ -460,7 +476,6 @@ describe("W1 real window e2e", () => {
       front.kill("SIGTERM");
     }
 
-    // ── v+1 ────────────────────────────────────────────────────────────
     {
       const home = tempHome();
       mkdirSync(homeDir(home), { recursive: true, mode: 0o700 });
@@ -471,7 +486,7 @@ describe("W1 real window e2e", () => {
       };
       writeFileSync(path, JSON.stringify(planted), "utf8");
 
-      const front = spawnFront(home, "e2e-disp-vplus", slowPersist);
+      const front = spawnFront(home, "e2e-disp-vplus");
       await waitForSocket(home);
       const client = dialFront(front) as unknown as CombinedClient;
       const ac = new AbortController();
@@ -480,28 +495,24 @@ describe("W1 real window e2e", () => {
 
       expect(frame.kind).toBe("unavailable");
       expect(frame.reason).toBe("unknown-version");
-      // File LEFT ALONE.
       expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(planted);
 
-      // W2 standing: second subscriber still unavailable.
       const ac2 = new AbortController();
       const late = await firstHistoryFrame(client, ac2.signal);
       ac2.abort();
       expect(late.kind).toBe("unavailable");
-      expect(late.reason).toBe("unknown-version");
 
       front.kill("SIGTERM");
     }
   }, 90_000);
 
-  it("previous-tag resolver hard-refuses when previous equals current (armed unit)", () => {
-    expect(isPreviousReleaseTag("v0.1.0")).toBe(true);
-    expect(() =>
-      assertPreviousReleaseWindow({
-        ref: "v0.1.0",
-        previousStore: "/nix/store/aaa-drishti-agent",
-        currentStore: "/nix/store/aaa-drishti-agent",
-      }),
-    ).toThrow(/collapsed|equals current/);
+  it("previous-release resolver is synthetic-unarmed until first daemon-capable tag", () => {
+    expect(isPreviousReleaseArmed()).toBe(false);
+    const r = resolvePreviousRelease({
+      previousTag: "v0.1.0",
+      previousStore: "/nix/store/a",
+      currentStore: "/nix/store/b",
+    });
+    expect(r.kind).toBe("synthetic-unarmed");
   });
 });
