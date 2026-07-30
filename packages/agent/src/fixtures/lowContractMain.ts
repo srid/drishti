@@ -17,6 +17,10 @@ import {
   reExecAsDetachedDaemon,
   stderrLogger,
 } from "@kolu/surface-daemon";
+import {
+  readProcessIdentity,
+  selfProcessIdentity,
+} from "../processIdentity";
 import { HISTORY_RING_FILE } from "../historyRing";
 import { createProcReader } from "../proc";
 import { buildAgentRuntime } from "../runtime";
@@ -68,6 +72,8 @@ async function main(): Promise<void> {
       try {
         return await daemonMain({
           home,
+          processIdentity: selfProcessIdentity(),
+          readProcessIdentity,
           router: runtime.router,
           lifetime: {
             kind: "idleTimeout",

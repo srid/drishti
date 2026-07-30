@@ -171,8 +171,9 @@ drv-stability:
       'printf "\n// drv-stability probe — agent touch must rotate BUILD_ID\n" >> "$WT/packages/agent/src/main.ts"'
 
 # Flake schema check — packages.* must be derivations (U4.2). Catches raw
-# strings under packages.<system> that GHA build alone misses.
-flake-check:
+# strings under packages.<system> that GHA build alone misses. After `nix`
+# so a re-pin's new kolu package paths are realised before --no-build walks them.
+flake-check: nix
     {{ nix_shell }} nix flake check --no-build --show-trace
 
 # Boot the BUILT agent to prove its runtime module graph resolves — the guard

@@ -16,10 +16,13 @@
 # buildPhase so the dlopen succeeds; without this the buildPhase fails
 # with `ERR_DLOPEN_FAILED` at module load.
 let
-  # Compose surface-app's build-commit helper from the EXTRACTED package tree
-  # (kolu-surface-app is the runCommand-staged `packages/surface-app`), so the
-  # env-var name + export-line shape are single-sourced upstream, not hardcoded.
-  stamp = import (kolu-surface-app + "/nix/commit-stamp.nix") { };
+  # Compose surface-app's build-commit helper from the npins-pinned kolu tree
+  # (not the runCommand-staged `kolu-surface-app` output). Importing through the
+  # derivation is IFD: `flake-check --no-build` fails on a cold store whenever
+  # the pin moves and the staged path isn't realised yet. The source file is
+  # identical; the pure path keeps eval free of IFD (same pattern as flake.nix /
+  # default.nix root stamp).
+  stamp = import ((import ../../../npins).kolu + "/packages/surface-app/nix/commit-stamp.nix") { };
   src = lib.fileset.toSource {
     root = ../../..;
     fileset = lib.fileset.unions [

@@ -175,9 +175,23 @@ function withHome<T>(home: string, fn: () => T): T {
 function gatePid(home: string): number {
   return withHome(home, () => {
     const h = daemonHome({ app: "drishti", placement: "state" });
-    const pid = Number.parseInt(readFileSync(h.gatePath, "utf8").trim(), 10);
+    // Pid-first law: Number.parseInt stops at the tab of a two-field gate.
+    const body = readFileSync(h.gatePath, "utf8").trim();
+    const pid = Number.parseInt(body, 10);
     if (!Number.isFinite(pid) || pid <= 0) throw new Error(`bad gate pid`);
     return pid;
+  });
+}
+
+/** UW4: current agent writes two-field gates (pid + start time). */
+function assertTwoFieldGate(home: string): void {
+  withHome(home, () => {
+    const h = daemonHome({ app: "drishti", placement: "state" });
+    const body = readFileSync(h.gatePath, "utf8").trim();
+    expect(body.includes("\t")).toBe(true);
+    const [pidField, startField] = body.split("\t");
+    expect(Number(pidField)).toBeGreaterThan(0);
+    expect(Number(startField)).toBeGreaterThan(0);
   });
 }
 
@@ -277,6 +291,7 @@ describe("real window e2e", () => {
     const front1 = spawnFront(home, buildId);
     await waitForSocket(home);
     const pid1 = gatePid(home);
+    assertTwoFieldGate(home);
     process.kill(pid1, 0);
 
     const client1 = dialFront(front1) as unknown as CombinedClient;
