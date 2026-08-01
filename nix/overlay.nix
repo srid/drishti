@@ -16,6 +16,13 @@ let
   koluPkgs = import (kolu + "/nix/nixpkgs.nix") {
     system = final.stdenv.hostPlatform.system;
   };
+  # osfacts graduated out of the kolu tree into its own repo at OSF5
+  # (juspay/kolu#2093); `kolu + "/osfacts"` no longer exists. Read it from
+  # KOLU'S OWN npins pin rather than adding a second drishti pin, so the
+  # binary and its client can never be a revision kolu does not test against
+  # — the same one-revision invariant the in-tree directory used to give for
+  # free.
+  osfactsSrc = (import (kolu + "/npins")).osfacts;
 in
 {
   kolu-surface = mkKoluPackage "surface";
@@ -43,19 +50,19 @@ in
   # Both ride the same npins kolu pin so the fragment and the probe stay matched.
   kolu-surface-daemon = mkKoluPackage "surface-daemon";
   kolu-surface-daemon-supervisor = mkKoluPackage "surface-daemon-supervisor";
-  # osfacts incubates at the kolu repo root (juspay/kolu#2011), outside the
-  # `packages/` workspace. Keep its binary and dependency-free TypeScript
-  # client on the same npins revision so the client's `V 2` gate can never be
-  # paired with a binary from another source.
-  osfacts = import (kolu + "/osfacts") { pkgs = koluPkgs; };
+  # osfacts (juspay/osfacts, formerly the kolu repo root — see `osfactsSrc`).
+  # Binary and dependency-free TypeScript client come from one revision, so
+  # the client's `V 2` gate can never be paired with a binary from another
+  # source.
+  osfacts = import osfactsSrc { pkgs = koluPkgs; };
   osfacts-client = final.runCommand "osfacts-client"
     {
       meta = {
         description = "TypeScript client source for osfacts";
-        homepage = "https://github.com/juspay/kolu/tree/osfacts-improve/osfacts/client-ts";
+        homepage = "https://github.com/juspay/osfacts/tree/main/client-ts";
       };
     }
     ''
-      cp -r ${kolu}/osfacts/client-ts $out
+      cp -r ${osfactsSrc}/client-ts $out
     '';
 }
