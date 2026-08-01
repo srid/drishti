@@ -77,9 +77,13 @@ typecheck: install
 drv-stability:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Shebang recipes on odu may lack bun on PATH. Re-enter the flake
-    # devShell once (outer tree only — never nest nix develop in a worktree).
-    if [ -z "${IN_NIX_SHELL:-}" ] && ! command -v bun >/dev/null 2>&1; then
+    # Shebang recipes on odu may lack this recipe's tools on PATH. Re-enter the
+    # flake devShell once (outer tree only — never nest nix develop in a
+    # worktree). Probe EVERY tool the recipe needs, not just bun: since odu
+    # itself runs on Bun (juspay/odu#72) the lane runner carries `bun`, so a
+    # bun-only probe skips the shell and probe (b) dies at `nixpkgs-fmt`
+    # (dev-shell-only) with exit 127.
+    if [ -z "${IN_NIX_SHELL:-}" ] && { ! command -v bun >/dev/null 2>&1 || ! command -v nixpkgs-fmt >/dev/null 2>&1; }; then
       exec nix develop --accept-flake-config -c bash "$0" "$@"
     fi
     extract_id() {
