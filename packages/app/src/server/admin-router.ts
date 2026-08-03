@@ -17,13 +17,12 @@
  *                     `browserSurface` primitive so a host's own data rides
  *                     THIS transport instead of a dedicated `?host=` socket.
  *
- * The first two are keyed siblings via `implementSurfaces`/
- * `composeSurfaceContracts` (`adminContract`); the map is a THIRD key
- * spliced in afterward — `serveSurfaceMap`'s router shape (`{ surface: {
- * <folded members>, entries } }`) is a flat single-surface object, not a
- * multi-sibling `implementSurfaces` input, so it's nested under the `hosts`
- * key exactly the way kolu nests its own padi map under `padi` in
- * `packages/server/src/index.ts`.
+ * The first two are keyed siblings via `implementSurfaces`; the map is served
+ * separately and MERGED in. On a flat tag namespace that merge is the whole
+ * splice: `serveSurfaceMap` already binds at full wire tags with the `hosts/`
+ * prefix baked in (`hostSurfaceMap.name`), so nothing here re-prefixes,
+ * re-adapts, or widens a contract to make room for it. See the merge below
+ * for what that replaced.
  *
  * `hosts.add` / `hosts.remove` still hand off to the pool for the session
  * side effects (spawn/destroy, persist to disk) — the map's `MapRegistry`
@@ -45,7 +44,6 @@ import { serveHostMap } from "@kolu/surface-remote";
 import { sessionConnection } from "@kolu/surface-remote/connection";
 import { surfaceAppServer } from "@kolu/surface-app/server";
 import { Effect } from "effect";
-import type { Rpc, RpcGroup } from "effect/unstable/rpc";
 import { adminComposed, adminSurfaces } from "../common/admin-surface";
 import { hostSurfaceMap } from "../common/hostMap";
 import {
@@ -211,7 +209,7 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // session's `onState` into the map's `entries`, projects `SessionState` →
   // `EntryStatus`, and hands the composed registry to `serveSurfaceMap` — the
   // ~90-line registry drishti used to hand-clone (`hostMapRegistry.ts`), now
-  // deleted. `linkFor` builds (and the adapter caches) a `directLink` over each
+  // deleted. `dispatchFor` builds (and the adapter caches) a `directDispatch` over each
   // host's own `buildRouter(...)` — the SAME per-host bridge (agent mirror +
   // kill forward) that used to back a dedicated `?host=` `RPCHandler`, folded
   // into the map's one combined link instead of a separate socket.

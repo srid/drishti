@@ -3,21 +3,25 @@
  * this parent server knows about" and their `DaemonSession` lifecycle
  * (spawn/reconnect/recheck/destroy + control-core admit/convergence).
  *
- * UW3: each host session is a `DaemonSession` over the combined
- * app+control agent contract. The parent dials via `sshConnector` against
- * the agent's durable `--stdio` front; `convergeAdmit` decides whether to
- * adopt, drain-and-replace, or refuse the resident daemon.
+ * UW3: each host session is a `DaemonSession` over the agent's THREE-sibling
+ * wire (`drishti-common/daemon`) — the versioned app surface, the frozen
+ * control core, and drishti's own daemon sibling. One link, several faces:
+ * `sshConnector` builds the app face from the surface value it is given, and
+ * the other two are built over the same `Connection.dispatch`. The parent
+ * dials against the agent's durable `--stdio` front; `convergeAdmit` decides
+ * whether to adopt, drain-and-replace, or refuse the resident daemon.
  *
  * Drishti-written plugs on the framework skeleton:
  *   - **policy** — `drishtiAgentConvergencePolicy` (contract version, drain
  *     arms, budget)
  *   - **link projection** — session `onState` → `DrishtiConvergence` /
  *     `link-failed`
- *   - **combined-client stash** — WeakMap from app-scoped client → combined
- *     dial so admit/renew can reach control-core
+ *   - **sibling-face stash** — WeakMap from the app face `admit` receives to
+ *     the control + drain faces over the same wire
  *   - **exit oracle** — `awaitExitViaProcessOracle` (ClosedInfo.kind === "exit"
  *     only; transport loss never looks like process exit)
- *   - **renew** — drain + await exit via control-core for build-axis replace
+ *   - **renew** — drain + await exit for build-axis replace, through drishti's
+ *     OWN `daemon.ring.drain` so the persist verdict arrives as a value
  *
  * Decision table, budget arithmetic, and probe live in
  * `@kolu/surface-daemon-supervisor`. Host-set persistence is `hostsStore.ts`.
