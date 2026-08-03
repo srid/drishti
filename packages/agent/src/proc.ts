@@ -49,6 +49,14 @@ export interface HostFrame {
   sourceErrors: SourceErrorFact[];
 }
 
+/** A `Process` row still under construction: `listeners` stays MUTABLE while
+ *  the ports pass attributes sockets to it. The wire type's array is readonly
+ *  (Effect Schema decodes arrays readonly), and a mutable array is assignable
+ *  to a readonly one — so a draft is a `Process` the moment it is handed out. */
+type ProcessDraft = Omit<Process, "listeners"> & {
+  listeners: Array<Process["listeners"][number]>;
+};
+
 export interface ProcessFrame {
   processes: Map<Pid, Process>;
   unclaimedListeners: Map<UnclaimedListenerId, UnclaimedListener>;
@@ -168,7 +176,11 @@ export function processesFromOsfacts(
   reading: SnapshotReading,
   cpuPct: ReadonlyMap<Pid, number> = new Map(),
 ): ProcessFrame {
-  const processes = new Map<Pid, Process>();
+  // A DRAFT row while the frame is assembled: the wire `Process` has a readonly
+  // `listeners` (Effect Schema decodes arrays readonly), but the ports pass below
+  // attributes sockets to already-built rows. The draft widens exactly that one
+  // field back to mutable; every draft is still a valid `Process` on the way out.
+  const processes = new Map<Pid, ProcessDraft>();
   const memory = new Map(reading.memory.map((row) => [row.pid, row.rssBytes]));
   const starts = new Map(
     reading.startTimes.map((row) => [row.pid, row.startUnixUs / 1000]),
@@ -358,23 +370,29 @@ export function createOsfactsReader(
   let processBaseline: ProcessBaseline | undefined;
   let hostBaseline: HostBaseline | undefined;
 
-  const exportBaselines = (): import("./ringBaselines").RingBaselines => {
-    const out: import("./ringBaselines").RingBaselines = {};
-    if (processBaseline !== undefined) {
-      out.process = {
-        takenMs: processBaseline.takenMs,
-        cpuTimes: [...processBaseline.cpuTimes.entries()],
-      };
-    }
-    if (hostBaseline !== undefined) {
-      out.host = {
-        takenMs: hostBaseline.takenMs,
-        cpus: [...hostBaseline.cpus.entries()],
-        networks: [...hostBaseline.networks.entries()],
-      };
-    }
-    return out;
-  };
+  // Assembled in one literal rather than mutated field by field: the ring
+  // schema's `process` / `host` are `Schema.optionalKey`, whose decoded fields
+  // are readonly — and an ABSENT key is the shape `NO_BASELINES` means, so
+  // spreading a conditional `{}` says exactly that.
+  const exportBaselines = (): import("./ringBaselines").RingBaselines => ({
+    ...(processBaseline === undefined
+      ? {}
+      : {
+          process: {
+            takenMs: processBaseline.takenMs,
+            cpuTimes: [...processBaseline.cpuTimes.entries()],
+          },
+        }),
+    ...(hostBaseline === undefined
+      ? {}
+      : {
+          host: {
+            takenMs: hostBaseline.takenMs,
+            cpus: [...hostBaseline.cpus.entries()],
+            networks: [...hostBaseline.networks.entries()],
+          },
+        }),
+  });
 
   const importBaselines = (
     baselines: import("./ringBaselines").RingBaselines,

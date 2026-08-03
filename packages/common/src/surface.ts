@@ -557,6 +557,9 @@ export type MetricHistoryMsg = typeof MetricHistoryMessage.Type;
  *  covers the four reactive primitives; a procedure's two sides are read off
  *  its own schemas (#13: an input is a pure argument, so it is Encoded). */
 export type KillArgs = typeof KillInputSchema.Encoded;
+/** The DECODED argument a handler receives — `signal` always present, because
+ *  the absent key decoded to `"TERM"` at the edge. */
+export type KillInput = typeof KillInputSchema.Type;
 export type KillResult = typeof KillOutputSchema.Type;
 // Stream message type is also available off the surface's typed streams map
 // once metricHistory is a first-class surface member (UW3 — agent owns the ring).

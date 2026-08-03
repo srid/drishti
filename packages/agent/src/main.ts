@@ -30,6 +30,8 @@ import {
   reExecAsDetachedDaemon,
   stderrLogger,
 } from "@kolu/surface-daemon";
+import type { SurfaceHandlers } from "@kolu/surface/server";
+import type { Rpc, RpcGroup } from "effect/unstable/rpc";
 import { HISTORY_RING_FILE } from "./historyRing";
 import {
   readProcessIdentity,
@@ -73,8 +75,8 @@ function usage(exitCode = 1): never {
  *  *role*, not a particular transport. Resolves to `unknown` because the agent
  *  only awaits serving's *end*, not its value. */
 type Serve = (opts: {
-  // biome-ignore lint/suspicious/noExplicitAny: the kolu handler's router type.
-  router: any;
+  group: RpcGroup.RpcGroup<Rpc.Any>;
+  handlers: SurfaceHandlers;
   onFirstRequest: () => void;
 }) => Promise<unknown>;
 
@@ -100,7 +102,8 @@ export async function serveAgent(
     );
   }, 5000);
   await serve({
-    router: runtime.router,
+    group: runtime.group,
+    handlers: runtime.handlers,
     onFirstRequest: () => {
       clearInterval(waitingHeartbeat);
       log(`first RPC received — link is live (pid=${process.pid})`);
@@ -179,7 +182,8 @@ async function main(): Promise<void> {
           home,
           processIdentity: selfProcessIdentity(),
           readProcessIdentity,
-          router: runtime.router,
+          group: runtime.group,
+          handlers: runtime.handlers,
           lifetime: {
             kind: "idleTimeout",
             ms: IDLE_TIMEOUT_MS,

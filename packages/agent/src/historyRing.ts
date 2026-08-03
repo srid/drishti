@@ -34,7 +34,7 @@ import {
   NO_ALERTS,
 } from "drishti-common/alerts";
 import type { HistoryView } from "drishti-common/history";
-import { z } from "zod";
+import { Result, Schema } from "effect";
 import {
   NO_BASELINES,
   RingBaselinesSchema,
@@ -53,15 +53,22 @@ export const HISTORY_RING_VERSION = 1;
 /** File basename under the daemon home. */
 export const HISTORY_RING_FILE = "history.ring.json";
 
-/** Current-version on-disk payload — only applied after `v` is known current. */
-const CurrentRingFileSchema = z.object({
-  v: z.literal(HISTORY_RING_VERSION),
-  samples: z.array(MetricSampleSchema),
+/** Current-version on-disk payload — only applied after `v` is known current.
+ *
+ *  ⚠ **#17 law.** `alerts` and `baselines` are `Schema.optionalKey`, never
+ *  `Schema.optional`: a ring written before either existed OMITS the key, and
+ *  `Schema.optional` would round-trip that absence through an explicit `null`
+ *  the `?? NO_ALERTS` / `?? NO_BASELINES` restore has no arm for. Pinned by a
+ *  byte fixture in `historyRing.test.ts`. */
+const CurrentRingFileSchema = Schema.Struct({
+  v: Schema.Literal(HISTORY_RING_VERSION),
+  samples: Schema.Array(MetricSampleSchema),
   /** Optional hysteresis fold state — absent ⇒ NO_ALERTS on restore. */
-  alerts: AlertsSchema.optional(),
+  alerts: Schema.optionalKey(AlertsSchema),
   /** Optional rate baselines (process + host) — absent ⇒ cold first tick. */
-  baselines: RingBaselinesSchema.optional(),
+  baselines: Schema.optionalKey(RingBaselinesSchema),
 });
+const decodeRingFile = Schema.decodeUnknownResult(CurrentRingFileSchema);
 
 export type HistoryRingFile = {
   samples: MetricSample[];
@@ -124,17 +131,17 @@ export function loadHistoryRing(path: string): HistoryRingLoad {
     return unavailable("unknown-version");
   }
 
-  const shape = CurrentRingFileSchema.safeParse(parsed);
-  if (!shape.success) {
+  const shape = decodeRingFile(parsed);
+  if (Result.isFailure(shape)) {
     moveCorruptAside(path);
     return unavailable("corrupt");
   }
 
   return {
     kind: "ok",
-    samples: shape.data.samples,
-    alerts: shape.data.alerts ?? NO_ALERTS,
-    baselines: shape.data.baselines ?? NO_BASELINES,
+    samples: [...shape.success.samples],
+    alerts: shape.success.alerts ?? NO_ALERTS,
+    baselines: shape.success.baselines ?? NO_BASELINES,
   };
 }
 
@@ -152,7 +159,7 @@ export function saveHistoryRing(
     samples: [...samples],
     alerts,
     baselines,
-  } satisfies z.infer<typeof CurrentRingFileSchema>);
+  } satisfies typeof CurrentRingFileSchema.Type);
   writeFileSync(tmp, body, { encoding: "utf8", mode: 0o600 });
   try {
     renameSync(tmp, path);

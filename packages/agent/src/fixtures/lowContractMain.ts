@@ -74,7 +74,8 @@ async function main(): Promise<void> {
           home,
           processIdentity: selfProcessIdentity(),
           readProcessIdentity,
-          router: runtime.router,
+          group: runtime.group,
+          handlers: runtime.handlers,
           lifetime: {
             kind: "idleTimeout",
             ms: IDLE_TIMEOUT_MS,

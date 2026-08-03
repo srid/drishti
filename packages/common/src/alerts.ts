@@ -43,7 +43,10 @@ export type AlertId = MetricKey;
  *  concept IS a set of metric ids, so the shape says so; the human word is a
  *  client-owned presentation lookup (`LABELS` in the app), never a wire fact. */
 export interface Alerts {
-  items: AlertId[];
+  /** READONLY because the wire schema says so: Effect Schema's `Schema.Array`
+   *  decodes to a readonly array, and this type must stay assignable from a
+   *  decoded ring / decoded frame without a copy. Nothing ever mutated it. */
+  readonly items: readonly AlertId[];
 }
 
 /** The metrics folded, in a fixed order, so `applyHysteresis` iterates one list
