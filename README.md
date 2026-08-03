@@ -2,7 +2,7 @@
 
 **htop for your whole fleet — with nothing installed on the remote.** If you can `ssh` into a host and its Nix daemon trusts you, you can watch its live processes, CPU, memory, swap, disk, and network. drishti ships its own agent *over the SSH connection* on first connect — no package to install, no inbound port to open, no daemon to configure on the far end.
 
-Browser (SolidJS) ↔ local parent server (Bun) ↔ remote agent over `ssh` stdio, on the typed reactive transport [`@kolu/surface`](https://kolu.dev/blog/surface-framework/) + [oRPC over ssh](https://kolu.dev/blog/orpc-over-ssh/).
+Browser (SolidJS) ↔ local parent server (Bun) ↔ remote agent over `ssh` stdio, on the typed reactive transport [`@kolu/surface`](https://kolu.dev/blog/surface-framework/) + [Effect RPC over ssh](https://kolu.dev/blog/orpc-over-ssh/).
 
 ## Demo
 
@@ -69,7 +69,7 @@ Host db-internal
 
 Then add `db-internal` like any other host. The agent spawn, the nix-system probe, and the `nix copy` of the agent closure all hop through the bastion automatically. The jump host must itself be non-interactive from where drishti runs (drishti forces `BatchMode=yes`), so a bastion that prompts for a password fails rather than hangs — use a key.
 
-Mixed-architecture host sets are supported: the monitor wrapper bakes a `{system → drv}` map for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`, and the parent probes each host's nix-system on add (via [`@kolu/surface-nix-host`'s `resolveSystem`](https://github.com/juspay/kolu/pull/1009), which asks the host's own Nix for `builtins.currentSystem`) to pick the matching `.drv`. A macOS user can drive a Linux remote (or both) from one `nix run` invocation.
+Mixed-architecture host sets are supported: the monitor wrapper bakes a `{system → drv}` map for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`, and the parent probes each host's nix-system on add (via [`@kolu/surface-remote`'s `resolveSystem`](https://github.com/juspay/kolu/pull/1009), which asks the host's own Nix for `builtins.currentSystem`) to pick the matching `.drv`. A macOS user can drive a Linux remote (or both) from one `nix run` invocation.
 
 ## Architecture
 
@@ -78,7 +78,7 @@ Browser (SolidJS UI, tab strip)
    │  one WebSocket (admin + keyed host map)
    ▼
 Parent server (Bun, drishti)
-   │  ssh stdio front → unix socket (oRPC) ×N
+   │  ssh stdio front → unix socket (Effect RPC, ndjson) ×N
    ▼
 Host 1: drishti-agent daemon     Host 2: drishti-agent daemon     …
    │  ~/.local/state/drishti/ (gate, socket, history.ring.json)
@@ -168,7 +168,7 @@ drishti/
 ├─ npins/sources.json         # nixpkgs + kolu pins
 ├─ nix/
 │  ├─ nixpkgs.nix
-│  ├─ overlay.nix             # kolu-surface, kolu-surface-nix-host
+│  ├─ overlay.nix             # kolu-surface, kolu-surface-remote, …
 │  ├─ env.nix                 # DRISHTI_KOLU_SURFACE{,_NIX_HOST}
 │  ├─ packages/
 │  │  ├─ kolu-package.nix          # mkKoluPackage factory
@@ -201,7 +201,7 @@ drishti/
 
 ### How `@kolu/surface` is wired
 
-`@kolu/surface`, `@kolu/surface-nix-host`, `@kolu/surface-app`, and `@kolu/solid-pwa-install` aren't on npm. They're vendored from the `juspay/kolu` repo via npins, exposed as Nix-store paths through `nix/overlay.nix`, and hydrated into `node_modules/@kolu/*` by `scripts/hydrate-kolu-packages.sh`. The hydrate script takes `(src, dest)` pairs so adding another `@kolu/*` package is a one-line addition to the overlay + env — as `@kolu/solid-pwa-install` demonstrates.
+`@kolu/surface`, `@kolu/surface-remote`, `@kolu/surface-app`, and `@kolu/solid-pwa-install` aren't on npm. They're vendored from the `juspay/kolu` repo via npins, exposed as Nix-store paths through `nix/overlay.nix`, and hydrated into `node_modules/@kolu/*` by `scripts/hydrate-kolu-packages.sh`. The hydrate script takes `(src, dest)` pairs so adding another `@kolu/*` package is a one-line addition to the overlay + env — as `@kolu/solid-pwa-install` demonstrates.
 
 To bump the kolu pin:
 

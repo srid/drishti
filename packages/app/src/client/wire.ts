@@ -21,8 +21,18 @@
  * BRANDED transport handle is what `connectSurfaceMap` requires (never a
  * raw link), so a silently half-open connection can no longer paint a
  * green host-map dot either.
+ *
+ * TOP-LEVEL AWAIT: `connectSurfaces` is async under Effect — the dial is an
+ * effect, and building the protocol's fibers cannot be run synchronously.
+ * Awaiting it HERE, once, keeps every consumer's import synchronous-looking:
+ * an importer of this module simply evaluates after the wire exists, rather
+ * than each of the ~40 call sites learning that `hostMap` might not be there
+ * yet. It does NOT block on the socket opening — the link constructs the
+ * socket and retries on its own fiber — so this is a microtask, not a network
+ * wait.
  */
 
+import type { WatchableWire } from "@kolu/surface/link";
 import { createProcessIdEcho } from "@kolu/surface-app/connect";
 import { createNotify } from "@kolu/surface-app/notify";
 import { connectSurfaces } from "@kolu/surface-app/solid";
@@ -50,15 +60,19 @@ function wsBase(): string {
   return `${proto}//${location.host}/rpc/ws?host=${encodeURIComponent(ADMIN_HOST_SENTINEL)}`;
 }
 
-// Cold start can take 30+ seconds while the parent provisions the FIRST
-// host's agent via `nix copy`, so the connect deadline is bumped well past
-// partysocket's 4s default — without this, the socket flaps repeatedly
-// during the first connect.
-const BASE_SOCKET_OPTIONS = {
-  connectionTimeout: 60_000,
-  minReconnectionDelay: 2_000,
-  maxReconnectionDelay: 15_000,
-} as const;
+// The socket's connect deadline and backoff are NO LONGER the app's to tune.
+//
+// partysocket's `connectionTimeout` existed because its 4s default made the
+// socket flap while the parent provisioned the FIRST host's agent via
+// `nix copy` (30s+). Under Effect the link owns its own retry SCHEDULE and
+// never times a connect ATTEMPT out at all: a dial that is still in progress
+// stays in progress, and a dial that fails is retried on an exponential
+// backoff (500ms ×1.5, capped at 5s) until the wire opens or the server
+// retires it. There is nothing left to flap — the deadline existed to stop a
+// premature abandon, and the premature abandon is gone. What DOES still bound
+// the parent's own connect handshake is `CONNECT_TIMEOUT_MS` in
+// `server/hostRegistry.ts`, which is the budget that was always doing the real
+// work here.
 
 // The admin transport multiplexes TWO sibling surfaces (kolu#1197/#1201):
 // drishti's own `admin` surface (host-lifecycle procedures) and
@@ -87,12 +101,18 @@ export function interpretClientError(p: ClientErrorPolicy, err: Error): void {
   console.error(p.label, err);
 }
 
-const conn = connectSurfaces({
+const conn = await connectSurfaces({
   surfaces: adminSurfaces,
   url: wsBase,
   echo,
-  socketOptions: BASE_SOCKET_OPTIONS,
-  retireOnStaleClose: false,
+  // The host map's tags ride THIS wire but are not reached through
+  // `clients.<key>` — they are dialled over `conn.transport` below. Effect
+  // RPC's flat client resolves a call's payload/success SCHEMAS by looking its
+  // tag up in the group the wire was built over, so a tag the group never
+  // minted cannot be dispatched at all: without this the socket would connect
+  // and then every `surface/hosts/*` call would die. This is the client twin
+  // of `admin-router.ts`'s served-group merge, assembled from the same source.
+  extraGroups: [hostSurfaceMap.group],
   // The root admin/surfaceApp siblings carry NO policy today (`TPolicy = never`), so this
   // never fires for them — but registering the ONE interpreter at BOTH seams keeps the
   // seam symmetric with `connectSurfaceMap` below (and honest the day a root member ever
@@ -100,7 +120,12 @@ const conn = connectSurfaces({
   onClientError: (p, e) => interpretClientError(p as ClientErrorPolicy, e),
 });
 
-export const ws = conn.ws;
+/** The watchable wire under every client here — status observability plus the
+ *  imperative `forceReconnect()`. Handed to `<SurfaceAppProvider>`'s
+ *  `createServerLifecycle`, which derives connecting/connected/restarted from
+ *  its status stream. The raw socket is no longer reachable: the link owns the
+ *  dial, the retry schedule, and the terminal-close classifier. */
+export const wire: WatchableWire = conn.link.wire;
 
 // ── The host MAP — a keyed map of remote surfaces: ONE entry surface
 //    (`browserSurface`) served N times, keyed by host. `host` is no longer a
@@ -194,10 +219,10 @@ export function surfaceAppClient() {
 }
 
 /** The ONE transport. drishti's control plane — surface-app's
- *  `<SurfaceAppProvider>` observes ITS open/close to derive the connection
+ *  `<SurfaceAppProvider>` observes ITS status stream to derive the connection
  *  lifecycle (paired with the `surfaceApp.info` probe to tell a transient
  *  drop from a parent restart). Every host chip's dot ultimately floors on
- *  this same socket via `hostMap`'s branded transport slice. */
-export function adminSocket() {
-  return conn.ws;
+ *  this same wire via `hostMap`'s branded transport slice. */
+export function adminSocket(): WatchableWire {
+  return wire;
 }

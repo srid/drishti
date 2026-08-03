@@ -74,6 +74,16 @@ function projectUnconvergedCause(
       return { kind: "identity-unverifiable" };
     case "probe-failed":
       return { kind: "probe-failed", message: cause.message };
+    // PLAN D6 / #3, new with the Effect protocol epoch: the resident daemon
+    // speaks the PREVIOUS wire and its first frame is undecodable. Evidence as
+    // DATA (the operator needs the pid to stop it out of band) — never prose.
+    case "unspeakable-protocol":
+      return {
+        kind: "unspeakable-protocol",
+        socketPath: cause.socketPath,
+        gatePath: cause.gatePath,
+        pid: cause.pid,
+      };
     default: {
       const _e: never = cause;
       throw new Error(

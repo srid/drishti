@@ -257,7 +257,15 @@ function causeEvidence(cause: UnconvergedCauseWire): string[] {
     case "identity-unverifiable":
       return ["cause identity-unverifiable"];
     case "probe-failed":
-      return [`cause probe-failed · ${cause.message}`];
+      return [`cause probe-failed · `];
+    case "unspeakable-protocol":
+      // The daemon at our rendezvous speaks a protocol epoch this supervisor
+      // cannot decode. The pid is the actionable fact: drishti never recycles,
+      // so the survivor is left standing and an operator must stop it by hand.
+      return [
+        `cause unspeakable-protocol · pid ${cause.pid} · ${cause.socketPath}`,
+        `gate ${cause.gatePath}`,
+      ];
     default: {
       const _e: never = cause;
       return [_e];

@@ -17,7 +17,6 @@
 import type { EntryState } from "@kolu/surface-map";
 import { unenrolledStreamCall } from "@kolu/surface/client";
 import { createSubscription, surfaceClientsHealth } from "@kolu/surface/solid";
-import { STALE_PROCESS_CLOSE_CODE } from "@kolu/surface-app";
 import { shellCommit } from "@kolu/surface-app/lifecycle";
 import { SurfaceAppProvider, surfaceAppProbe } from "@kolu/surface-app/solid";
 import { Meta, Title } from "@solidjs/meta";
@@ -44,7 +43,12 @@ import {
   watchByEntry,
 } from "@kolu/surface-map/client";
 import type { FailureEvidence } from "@kolu/surface-map";
-import { type AlertId, CLEAR_PCT, RAISE_PCT } from "drishti-common/alerts";
+import {
+  type AlertId,
+  type Alerts,
+  CLEAR_PCT,
+  RAISE_PCT,
+} from "drishti-common/alerts";
 import {
   type CoreId,
   type CpuCore,
@@ -287,21 +291,19 @@ function subscribeMetricHistory(host: string): {
   /** Typed agent-ring disposition — corrupt/unknown-version is never a silent empty chart. */
   unavailable: Accessor<MetricHistoryUnavailableReason | null>;
 } {
-  const ctl = new AbortController();
-  onCleanup(() => ctl.abort());
   // ONE fold for snapshot/delta/unavailable — same HistoryView as agent + parent.
   // Typed disposition lives on the view; no parallel disposition field.
+  //
+  // No `AbortController`: `unenrolledStreamCall` returns a `Stream` and
+  // `createSubscription` owns its teardown as a fiber interrupt on unmount.
+  // The two controllers this function and `processesSub` used to hold were
+  // exactly that interrupt, spelled by hand.
   const sub = createSubscription<MetricHistoryMsg, HistoryView>(
-    () =>
-      unenrolledStreamCall(
-        hostStreams(host).metricHistory.unenrolled,
-        {},
-        { signal: ctl.signal },
-      ),
+    unenrolledStreamCall(hostStreams(host).metricHistory.unenrolled, {}),
     {
-      reduce: (prev, msg) => foldHistoryView(prev, msg, HISTORY_RETENTION_MS),
+      reduce: (prev: HistoryView, msg: MetricHistoryMsg) =>
+        foldHistoryView(prev, msg, HISTORY_RETENTION_MS),
       initial: { kind: "ok", samples: [] },
-      signal: ctl.signal,
     },
   );
   return {
@@ -459,15 +461,18 @@ export default function App() {
     <SurfaceAppProvider
       controlPlane={surfaceAppClient()}
       clientCommit={shellCommit()}
-      ws={adminSocket()}
+      wire={adminSocket()}
       probe={() => surfaceAppProbe(surfaceAppClient())}
       // `wire.ts`'s `connectSurfaces` already wires the half-open watchdog over
-      // this admin socket (minting the branded `{ live }` the clients require), so
-      // the lifecycle opts ITS watchdog out — one watchdog on the socket, not two.
+      // this admin wire (minting the branded `{ live }` the clients require), so
+      // the lifecycle opts ITS watchdog out — one watchdog on the wire, not two.
       // (The lifecycle mints no brand, so this is ownership coordination only.)
       heartbeat={false}
       onProcessId={rememberServerProcessId}
-      restartCloseCode={STALE_PROCESS_CLOSE_CODE}
+      // No `restartCloseCode`: the stale-close vocabulary lives in the LINK now
+      // (surface-app hands it `isStaleProcessClose`), which halts its own retry
+      // schedule and reports the terminal `WireStatus` `"retired"`. There is no
+      // consumer action left to hand out, so nothing here retires the socket.
     >
       <TransportOverlay />
       <MultiHostApp />
@@ -542,9 +547,9 @@ function MultiHostApp() {
   // connectivity (`online`) or the tab is refocused — the client-side companion
   // to the server's wake monitor. It catches the case the parent's clock-gap
   // detector can't: a brief network flap (café Wi-Fi dropping for a few seconds)
-  // that never suspends the process. partysocket already reconnects these
-  // loopback control sockets; this RPC reaches past them to the *agent* links
-  // the parent holds over ssh.
+  // that never suspends the process. The link's own retry schedule already
+  // reconnects this browser socket; this RPC reaches past it to the *agent*
+  // links the parent holds over ssh.
   const recheckAllHosts = () => {
     void adminRpc()
       .hosts.recheck({})
@@ -654,7 +659,10 @@ function MultiHostApp() {
   const alertsWatch = watchByEntry(
     hostMap,
     (e) => e.cells.alerts,
-    (v) => v.items,
+    // The wire value is READONLY (Effect Schema decodes arrays readonly) and
+    // the raise-detection kernel wants a plain id list, so copy — four ids at
+    // most, and the copy is what keeps the framework free to sort/diff it.
+    (v: Alerts) => [...v.items],
     (host, raised) =>
       raised.forEach((id) =>
         void notify.show({
@@ -1095,7 +1103,7 @@ function CardMetric(props: { label: string; pct: number; detail: string }) {
 // hysteresis fold), so the panel empties on its own — never a manual clear.
 // Renders nothing when `ids` is empty, so a healthy host shows no chrome.
 function AlertsPanel(props: {
-  ids: AlertId[];
+  ids: readonly AlertId[];
   system: SystemInfo;
   raisedAt: (id: AlertId) => number | undefined;
 }) {
@@ -1158,23 +1166,23 @@ function HostView(props: {
 }) {
   // `hostMap.entry(...)` is a PURE lens over the ONE admin transport's
   // key-folded link — the same map the tab chip's dot reads. Multiple
-  // consumers on one socket is the supported shape; oRPC multiplexes calls
-  // per procedure-path on the wire, now further folded by `{ mapKey }`.
+  // consumers on one socket is the supported shape; Effect RPC multiplexes
+  // calls per wire TAG, now further folded by `{ mapKey }`.
   const entry = hostMap.entry(props.host);
 
   // `system`/`connection` are void-input CELLS. `@kolu/surface-map`'s
   // entry-router transform folds a void-input member's envelope as
   // `{ mapKey }` — it OMITS the `input` field entirely (`define.ts`'s
-  // `foldInput()` / `isVoidInput`), rather than the old `{ mapKey, input:
-  // z.void() }` shape. That is what makes these subscriptions robust now: the
-  // wire frame has no `input` key by construction, so nothing depends on a
-  // JSON round-trip preserving an `undefined`-valued property or on zod
-  // accepting a MISSING `z.void()` key — a leniency zod tightened in >=4.3.7.
-  // drishti's `zod` therefore rides a normal `^4.3.6` range again (the exact
-  // `4.3.6` pin this once needed is gone). The subscription-failure log is NOT
-  // swallowed: it rides the member's declared `client.onError` policy (SR11,
-  // `browser.ts`), routed through the ONE `interpretClientError` — no per-use-site
-  // `onError` — in case a future dependency drift reintroduces this class of bug.
+  // `foldInput()` / `isVoidInput`). That is what makes these subscriptions
+  // robust: the wire frame has no `input` key by construction, so nothing
+  // depends on a JSON round-trip preserving an `undefined`-valued property.
+  // Under Effect Schema the rule got STRONGER rather than weaker —
+  // `Schema.Struct({ input: Schema.Void })` demands the key on every version,
+  // where zod ≥4.3.7 merely started to — so a fold that spelled the field
+  // would fail loudly instead of drifting with a dependency bump. The
+  // subscription-failure log is NOT swallowed: it rides the member's declared
+  // `client.onError` policy (SR11, `browser.ts`), routed through the ONE
+  // `interpretClientError` — no per-use-site `onError`.
   const system = entry.cells.system.use();
   const entryState = createMemo<EntryState<{ reason: string }, ConnectionInfo>>(
     () => entry.state(),
@@ -1192,7 +1200,9 @@ function HostView(props: {
   // (an indicator you can't act on); `AlertsPanel` below closes it. Same cell,
   // same source of truth as the card pip and the notification.
   const alerts = entry.cells.alerts.use();
-  const raisedIds = createMemo<AlertId[]>(() => alerts.value()?.items ?? []);
+  const raisedIds = createMemo<readonly AlertId[]>(
+    () => alerts.value()?.items ?? [],
+  );
 
   // Re-arm the parent's session after it gave up (state === "failed").
   // Routed straight to the admin surface rather than through the root's
@@ -1253,32 +1263,28 @@ function HostView(props: {
   // so an in-place `reconcile` leaf update re-notifies just that cell — reading
   // the whole map coarsely and copying it into a store would drop same-shape
   // deltas (the R8b lesson). `.streams.use()` exposes no `reduce`, so this
-  // drops one level to `createSubscription` (same reactive family); the
-  // AbortController stays only to abort the underlying stream on unmount.
-  const processesCtl = new AbortController();
-  onCleanup(() => processesCtl.abort());
+  // drops one level to `createSubscription` (same reactive family). The
+  // AbortController that used to abort the underlying stream on unmount is
+  // GONE — the subscription's teardown is a fiber interrupt now.
   const processesSub = createSubscription<
     CollectionDeltasMsg<Pid, Process>,
     Record<Pid, Process>
   >(
-    () =>
-      // The bare `unenrolledStreamCall` is the right primitive HERE — the raw
-      // batched-deltas stream FACTORY feeding `createSubscription`, which owns
-      // its own pending/error. `processes` is a `deltas`-declaring collection
-      // (SR5 — one protocol across the wire, replacing the old `processesSnapshot`
-      // stream), and `unenrolledDeltas` is its DELIBERATELY un-enrolled reach: there
-      // is no per-host `health()` fact to join it to — every host's data rides the
-      // ONE admin transport now — so a dead process feed surfaces via this
-      // subscription's own reactive `error()`, read below (never a gate flicker).
-      unenrolledStreamCall(
-        hostCollections(props.host).processes.unenrolledDeltas,
-        undefined,
-        { signal: processesCtl.signal },
-      ),
+    // The bare `unenrolledStreamCall` is the right primitive HERE — the raw
+    // batched-deltas `Stream` feeding `createSubscription`, which owns its own
+    // pending/error. `processes` is a `deltas`-declaring collection
+    // (SR5 — one protocol across the wire, replacing the old `processesSnapshot`
+    // stream), and `unenrolledDeltas` is its DELIBERATELY un-enrolled reach: there
+    // is no per-host `health()` fact to join it to — every host's data rides the
+    // ONE admin transport now — so a dead process feed surfaces via this
+    // subscription's own reactive `error()`, read below (never a gate flicker).
+    unenrolledStreamCall(
+      hostCollections(props.host).processes.unenrolledDeltas,
+      undefined,
+    ),
     {
       reduce: foldProcessDeltas,
       initial: {},
-      signal: processesCtl.signal,
     },
   );
   const processes = (): Record<Pid, Process> => processesSub() ?? {};

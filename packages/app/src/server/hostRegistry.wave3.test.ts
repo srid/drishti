@@ -7,10 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { directAgentDerivation } from "@kolu/surface-remote";
 import { TEST_BINARY_CACHE } from "@kolu/surface-remote/agentDerivation.testutil";
-import { ORPCError } from "@orpc/client";
 import {
   buildHostPool,
-  captureDrainPersistFailure,
+  drainPersistFailureOf,
   convergenceFromDrainPersistFailure,
   expectProvisionedBuildId,
 } from "./hostRegistry";
@@ -224,17 +223,26 @@ describe("buildHostPool discriminated construction (W4.7)", () => {
   });
 });
 
-describe("drain persist-failure capture (W4.2)", () => {
-  it("captureDrainPersistFailure maps ORPCError DRISHTI_PERSIST_FAILED", () => {
-    const r = captureDrainPersistFailure(
-      new ORPCError("DRISHTI_PERSIST_FAILED", {
-        message: "EACCES write",
-        data: { persistFailed: true, error: "EACCES write" },
-      }),
-    );
-    expect(r).toEqual({
+describe("drain persist-failure verdict (W4.2)", () => {
+  it("drainPersistFailureOf reads the declared drain output", () => {
+    // No error to narrow any more: `daemon.ring.drain` ANSWERS. The drain
+    // succeeded; its final ring write did not land.
+    expect(
+      drainPersistFailureOf({ persisted: false, error: "EACCES write" }),
+    ).toEqual({ persistFailed: true, error: "EACCES write" });
+  });
+
+  it("a persisted drain yields NO failure", () => {
+    expect(drainPersistFailureOf({ persisted: true })).toBeNull();
+  });
+
+  it("a failed drain with no reason still reports a failure", () => {
+    // `error` is `optionalKey` on the wire, so absence is representable — but
+    // `persisted: false` is the fact, and it must never be lost to a missing
+    // string. The reason degrades, the verdict does not.
+    expect(drainPersistFailureOf({ persisted: false })).toEqual({
       persistFailed: true,
-      error: "EACCES write",
+      error: "persist-failed",
     });
   });
 
@@ -250,8 +258,7 @@ describe("drain persist-failure capture (W4.2)", () => {
     });
   });
 
-  it("null capture ⇒ no projection (mutation pin for raw fireDrain)", () => {
-    expect(captureDrainPersistFailure(new Error("other"))).toBeNull();
+  it("no failure ⇒ no projection", () => {
     expect(convergenceFromDrainPersistFailure(null)).toBeNull();
   });
 });
@@ -277,8 +284,11 @@ describe("W5.2 standing drained-with-persist-failure after adopt", () => {
       /function makeAgentAdmit[\s\S]*?^\}/m,
     );
     expect(admitBlock).not.toBeNull();
-    expect(src).toMatch(/await probe\.fireDrain\(\)/);
-    expect(src).toMatch(/captureDrainPersistFailure/);
+    // The admit path drains through drishti's OWN verb and reads its VERDICT —
+    // the frozen `probe.fireDrain()` carries no channel for it (that procedure
+    // declares no error, so a rejecting hook would be a defect, not a report).
+    expect(src).not.toMatch(/probe\.fireDrain\(\)/);
+    expect(src).toMatch(/drainPersistFailureOf\(await active\.drain\(\)\)/);
   });
 
   it("convergenceFromDrainPersistFailure is what adopt must preserve", () => {

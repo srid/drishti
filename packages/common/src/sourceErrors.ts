@@ -66,7 +66,7 @@ function isStatus(value: unknown): value is OsfactsSourceStatus {
 /** A fail-loud rejection for an error-only response or a fixed host aggregate
  * missing a required fact. Usable partial process frames publish instead and
  * carry the same facts through the surface's `sourceErrors` collection. The
- * marker survives oRPC, stderr, and SSH log transport. */
+ * marker survives the RPC wire, stderr, and SSH log transport. */
 export class OsfactsSourceError extends Error {
   readonly status: OsfactsSourceStatus;
 

@@ -3,12 +3,12 @@
  *
  * Three-tier bridge, repeated N times — once per configured host:
  *
- *   browser  ─WS oRPC─▶  this server  ─stdio oRPC─▶  remote agent
+ *   browser  ─WS Effect RPC─▶  this server  ─stdio Effect RPC─▶  remote agent
  *
  * The browser opens exactly ONE WebSocket — the admin/control-plane
  * connection, at `/rpc/ws?host=__admin__` — for the WHOLE app now. Every
  * configured host's own data used to ride a dedicated `?host=<id>` socket
- * dispatched to a per-host `RPCHandler`; that's deleted (`@kolu/surface-map`
+ * dispatched to a per-host RPC handler; that is deleted (`@kolu/surface-map`
  * adoption). It now rides the SAME admin transport, key-folded through the
  * `hosts` host MAP (`admin-router.ts`'s `serveHostMap` /
  * `packages/app/src/common/hostMap.ts`) — one socket, N keyed entries,
@@ -29,11 +29,10 @@ import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
-import { RPCHandler } from "@orpc/server/ws";
 import { cli } from "cleye";
 import { Hono } from "hono";
 import { WebSocketServer } from "ws";
-import { z } from "zod";
+import { Schema } from "effect";
 import { gateWsOrigin, parseAllowedOrigins } from "@kolu/surface/ws-origin";
 import {
   type AgentBinaryCache,
@@ -42,6 +41,7 @@ import {
 import {
   gateStaleSocket,
   installSurfaceApp,
+  serveSurfaceSocket,
   startWsHeartbeat,
 } from "@kolu/surface-app/server";
 import { ADMIN_HOST_SENTINEL, isValidHost } from "../common/host";
@@ -91,10 +91,14 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
-  const drvMapSchema = z.record(z.string(), z.string().min(1));
+  const drvMapSchema = Schema.Record(
+    Schema.String,
+    Schema.String.check(Schema.isMinLength(1)),
+  );
+  const parseDrvMap = Schema.decodeUnknownSync(drvMapSchema);
   let agentDrvBySystem: Record<string, string>;
   try {
-    agentDrvBySystem = drvMapSchema.parse(JSON.parse(drvsJson));
+    agentDrvBySystem = { ...parseDrvMap(JSON.parse(drvsJson)) };
   } catch (err) {
     log(`DRISHTI_AGENT_DRVS_JSON: invalid — ${(err as Error).message}`);
     process.exit(1);
@@ -141,7 +145,7 @@ async function main(): Promise<void> {
   }
   let buildIdBySystem: Record<string, string>;
   try {
-    buildIdBySystem = drvMapSchema.parse(JSON.parse(buildIdsJson));
+    buildIdBySystem = { ...parseDrvMap(JSON.parse(buildIdsJson)) };
   } catch (err) {
     log(
       `DRISHTI_AGENT_BUILD_IDS_JSON: invalid — ${(err as Error).message}`,
@@ -191,8 +195,9 @@ async function main(): Promise<void> {
   });
 
   const admin = buildAdminRouter({ pool });
-  // biome-ignore lint/suspicious/noExplicitAny: matches existing router-handler cast (see implementSurface fragment shape).
-  const adminHandler = new RPCHandler(admin.router as any);
+  /** Every accepted browser socket that is still serving — closed on shutdown
+   *  so a peer's serving stack cannot outlive the process's HTTP server. */
+  const servings = new Set<{ close(): void }>();
 
   // Laptops sleep. On resume every ssh link is stale (the far end dropped
   // the socket while we were frozen); without a nudge the parent waits
@@ -366,7 +371,7 @@ async function main(): Promise<void> {
         // after a PARENT restart still carries the previous process's `pid`.
         // `gateStaleSocket` installs the `error` listener FIRST (the one crash-free
         // order), reads the claimed `pid` off the request URL, and on a stale tab
-        // closes with STALE_PROCESS_CLOSE_CODE before the oRPC handler upgrades —
+        // closes with STALE_PROCESS_CLOSE_CODE before the RPC server attaches —
         // so its live subscriptions never replay against a process that never had
         // them. An absent `pid` (the first-ever connect) always passes.
         // `admin.processId` is the live id the `identity.info` probe reports, so
@@ -393,9 +398,34 @@ async function main(): Promise<void> {
             `browser ws disconnect (admin) (code=${code} reason=${reason.toString() || "<none>"})`,
           ),
         );
-        void adminHandler.upgrade(
-          ws as unknown as Parameters<typeof adminHandler.upgrade>[0],
-        );
+        // Serve THIS socket. The gate → enrol → dispatch order above is
+        // unchanged and is exactly why the upgrade is still ours: a turnkey
+        // `RpcServer.layerHttp` would own the upgrade, and owning the upgrade
+        // means owning the ordering the stale-tab gate and the ws reaper have
+        // to run in front of. `serveSurfaceSocket` builds a per-connection RPC
+        // server over the SHARED handler record and buffers inbound frames
+        // until it has attached its listener — a reconnecting tab re-issues
+        // its subscriptions in the same tick as the accept, and those frames
+        // must not be dropped.
+        const serving = serveSurfaceSocket({
+          group: admin.group,
+          handlers: admin.handlers,
+          // A `ws` socket satisfies `ServableSocket` structurally; its typings
+          // narrow `addEventListener` per event name, which the seam's generic
+          // `(type: string, listener: (e: Event) => void)` shape cannot express.
+          socket: ws as unknown as Parameters<
+            typeof serveSurfaceSocket
+          >[0]["socket"],
+        });
+        servings.add(serving);
+        // `done` MUST be observed: it rejects on a serving-stack build failure
+        // and resolves when serving ends. An ignored rejection is an unhandled
+        // one — the loud channel a silently dead connection deserves.
+        void serving.done
+          .catch((err: unknown) =>
+            log(`browser ws serving failed (admin): ${String(err)}`),
+          )
+          .finally(() => servings.delete(serving));
       },
     );
   });
@@ -404,6 +434,8 @@ async function main(): Promise<void> {
     log(`${sig}: destroying host sessions`);
     stopWakeMonitor();
     admin.disposeHostMap();
+    for (const serving of servings) serving.close();
+    servings.clear();
     pool.destroyAll();
     heartbeat.stop();
     wss.close();

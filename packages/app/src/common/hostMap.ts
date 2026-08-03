@@ -21,11 +21,11 @@
 import { defineSurfaceMap, type KeyCodec } from "@kolu/surface-map";
 import { ConnectionInfoSchema } from "@kolu/surface-remote/connection";
 import { browserSurface } from "drishti-common/browser";
-import { z } from "zod";
+import { Schema } from "effect";
 
 /** A host is already the canonical wire string — unlike kolu's
  *  discriminated-sum `HostKey`, there is no richer key shape to brand. */
-export const HostKeySchema = z.string();
+export const HostKeySchema = Schema.String;
 
 /** The identity codec: `Key` (a plain host string) IS already the wire
  *  string every channel name / dedup key / membership entry is keyed on,
@@ -39,8 +39,8 @@ const hostKeyCodec: KeyCodec<string> = {
  *  `failed: <reason>` and nothing more; drishti carries no cause taxonomy, unlike
  *  kolu's padi). The `failed` arm can only carry a value this schema validates —
  *  there is no fabricated fallback cause (the framework's PR4 invariant). */
-export const hostFailureSchema = z.object({ reason: z.string() });
-export type HostFailure = z.infer<typeof hostFailureSchema>;
+export const hostFailureSchema = Schema.Struct({ reason: Schema.String });
+export type HostFailure = typeof hostFailureSchema.Type;
 
 /** The map of every configured host's `browserSurface`. Server
  *  (`serveHostMap`, in `admin-router.ts`) and client (`connectSurfaceMap`,

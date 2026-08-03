@@ -23,10 +23,9 @@
  * `@kolu/surface-daemon-supervisor`. Host-set persistence is `hostsStore.ts`.
  */
 
-import { ORPCError } from "@orpc/client";
-import { composeSurfaceContracts, scopeSibling } from "@kolu/surface/define";
+import { buildSurfaceFace } from "@kolu/surface/client";
+import type { SurfaceDispatch } from "@kolu/surface/link";
 import {
-  controlCoreSurface,
   daemonBuild,
   stderrLogger,
   type Logger as DaemonLogger,
@@ -57,7 +56,13 @@ import {
   sshConnector,
   type SshProv,
 } from "@kolu/surface-remote";
-import { AGENT_SURFACE_VERSION, surface } from "drishti-common";
+import { AGENT_SURFACE_VERSION } from "drishti-common";
+import {
+  agentControlSurface,
+  agentDialSurface,
+  agentDrainSurface,
+  type DrainVerdict,
+} from "drishti-common/daemon";
 import { saveHosts } from "./hostsStore";
 import { makeLogger } from "./log";
 import { withAgentBootBarrier } from "./withAgentBootBarrier";
@@ -85,27 +90,64 @@ const DRAIN_TEARDOWN_CEILING_MS = 6_000;
  *  resident with a standing anomaly rather than go dark. */
 const DRAIN_MAX_ATTEMPTS = 2;
 
-/** The two surfaces the agent daemon serves: the versioned app surface and
- *  the frozen control core. One keyed map for `composeSurfaceContracts` /
- *  `sshConnector` / the agent's `implementSurfaces`. */
-export const agentDaemonSurfaces = {
-  app: surface,
-  control: controlCoreSurface,
-} as const;
+// The three surfaces the agent daemon serves — the versioned app surface, the
+// frozen control core, and drishti's own daemon sibling — plus the composed
+// wire both ends build from, now live in `drishti-common/daemon`, so the agent
+// that SERVES them and the parent that DIALS them cannot drift.
 
-/** Combined wire contract — `{ surface: { app, control } }`. */
-export const agentDaemonContract = composeSurfaceContracts(agentDaemonSurfaces);
-export type AgentDaemonContract = typeof agentDaemonContract;
+/** App-sibling-scoped client — what the pump + kill forward use.
+ *
+ *  `AgentClient` is non-generic now (`= SurfaceFace`): there is no contract
+ *  type to be generic over, and per-member precision lives in the spec-derived
+ *  bound faces rather than in a second mapped type over the addressing layer.
+ *  `sshConnector` builds this face from `agentDialSurface` directly, so the
+ *  old `scopeSibling(client, "app")` re-wrap has nothing left to do — the
+ *  connector's own client IS the app-scoped one. */
+export type AgentAppClient = AgentClient;
 
-/** Combined client (app + control.core). */
-export type AgentDaemonClient = AgentClient<AgentDaemonContract>;
+/** The frozen control-core face, in the exact shape the supervisor's probe
+ *  walks (`client.surface.control.core.{hello,drain}`). Built over the SAME
+ *  link dispatch as the app face — one wire, several faces. */
+export type ControlProbeClient = {
+  readonly surface: {
+    readonly control: {
+      readonly core: {
+        hello(): Promise<{
+          stateRoot: string;
+          surfaceVersion: string;
+          controlCoreVersion: string;
+          startedAt: number;
+          commit?: string;
+          buildId?: string;
+        }>;
+        drain(): Promise<void>;
+      };
+    };
+  };
+};
 
-/** App-sibling-scoped client — what the pump + kill forward use. */
-export type AgentAppClient = AgentClient<typeof surface.contract>;
-
-/** Narrow a dialed COMBINED client to its `.surface.app` sibling. */
-export function scopeAgentApp(client: AgentDaemonClient): AgentAppClient {
-  return scopeSibling(client, "app") as unknown as AgentAppClient;
+/** Build the control + drain faces a dialled connection needs beyond its app
+ *  face. Both ride the link's own dispatch (`Connection.dispatch`), which the
+ *  connector hands back precisely so a two-sibling daemon is ONE link with
+ *  several faces instead of two dials. */
+function daemonFacesOver(dispatch: SurfaceDispatch): {
+  control: ControlProbeClient;
+  drain: () => Promise<DrainVerdict>;
+} {
+  const core = (
+    buildSurfaceFace(agentControlSurface, dispatch).surface as unknown as {
+      core: ControlProbeClient["surface"]["control"]["core"];
+    }
+  ).core;
+  const ring = (
+    buildSurfaceFace(agentDrainSurface, dispatch).surface as unknown as {
+      ring: { drain: () => Promise<DrainVerdict> };
+    }
+  ).ring;
+  return {
+    control: { surface: { control: { core } } },
+    drain: () => ring.drain(),
+  };
 }
 
 /**
@@ -133,7 +175,8 @@ export type DrishtiConvergence =
       readonly message: string;
     };
 
-/** Captured final-flush failure from a drain that threw DRISHTI_PERSIST_FAILED. */
+/** A drain whose final durable-ring write did not land. Read off
+ *  `daemon.ring.drain`'s DECLARED output — see `convergenceFromDrainVerdict`. */
 export type DrainPersistFailure = {
   persistFailed: true;
   error: string;
@@ -157,42 +200,25 @@ export function convergenceFromDrainPersistFailure(
 }
 
 /**
- * Capture a tagged ORPCError from drain — code only, no string soup (W4.2).
- * Success is void; only failures throw.
+ * Read a drain's persist verdict off `daemon.ring.drain`'s DECLARED output.
+ *
+ * This replaces `captureDrainPersistFailure`, which narrowed an
+ * `ORPCError("DRISHTI_PERSIST_FAILED")` thrown out of the FROZEN control-core
+ * drain. That channel declares no error, and in this protocol epoch a
+ * rejecting `onDrain` is a defect — "a daemon whose drain hook throws is
+ * broken, not busy". A full disk is not a broken daemon: the drain worked and
+ * its final write did not land, which is a verdict about a SUCCESSFUL call.
+ * So drishti asks its own verb and reads a value; there is no error to narrow,
+ * no `err.code` to compare, and no cross-realm plain-object arm to keep.
  */
-export function captureDrainPersistFailure(
-  err: unknown,
+export function drainPersistFailureOf(
+  verdict: DrainVerdict,
 ): DrainPersistFailure | null {
-  if (err instanceof ORPCError && err.code === "DRISHTI_PERSIST_FAILED") {
-    const data = err.data as { error?: string } | undefined;
-    return {
-      persistFailed: true,
-      error:
-        (typeof data?.error === "string" && data.error) ||
-        err.message ||
-        "persist-failed",
-    };
-  }
-  // Also accept plain objects with code (cross-realm ORPCError).
-  if (
-    err !== null &&
-    typeof err === "object" &&
-    "code" in err &&
-    (err as { code: unknown }).code === "DRISHTI_PERSIST_FAILED"
-  ) {
-    const e = err as {
-      message?: string;
-      data?: { error?: string };
-    };
-    return {
-      persistFailed: true,
-      error:
-        (typeof e.data?.error === "string" && e.data.error) ||
-        e.message ||
-        "persist-failed",
-    };
-  }
-  return null;
+  if (verdict.persisted) return null;
+  return {
+    persistFailed: true,
+    error: verdict.error ?? "persist-failed",
+  };
 }
 
 /** The daemon session a host entry holds — supervision (convergence /
@@ -296,7 +322,11 @@ function isProvisioningPool(
 
 /** Live combined dial stashed under the app-scoped client admit receives. */
 type ActiveCombined = {
-  client: AgentDaemonClient;
+  /** The frozen control-core face — what the supervisor's probe walks. */
+  client: ControlProbeClient;
+  /** drishti's own drain, over the SAME link: flush, abort the lifetime, and
+   *  ANSWER whether the final ring write landed. */
+  drain: () => Promise<DrainVerdict>;
   dispose: () => void;
   processExit: Promise<void>;
   signal: AbortSignal;
@@ -426,22 +456,17 @@ function makeAgentAdmit(args: {
       });
     }
 
-    // W4.2: wrap fireDrain to capture tagged persist-failure app-side.
-    // Framework plug stays void; we never present a failed final write as clean.
+    // W4.2: drain through drishti's OWN verb so the persist verdict comes back
+    // as a value. It is a strict superset of the frozen `control.core.drain`
+    // the supervisor's probe would otherwise fire — same latched flush, same
+    // lifetime abort, plus the answer — so calling it INSTEAD is not a
+    // divergence, it is the same drain with the one fact the frozen channel
+    // cannot carry. We never present a failed final write as clean.
     const drainCapture: { failure: DrainPersistFailure | null } = {
       failure: null,
     };
     const drain = async (): Promise<void> => {
-      try {
-        await probe.fireDrain();
-      } catch (err) {
-        const captured = captureDrainPersistFailure(err);
-        if (captured !== null) {
-          drainCapture.failure = captured;
-          return; // drain fired; awaitExit still waits for process exit
-        }
-        throw err;
-      }
+      drainCapture.failure = drainPersistFailureOf(await active.drain());
     };
 
     const admitLog: DaemonLogger = stderrLogger();
@@ -594,16 +619,7 @@ function attachDaemonSession(args: {
       };
       const { took, drainRejection } = await drainAndAwaitExit(
         async () => {
-          try {
-            await active.client.surface.control.core.drain();
-          } catch (err) {
-            const captured = captureDrainPersistFailure(err);
-            if (captured !== null) {
-              drainHolder.failure = captured;
-              return; // drain fired; awaitExit still waits for process exit
-            }
-            throw err;
-          }
+          drainHolder.failure = drainPersistFailureOf(await active.drain());
         },
         (signal) => awaitExitViaProcessOracle(active.processExit, signal),
         { ceilingMs: DRAIN_TEARDOWN_CEILING_MS },
@@ -702,7 +718,14 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         };
         const OFF_NIX_MSG =
           "off-nix pool: no agent derivation (can't-judge path has no resolveDrvPath)";
-        const inner = sshConnector<AgentDaemonContract>({
+        const inner = sshConnector({
+          // Effect RPC cannot mint a client from a TYPE — it needs the flat
+          // `RpcGroup` and the spec to re-nest the face from. `agentDialSurface`
+          // carries the app sibling's spec/prefix (so this face IS the
+          // app-scoped client) with the COMBINED group (so the one RPC client
+          // behind it can also address the control and daemon siblings' tags,
+          // whose faces we build over the same dispatch below).
+          surface: agentDialSurface,
           host,
           binary: "drishti-agent",
           localEnv: Object.fromEntries(
@@ -731,21 +754,35 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         });
         const rawConnector: Connector<AgentAppClient, SshProv> = async (ctx) => {
           const conn = await inner(ctx);
+          if (conn.dispatch === undefined) {
+            // Every ssh dial has one; its absence would be a framework bug, and
+            // without it the control and daemon siblings are unreachable — a
+            // state where admit could never probe identity. Crash loudly.
+            conn.teardown();
+            throw new Error(
+              "drishti host dial returned no transport dispatch — the control-core " +
+                "and daemon faces cannot be built over it (a @kolu/surface-remote bug).",
+            );
+          }
           const processExit = conn.closed.then(
             (info: ClosedInfo) => {
               if (info.kind !== "exit") return NEVER_EXITS;
             },
             () => NEVER_EXITS,
           );
+          const faces = daemonFacesOver(conn.dispatch);
           const active: ActiveCombined = {
-            client: conn.client,
+            client: faces.control,
+            drain: faces.drain,
             dispose: conn.teardown,
             processExit,
             signal: ctx.signal,
           };
-          const scopedClient = scopeAgentApp(conn.client);
-          combinedByScopedClient.set(scopedClient, active);
-          return { ...conn, client: scopedClient };
+          // `conn.client` IS the app-scoped face (the connector built it from
+          // `agentDialSurface`), so the WeakMap is keyed by the very value
+          // `makeSession` hands `admit` — no re-wrap in between to re-key on.
+          combinedByScopedClient.set(conn.client, active);
+          return conn;
         };
         // Terminal agent-boot refusal (daemonHome non-0700 etc.): capture fatal
         // stderr, set typed outcome, throw ConnectError(terminal) — zero retries.
@@ -840,7 +877,9 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
       // sshConnector always runs `<binary> --stdio` (appended by the connector
       // itself — do NOT pass `--stdio` in extraArgs). That flag is the durable
       // front: adopt-or-spawn the gate-held daemon and relay bytes.
-      const inner = sshConnector<AgentDaemonContract>({
+      const inner = sshConnector({
+        // The surface as a VALUE (see the off-nix arm above for why).
+        surface: agentDialSurface,
         host,
         binary: "drishti-agent",
         // surface-remote is policy-free: the CONSUMER composes the localhost arm's
@@ -895,15 +934,25 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
           },
           () => NEVER_EXITS,
         );
+        if (conn.dispatch === undefined) {
+          conn.teardown();
+          throw new Error(
+            "drishti host dial returned no transport dispatch — the control-core " +
+              "and daemon faces cannot be built over it (a @kolu/surface-remote bug).",
+          );
+        }
+        const faces = daemonFacesOver(conn.dispatch);
         const active: ActiveCombined = {
-          client: conn.client,
+          client: faces.control,
+          drain: faces.drain,
           dispose: conn.teardown,
           processExit,
           signal: ctx.signal,
         };
-        const scopedClient = scopeAgentApp(conn.client);
-        combinedByScopedClient.set(scopedClient, active);
-        return { ...conn, client: scopedClient };
+        // `conn.client` IS the app-scoped face now — nothing to re-wrap, so
+        // the WeakMap is keyed by the very value `admit` receives.
+        combinedByScopedClient.set(conn.client, active);
+        return conn;
       };
 
       // Terminal agent-boot refusal: fatal stderr ⇒ typed outcome, zero retries.

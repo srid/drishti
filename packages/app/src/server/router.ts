@@ -30,8 +30,10 @@ import {
   implementSurface,
   inMemoryChannel,
   inMemoryStore,
+  streamFromAbortableSource,
 } from "@kolu/surface/server";
 import { type ProcedureForwarders } from "@kolu/surface/mirror";
+import { Effect, type Stream } from "effect";
 import {
   type AgentClient,
   pumpRemoteSurface,
@@ -44,6 +46,7 @@ import {
   type CpuCore,
   DEFAULT_SYSTEM,
   type IfaceName,
+  type KillInput,
   type MetricHistoryMsg,
   type NetInterface,
   type Pid,
@@ -71,7 +74,7 @@ export interface BuildRouterOptions {
   session: HostSession;
 }
 
-/** Build the parent's oRPC router. The session's connection state
+/** Build the parent's served surface. The session's connection state
  *  drives the `system.state` field exposed to the browser; agent data
  *  flows through once the link is live. */
 export function buildRouter(opts: BuildRouterOptions) {
@@ -179,40 +182,47 @@ export function buildRouter(opts: BuildRouterOptions) {
         // Yield the parent's current ring (or a typed unavailable) on
         // subscribe, then forward each agent-driven frame. Subscribe to the
         // bus BEFORE the snapshot so a frame cannot fall between them.
-        source: async function* (_input, signal) {
-          const tail = historyBus.subscribe(signal);
-          if (historyView.kind === "unavailable") {
-            yield {
-              kind: "unavailable",
-              reason: historyView.reason,
-            } satisfies MetricHistoryMsg;
-          } else if (historyView.kind === "degraded") {
-            yield {
-              kind: "degraded",
-              reason: "persist-failed",
-              samples: [...historyView.samples],
-            } satisfies MetricHistoryMsg;
-          } else {
-            yield {
-              kind: "snapshot",
-              samples: [...historyView.samples],
-            } satisfies MetricHistoryMsg;
-          }
-          for await (const msg of tail) {
-            yield msg;
-          }
-        },
+        //
+        // `streamFromAbortableSource` is the framework's ONE producer-edge
+        // bridge (D10): the `AbortController` is scoped to the stream, so
+        // interrupting the consuming fiber unsubscribes the bus exactly as the
+        // old `{signal}` did — the generator body is otherwise unchanged.
+        source: (): Stream.Stream<MetricHistoryMsg> =>
+          streamFromAbortableSource<MetricHistoryMsg>(async function* (signal) {
+            const tail = historyBus.subscribe(signal);
+            if (historyView.kind === "unavailable") {
+              yield {
+                kind: "unavailable",
+                reason: historyView.reason,
+              } satisfies MetricHistoryMsg;
+            } else if (historyView.kind === "degraded") {
+              yield {
+                kind: "degraded",
+                reason: "persist-failed",
+                samples: [...historyView.samples],
+              } satisfies MetricHistoryMsg;
+            } else {
+              yield {
+                kind: "snapshot",
+                samples: [...historyView.samples],
+              } satisfies MetricHistoryMsg;
+            }
+            for await (const msg of tail) {
+              yield msg;
+            }
+          }),
       },
     },
     procedures: {
       process: {
-        kill: async ({ input }) => {
-          const procs = liveProcedures.current;
-          if (!procs) {
-            return { ok: false, error: "no live agent connection" };
-          }
-          return procs.process.kill(input);
-        },
+        kill: ({ input }: { input: KillInput }) =>
+          Effect.promise(async () => {
+            const procs = liveProcedures.current;
+            if (!procs) {
+              return { ok: false, error: "no live agent connection" };
+            }
+            return procs.process.kill(input);
+          }),
       },
     },
   });
@@ -234,7 +244,7 @@ export function buildRouter(opts: BuildRouterOptions) {
   // ── Bridge remote agent surface → parent's local surface ──────────
   void pumpRemoteSurface({
     source: surface,
-    session: session as Session<AgentClient<typeof surface.contract>, SshProv>,
+    session: session as Session<AgentClient, SshProv>,
     makeSink: ({ seq }) => {
       let firstSystemFrame = true;
       const issuedAt = Date.now();
@@ -313,7 +323,7 @@ export function buildRouter(opts: BuildRouterOptions) {
     log,
   });
 
-  return { router: runtime.router, session };
+  return { group: runtime.group, handlers: runtime.handlers, session };
 }
 
 /** The write-side methods the pump sink is allowed to touch — a
