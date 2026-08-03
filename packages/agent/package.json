@@ -3,16 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "//": "@orpc/server + @orpc/client satisfy the hydrated @kolu/surface/{server,peer-server} the agent serves (peer-server's stdio-codec imports @orpc/client). @preact/signals-core backs @kolu/surface/reactor — the reactive bridge the agent uses to fold the `alerts` cell. @kolu/surface and @kolu/surface-daemon are hydrated from the Nix store, not bun.lock — so the agent build, which excludes packages/app, must declare the runtime deps of those hydrated sources itself. zod backs the durable history ring + surface-daemon's control-core schemas.",
+  "//": "@effect/platform-node satisfies the hydrated @kolu/surface transports the agent serves and dials (peer-server's NodeStream/NodeSink stdio pair, unix-socket's NodeSocket). @preact/signals-core backs @kolu/surface/reactor — the reactive bridge the agent uses to fold the `alerts` cell. @kolu/surface and @kolu/surface-daemon are hydrated from the Nix store, not bun.lock — so the agent build, which excludes packages/app, must declare the runtime deps of those hydrated sources itself. `effect` backs the durable history ring schemas, surface-daemon's control core, and the whole RPC stack; it is pinned to the EXACT version the hydrated sources declare.",
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@orpc/client": "^1.13.13",
-    "@orpc/server": "^1.13.13",
+    "@effect/platform-node": "4.0.0-beta.102",
     "@preact/signals-core": "^1.8.0",
     "drishti-common": "workspace:*",
-    "zod": "^4.3.6"
+    "effect": "4.0.0-beta.102"
   },
   "exports": {
     ".": "./src/main.ts",

@@ -24,7 +24,7 @@
  * values that differ by reference but not by content.
  */
 
-import { z } from "zod";
+import { Schema } from "effect";
 import type { MetricKey } from "./metrics";
 
 /** A host's raw metric percentages for one poll tick (0-100). The fold's input
@@ -48,7 +48,8 @@ export interface Alerts {
 
 /** The metrics folded, in a fixed order, so `applyHysteresis` iterates one list
  *  rather than three hand-copied blocks — and the SINGLE runtime source the wire
- *  schema's `z.enum` derives from, so a fourth metric touches one array, not two. */
+ *  schema's literal union derives from, so a fourth metric touches one array,
+ *  not two. */
 const METRIC_IDS = [
   "cpu",
   "mem",
@@ -56,8 +57,11 @@ const METRIC_IDS = [
   "disk",
 ] as const satisfies readonly AlertId[];
 
-export const AlertsSchema = z.object({
-  items: z.array(z.enum(METRIC_IDS)),
+/** `Schema.Literals`, not `Schema.TaggedUnion` — the wire carries the bare
+ *  metric ids, exactly as `z.enum(METRIC_IDS)` did, and the bytes are frozen
+ *  (this cell crosses the agent→parent→browser hop). */
+export const AlertsSchema = Schema.Struct({
+  items: Schema.Array(Schema.Literals(METRIC_IDS)),
 });
 
 /** The empty alert set — the fold's seed and the cell's gate-closed default.
