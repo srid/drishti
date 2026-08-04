@@ -12,13 +12,13 @@
 , ...
 }:
 {
-  "@effect/platform-node-shared@4.0.0-beta.102" = fetchurl {
-    url = "https://registry.npmjs.org/@effect/platform-node-shared/-/platform-node-shared-4.0.0-beta.102.tgz";
-    hash = "sha512-gVd793I72MrkX4dXo7eYtRKfNj0RW4eMRfVEKEJI16h2+mBDCzQ+gqMrog2hSTHQnaIbvbYShNQ4TVGuRCYZeQ==";
+  "@effect/platform-node-shared@4.0.0-beta.103" = fetchurl {
+    url = "https://registry.npmjs.org/@effect/platform-node-shared/-/platform-node-shared-4.0.0-beta.103.tgz";
+    hash = "sha512-0aCZMBid5ifqmY55TkfCDLaGTIM8qu3bNFUW7qL9vh/7jFOkaIAMX2MA8muG4deqW17XWxawddWu4v0fK+UW3g==";
   };
-  "@effect/platform-node@4.0.0-beta.102" = fetchurl {
-    url = "https://registry.npmjs.org/@effect/platform-node/-/platform-node-4.0.0-beta.102.tgz";
-    hash = "sha512-wYVAU9jAePT+gouMr/EVz1CaW6yDLjPAgXYeEFLz7wugT5iZhFRag6mqajV/wwN3bzWP2fzZHokLuPmqD/rqeA==";
+  "@effect/platform-node@4.0.0-beta.103" = fetchurl {
+    url = "https://registry.npmjs.org/@effect/platform-node/-/platform-node-4.0.0-beta.103.tgz";
+    hash = "sha512-VD8fbpendwFokMwzC7/MxazjhEVDihPC5NZtomYEyZwGaA1LXMvwP1y8pfXwfshUkG56TN4EMQqzu72c0B9FhA==";
   };
   "@ioredis/commands@1.10.0" = fetchurl {
     url = "https://registry.npmjs.org/@ioredis/commands/-/commands-1.10.0.tgz";
@@ -78,9 +78,9 @@
   };
   "drishti-agent" = copyPathToStore ./.;
   "drishti-common" = copyPathToStore ../common;
-  "effect@4.0.0-beta.102" = fetchurl {
-    url = "https://registry.npmjs.org/effect/-/effect-4.0.0-beta.102.tgz";
-    hash = "sha512-z8Y+Q76Hh/kjLFZrXu8tGn6e+tDsg45R+UHhxd190pXxD53OGwf/G/zDxXTkse4HJ5mobNZfitLfUCp4fMvu6w==";
+  "effect@4.0.0-beta.103" = fetchurl {
+    url = "https://registry.npmjs.org/effect/-/effect-4.0.0-beta.103.tgz";
+    hash = "sha512-pE8TxF4m2tQzVI+77dIlm3s+81TACV1AiX1JEkvY+zVuxgQQ8aGSkqXNJF6b/ST+coCSk5cUdbULpQ7sm4oHyw==";
   };
   "fast-check@4.9.0" = fetchurl {
     url = "https://registry.npmjs.org/fast-check/-/fast-check-4.9.0.tgz";

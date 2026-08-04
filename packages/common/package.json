@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "//": "Deps are what the wire contract needs at runtime: surface.ts uses Effect Schema and @kolu/surface/define (which pulls effect/unstable/rpc). @kolu/surface is hydrated from the Nix store, not bun.lock, so its support deps must be declared by consumers — here for the contract, and in drishti-agent for the server/peer-server it serves. `effect` is pinned to the EXACT version the hydrated @kolu/surface* sources declare (4.0.0-beta.102): a vendored source and its consumer must agree on one copy, or `_tag` narrowing across two module instances silently stops recognising anything.",
+  "//": "Deps are what the wire contract needs at runtime: surface.ts uses Effect Schema and @kolu/surface/define (which pulls effect/unstable/rpc). @kolu/surface is hydrated from the Nix store, not bun.lock, so its support deps must be declared by consumers — here for the contract, and in drishti-agent for the server/peer-server it serves. `effect` is pinned to the EXACT version the hydrated @kolu/surface* sources declare (4.0.0-beta.103): a vendored source and its consumer must agree on one copy, or `_tag` narrowing across two module instances silently stops recognising anything.",
   "main": "./src/surface.ts",
   "types": "./src/surface.ts",
   "exports": {
@@ -19,6 +19,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "effect": "4.0.0-beta.102"
+    "effect": "4.0.0-beta.103"
   }
 }
