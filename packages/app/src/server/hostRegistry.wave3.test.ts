@@ -288,7 +288,13 @@ describe("W5.2 standing drained-with-persist-failure after adopt", () => {
     // the frozen `probe.fireDrain()` carries no channel for it (that procedure
     // declares no error, so a rejecting hook would be a defect, not a report).
     expect(src).not.toMatch(/probe\.fireDrain\(\)/);
-    expect(src).toMatch(/drainPersistFailureOf\(await active\.drain\(\)\)/);
+    expect(src).toMatch(
+      /Effect\.map\(active\.drain, \(verdict\) => \{[\s\S]*?drainPersistFailureOf\(verdict\)/,
+    );
+    // The drain is an EFFECT — a description that dispatches nothing until it
+    // is run. `await active.drain` would compile, resolve WITH the Effect, and
+    // report every drain as clean while never asking the daemon anything.
+    expect(src).not.toMatch(/await active\.drain/);
   });
 
   it("convergenceFromDrainPersistFailure is what adopt must preserve", () => {

@@ -775,9 +775,15 @@ describe("W4.1 / W4.4 production assembly confinement", () => {
     // The frozen control-core drain declares no error and no output, so the
     // persist verdict cannot ride it at all. drishti asks `daemon.ring.drain`,
     // which ANSWERS, and projects the answer onto the standing anomaly.
-    expect(src).toMatch(/drainPersistFailureOf\(await active\.drain\(\)\)/);
+    expect(src).toMatch(
+      /Effect\.map\(active\.drain, \(verdict\) => \{[\s\S]*?drainPersistFailureOf\(verdict\)/,
+    );
     expect(src).toMatch(/convergenceFromDrainPersistFailure/);
     expect(src).not.toMatch(/probe\.fireDrain\(\)/);
+    // `await` on a member face compiles and never dispatches — the shape that
+    // bit kolu nine times. A drain that is described and never run reports
+    // every final write as clean.
+    expect(src).not.toMatch(/await active\.drain/);
   });
 
   it("runtime has no control as never cast (W7 / W5.8)", () => {

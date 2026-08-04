@@ -28,6 +28,7 @@ import {
   type InstanceKey,
 } from "@kolu/surface-daemon-supervisor";
 import { AGENT_SURFACE_VERSION } from "drishti-common";
+import { Effect } from "effect";
 import {
   HISTORY_RING_FILE,
   loadHistoryRing,
@@ -65,8 +66,8 @@ function syntheticProbe(args: {
     build: ReturnType<typeof daemonBuild>;
     instanceKey: InstanceKey;
   };
-  drain: () => Promise<void>;
-  awaitExit: (signal: AbortSignal) => Promise<void>;
+  drain: Effect.Effect<void, unknown>;
+  awaitExit: Effect.Effect<void>;
 }): DrainableProbe {
   return {
     capability: "drainable",
@@ -115,33 +116,16 @@ describe("synthetic mixed-build policy unit (not e2e)", () => {
         build: daemonBuild(previousBuildId),
         instanceKey: instanceKeyFromStartedAt(1_700_000_000_000),
       },
-      drain: async () => {
+      drain: Effect.sync(() => {
         drained = true;
         // Drain flushes ring (already on disk) then exits.
         exitResolve?.();
-      },
-      awaitExit: (signal) =>
-        new Promise<void>((resolve) => {
-          if (signal.aborted) {
-            resolve();
-            return;
-          }
-          const onAbort = () => {
-            cleanup();
-            resolve();
-          };
-          signal.addEventListener("abort", onAbort, { once: true });
-          let done = false;
-          const cleanup = () => {
-            if (done) return;
-            done = true;
-            signal.removeEventListener("abort", onAbort);
-          };
-          void processExit.then(() => {
-            cleanup();
-            resolve();
-          });
-        }),
+      }),
+      // The exit oracle needs no abort signal any more: convergeAdmit forks it
+      // into a scope it closes when the ceiling wins, so it is INTERRUPTED
+      // rather than notified. An abandoned AbortController was refusable;
+      // interruption is not.
+      awaitExit: Effect.promise(() => processExit),
     });
 
     const silentLog = {
@@ -151,17 +135,19 @@ describe("synthetic mixed-build policy unit (not e2e)", () => {
       debug: () => {},
       child: () => silentLog,
     };
-    const verdict = await convergeAdmit({
-      running: {
-        ...probe.identity,
-        instanceKey: probe.instanceKey,
-      },
-      budget,
-      drain: probe.fireDrain,
-      awaitExit: probe.awaitExit,
-      ceilingMs: probe.drainCeilingMs,
-      log: silentLog as never,
-    });
+    const verdict = await Effect.runPromise(
+      convergeAdmit({
+        running: {
+          ...probe.identity,
+          instanceKey: probe.instanceKey,
+        },
+        budget,
+        drain: probe.fireDrain,
+        awaitExit: probe.awaitExit,
+        ceilingMs: probe.drainCeilingMs,
+        log: silentLog as never,
+      }),
+    );
 
     expect(verdict.kind).toBe("replaced");
     expect(drained).toBe(true);

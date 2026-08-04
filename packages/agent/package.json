@@ -3,13 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "//": "@effect/platform-node satisfies the hydrated @kolu/surface transports the agent serves and dials (peer-server's NodeStream/NodeSink stdio pair, unix-socket's NodeSocket). @preact/signals-core backs @kolu/surface/reactor — the reactive bridge the agent uses to fold the `alerts` cell. @kolu/surface and @kolu/surface-daemon are hydrated from the Nix store, not bun.lock — so the agent build, which excludes packages/app, must declare the runtime deps of those hydrated sources itself. `effect` backs the durable history ring schemas, surface-daemon's control core, and the whole RPC stack; it is pinned to the EXACT version the hydrated sources declare.",
+  "//": "@effect/platform-node satisfies the hydrated @kolu/surface transports the agent serves and dials (peer-server's NodeStream/NodeSink stdio pair, unix-socket's NodeSocket). @kolu/surface and @kolu/surface-daemon are hydrated from the Nix store, not bun.lock — so the agent build, which excludes packages/app, must declare the runtime deps of those hydrated sources itself. `effect` backs the durable history ring schemas, surface-daemon's control core, the whole RPC stack, AND @kolu/surface/reactor's signal graph — the reactor runs on Effect's Atom now, so @preact/signals-core is gone from kolu and from here.",
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@effect/platform-node": "4.0.0-beta.102",
-    "@preact/signals-core": "^1.8.0",
     "drishti-common": "workspace:*",
     "effect": "4.0.0-beta.102"
   },

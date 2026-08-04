@@ -27,6 +27,7 @@
  * `@kolu/surface-daemon-supervisor`. Host-set persistence is `hostsStore.ts`.
  */
 
+import { Effect } from "effect";
 import { buildSurfaceFace } from "@kolu/surface/client";
 import type { SurfaceDispatch } from "@kolu/surface/link";
 import {
@@ -35,6 +36,7 @@ import {
   type Logger as DaemonLogger,
 } from "@kolu/surface-daemon";
 import {
+  type ControlCoreProbeClient,
   type ConvergenceAnomaly,
   convergeAdmit,
   createConnectorDrainBudget,
@@ -111,24 +113,13 @@ export type AgentAppClient = AgentClient;
 
 /** The frozen control-core face, in the exact shape the supervisor's probe
  *  walks (`client.surface.control.core.{hello,drain}`). Built over the SAME
- *  link dispatch as the app face — one wire, several faces. */
-export type ControlProbeClient = {
-  readonly surface: {
-    readonly control: {
-      readonly core: {
-        hello(): Promise<{
-          stateRoot: string;
-          surfaceVersion: string;
-          controlCoreVersion: string;
-          startedAt: number;
-          commit?: string;
-          buildId?: string;
-        }>;
-        drain(): Promise<void>;
-      };
-    };
-  };
-};
+ *  link dispatch as the app face — one wire, several faces.
+ *
+ *  It IS the framework's own `ControlCoreProbeClient` — an alias, not a
+ *  restatement. A hand-written twin would be a second copy of a shape that
+ *  moves whenever the frozen fragment does (it just did: both verbs return
+ *  Effects now), and the compiler would only catch the drift at the call. */
+export type ControlProbeClient = ControlCoreProbeClient;
 
 /** Build the control + drain faces a dialled connection needs beyond its app
  *  face. Both ride the link's own dispatch (`Connection.dispatch`), which the
@@ -136,7 +127,7 @@ export type ControlProbeClient = {
  *  several faces instead of two dials. */
 function daemonFacesOver(dispatch: SurfaceDispatch): {
   control: ControlProbeClient;
-  drain: () => Promise<DrainVerdict>;
+  drain: Effect.Effect<DrainVerdict, unknown>;
 } {
   const core = (
     buildSurfaceFace(agentControlSurface, dispatch).surface as unknown as {
@@ -145,12 +136,15 @@ function daemonFacesOver(dispatch: SurfaceDispatch): {
   ).core;
   const ring = (
     buildSurfaceFace(agentDrainSurface, dispatch).surface as unknown as {
-      ring: { drain: () => Promise<DrainVerdict> };
+      ring: { drain: () => Effect.Effect<DrainVerdict, unknown> };
     }
   ).ring;
   return {
     control: { surface: { control: { core } } },
-    drain: () => ring.drain(),
+    // An Effect VALUE, like the framework's own `DrainableProbe.fireDrain`:
+    // building it dispatches nothing, so it is safely re-runnable and cannot
+    // be `await`ed into a no-op.
+    drain: Effect.suspend(() => ring.drain()),
   };
 }
 
@@ -330,7 +324,7 @@ type ActiveCombined = {
   client: ControlProbeClient;
   /** drishti's own drain, over the SAME link: flush, abort the lifetime, and
    *  ANSWER whether the final ring write landed. */
-  drain: () => Promise<DrainVerdict>;
+  drain: Effect.Effect<DrainVerdict, unknown>;
   dispose: () => void;
   processExit: Promise<void>;
   signal: AbortSignal;
@@ -355,39 +349,24 @@ export function drishtiAgentConvergencePolicy(binderBuildId: string) {
 }
 
 /**
- * Process-exit oracle: resolve ONLY on ClosedInfo.kind === "exit".
+ * Process-exit oracle: succeed ONLY on ClosedInfo.kind === "exit".
  * transport-failed / endpoint-down / spawn-error are link or bootstrap
  * loss — never process exit; leave the wait hanging until the ceiling
  * yields drain-not-taken.
+ *
+ * It takes no `AbortSignal` any more. The signal had exactly one job — tell
+ * this poll-shaped wait to stop once the framework's ceiling won — and the
+ * framework now forks the oracle into a scope it closes on every path, so the
+ * wait is INTERRUPTED instead of notified. Interruption is not refusable; an
+ * abandoned AbortController was.
  *
  * Exported for unit tests that exercise the same wait semantics without
  * importing the full pool.
  */
 export function awaitExitViaProcessOracle(
   processExit: Promise<void>,
-  signal: AbortSignal,
-): Promise<void> {
-  return new Promise<void>((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
-    }
-    const onAbort = (): void => {
-      cleanup();
-      resolve();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    let done = false;
-    const cleanup = (): void => {
-      if (done) return;
-      done = true;
-      signal.removeEventListener("abort", onAbort);
-    };
-    void processExit.then(() => {
-      cleanup();
-      resolve();
-    });
-  });
+): Effect.Effect<void> {
+  return Effect.promise(() => processExit);
 }
 
 /**
@@ -426,20 +405,28 @@ function makeAgentAdmit(args: {
     if (active === undefined) {
       throw new Error("drishti agent admit: no matching combined connection");
     }
-    const probe = await probeDaemonIdentityFrom({
-      client: active.client,
-      dispose: active.dispose,
-      capability: "drainable",
-      awaitExit: (signal) =>
-        awaitExitViaProcessOracle(active.processExit, signal),
-      drainCeilingMs: DRAIN_TEARDOWN_CEILING_MS,
-    });
+    // `Admit` is `(client) => Promise<AdmitVerdict>` — surface-remote's
+    // session/reconnect machinery is the campaign's recorded Promise-shaped
+    // residual, and it OWNS this seam. So the framework's Effects are run
+    // here, at the boundary drishti does not own, rather than leaking a second
+    // Promise face upward.
+    const probe = await Effect.runPromise(
+      probeDaemonIdentityFrom({
+        client: active.client,
+        dispose: active.dispose,
+        capability: "drainable",
+        awaitExit: awaitExitViaProcessOracle(active.processExit),
+        drainCeilingMs: DRAIN_TEARDOWN_CEILING_MS,
+      }),
+    );
     if (active.signal.aborted) {
       throw new Error("drishti agent admit superseded");
     }
     // Stash frozen-fragment identity for the daemon dialog (typed projection).
     try {
-      const hello = await active.client.surface.control.core.hello();
+      const hello = await Effect.runPromise(
+        active.client.surface.control.core.hello(),
+      );
       args.setIdentity({
         stateRoot: hello.stateRoot,
         contractVersion: hello.surfaceVersion,
@@ -469,25 +456,27 @@ function makeAgentAdmit(args: {
     const drainCapture: { failure: DrainPersistFailure | null } = {
       failure: null,
     };
-    const drain = async (): Promise<void> => {
-      drainCapture.failure = drainPersistFailureOf(await active.drain());
-    };
+    const drain = Effect.map(active.drain, (verdict) => {
+      drainCapture.failure = drainPersistFailureOf(verdict);
+    });
 
     const admitLog: DaemonLogger = stderrLogger();
     // Baked contract version for this budget — always AGENT_SURFACE_VERSION via
     // drishtiAgentConvergencePolicy (policyOf is package-private upstream).
     const bakedContractVersion = AGENT_SURFACE_VERSION;
-    const verdict = await convergeAdmit({
-      running: {
-        ...probe.identity,
-        instanceKey: probe.instanceKey,
-      },
-      budget: args.getBudget(),
-      drain,
-      awaitExit: probe.awaitExit,
-      ceilingMs: probe.drainCeilingMs,
-      log: admitLog,
-    });
+    const verdict = await Effect.runPromise(
+      convergeAdmit({
+        running: {
+          ...probe.identity,
+          instanceKey: probe.instanceKey,
+        },
+        budget: args.getBudget(),
+        drain,
+        awaitExit: probe.awaitExit,
+        ceilingMs: probe.drainCeilingMs,
+        log: admitLog,
+      }),
+    );
     if (active.signal.aborted) {
       throw new Error("drishti agent admit superseded");
     }
@@ -621,12 +610,14 @@ function attachDaemonSession(args: {
       const drainHolder: { failure: DrainPersistFailure | null } = {
         failure: null,
       };
-      const { took, drainRejection } = await drainAndAwaitExit(
-        async () => {
-          drainHolder.failure = drainPersistFailureOf(await active.drain());
-        },
-        (signal) => awaitExitViaProcessOracle(active.processExit, signal),
-        { ceilingMs: DRAIN_TEARDOWN_CEILING_MS },
+      const { took, drainRejection } = await Effect.runPromise(
+        drainAndAwaitExit(
+          Effect.map(active.drain, (verdict) => {
+            drainHolder.failure = drainPersistFailureOf(verdict);
+          }),
+          awaitExitViaProcessOracle(active.processExit),
+          { ceilingMs: DRAIN_TEARDOWN_CEILING_MS },
+        ),
       );
       if (!took) {
         throw new Error(

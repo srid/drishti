@@ -25,14 +25,15 @@
  * pure projection of the pool — there is no shadow cache to drift.
  */
 
+import { createServer } from "node:http";
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { serve } from "@hono/node-server";
+import { NodeHttpServer } from "@effect/platform-node";
 import { cli } from "cleye";
-import { Hono } from "hono";
 import { WebSocketServer } from "ws";
-import { Schema } from "effect";
+import { Effect, Scope, Schema } from "effect";
+import { HttpRouter } from "effect/unstable/http";
 import { gateWsOrigin, parseAllowedOrigins } from "@kolu/surface/ws-origin";
 import {
   type AgentBinaryCache,
@@ -40,9 +41,9 @@ import {
 } from "@kolu/surface-remote";
 import {
   gateStaleSocket,
-  installSurfaceApp,
   serveSurfaceSocket,
   startWsHeartbeat,
+  surfaceAppLayer,
 } from "@kolu/surface-app/server";
 import { ADMIN_HOST_SENTINEL, isValidHost } from "../common/host";
 import { BRAND_DARK } from "../client/brand";
@@ -229,7 +230,6 @@ async function main(): Promise<void> {
     }
     log(`serving prebuilt client bundle from ${distDir}`);
   }
-  const app = new Hono();
   // surface-app owns the freshness contract on the wire (the four-times-
   // relitigated stale-client bug): the no-store SPA shell, immutable hashed
   // `/assets/*`, a 404 (never the HTML shell) on an asset miss, the dynamic
@@ -237,10 +237,12 @@ async function main(): Promise<void> {
   // caching worker earlier drishti builds registered. One call replaces the
   // bare `serveStatic` mount that set no cache headers at all.
   //
-  // Registered AFTER the `/rpc/ws` upgrade is wired below — but order is moot
-  // here: drishti's WebSocket lives on the raw `httpServer.on("upgrade")`
-  // handler, not in this Hono app, so this static catch-all only sees HTTP and
-  // must simply be the app's last route (it is — nothing is mounted after it).
+  // It is an `HttpRouter` LAYER now, not an `app.use(...)` installer, so
+  // registration order carries no meaning: find-my-way ranks by specificity.
+  // drishti's WebSocket never rode this app anyway — it lives on the raw
+  // `httpServer.on("upgrade")` handler below, which is exactly why the upgrade
+  // stays ours (the stale-tab gate and the ws reaper must run in front of
+  // dispatch).
   // The app's identity is the host this drishti runs on — `drishti@<host>`.
   // Baking the server's own hostname into the manifest's name/short_name/id
   // makes each deployment a distinct, separately-labelled installable PWA
@@ -248,7 +250,7 @@ async function main(): Promise<void> {
   // one "drishti" in the OS app list), and the client reads `short_name` back
   // for the matching tab title.
   const appName = appNameForHost(hostname());
-  installSurfaceApp(app, {
+  const appLayer = surfaceAppLayer({
     clientDist: distDir,
     manifest: {
       name: appName,
@@ -279,23 +281,44 @@ async function main(): Promise<void> {
     process.env.DRISHTI_ALLOWED_ORIGINS,
   );
 
-  const httpServer = serve(
-    {
-      fetch: app.fetch,
-      port: argv.flags.port,
-      hostname: bindHost,
-    },
-    (info) => {
-      log(`listening on http://${info.address}:${info.port}`);
-      if (["127.0.0.1", "localhost", "::1"].includes(bindHost)) {
-        log(`open http://localhost:${info.port}/`);
-      } else {
-        log(
-          `WARNING: bound to ${bindHost} (not loopback) — the RPC surface is unauthenticated; anyone who can reach this port can read fleet metrics and add ssh hosts. Prefer the default 127.0.0.1 unless this port is firewalled or behind a trusted proxy.`,
-        );
-      }
-    },
+  // We own the `http.Server` and hand its `request` event an Effect handler
+  // rather than letting the platform own the listener — that is what leaves the
+  // `upgrade` event to US below. Node fans an event out to EVERY listener, so a
+  // framework-owned upgrade handler would also try to answer a socket we have
+  // already upgraded.
+  const httpServer = createServer();
+  const httpScope = Scope.makeUnsafe();
+  httpServer.on(
+    "request",
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const httpEffect = yield* HttpRouter.toHttpEffect(appLayer);
+        return yield* NodeHttpServer.makeHandler(httpEffect, {
+          scope: httpScope,
+        });
+      }).pipe(
+        Scope.provide(httpScope),
+        // The platform services the static layer asks for: file system, path,
+        // the file-response platform, ETags.
+        Effect.provide(NodeHttpServer.layerHttpServices),
+      ),
+    ),
   );
+  httpServer.listen({ host: bindHost, port: argv.flags.port }, () => {
+    const info = httpServer.address();
+    const address =
+      info === null || typeof info === "string" ? bindHost : info.address;
+    const port =
+      info === null || typeof info === "string" ? argv.flags.port : info.port;
+    log(`listening on http://${address}:${port}`);
+    if (["127.0.0.1", "localhost", "::1"].includes(bindHost)) {
+      log(`open http://localhost:${port}/`);
+    } else {
+      log(
+        `WARNING: bound to ${bindHost} (not loopback) — the RPC surface is unauthenticated; anyone who can reach this port can read fleet metrics and add ssh hosts. Prefer the default 127.0.0.1 unless this port is firewalled or behind a trusted proxy.`,
+      );
+    }
+  });
 
   // ── WebSocket: ONE server, ONE endpoint ──────────────────────────────
   // Every configured host's data now rides this SAME socket, key-folded
@@ -321,26 +344,14 @@ async function main(): Promise<void> {
   // ── WebSocket upgrade: parse ?host=<id>, then dispatch directly ──────
   // The `host` variable is closed over in the handleUpgrade callback so
   // there is no need to taint the IncomingMessage object with __host.
-  (
-    httpServer as unknown as {
-      on: (
-        event: "upgrade",
-        cb: (req: unknown, socket: unknown, head: unknown) => void,
-      ) => void;
-    }
-  ).on("upgrade", (req, socket, head) => {
-    const r = req as {
-      url?: string;
-      headers?: { origin?: string | string[]; host?: string | string[] };
-    };
-    const s = socket as { destroy: () => void };
-    if (r.url === undefined) {
-      s.destroy();
+  httpServer.on("upgrade", (req, socket, head) => {
+    if (req.url === undefined) {
+      socket.destroy();
       return;
     }
-    const url = new URL(r.url, "ws://localhost");
+    const url = new URL(req.url, "ws://localhost");
     if (url.pathname !== "/rpc/ws") {
-      s.destroy();
+      socket.destroy();
       return;
     }
     // CSWSH gate (shared @kolu/surface gate): reject a cross-site browser
@@ -349,7 +360,7 @@ async function main(): Promise<void> {
     // passes. `gateWsOrigin` reads the headers, `destroy()`s the socket on a
     // reject, and returns true so we return without upgrading.
     if (
-      gateWsOrigin({ headers: r.headers ?? {} }, s, {
+      gateWsOrigin(req, socket, {
         allowedOrigins,
         onReject: (o) =>
           log(`rejecting ws upgrade: disallowed Origin ${JSON.stringify(o)}`),
@@ -359,14 +370,10 @@ async function main(): Promise<void> {
     }
     const host = url.searchParams.get("host");
     if (host !== ADMIN_HOST_SENTINEL) {
-      s.destroy();
+      socket.destroy();
       return;
     }
-    wss.handleUpgrade(
-      req as Parameters<typeof wss.handleUpgrade>[0],
-      socket as Parameters<typeof wss.handleUpgrade>[1],
-      head as Parameters<typeof wss.handleUpgrade>[2],
-      (ws) => {
+    wss.handleUpgrade(req, socket, head, (ws) => {
         // Stale-tab handshake gate (@kolu/surface-app): a tab that reconnects
         // after a PARENT restart still carries the previous process's `pid`.
         // `gateStaleSocket` installs the `error` listener FIRST (the one crash-free
@@ -426,8 +433,7 @@ async function main(): Promise<void> {
             log(`browser ws serving failed (admin): ${String(err)}`),
           )
           .finally(() => servings.delete(serving));
-      },
-    );
+    });
   });
 
   const shutdown = (sig: string) => {
@@ -446,12 +452,8 @@ async function main(): Promise<void> {
         /* already gone */
       }
     }
-    const srv = httpServer as unknown as {
-      closeAllConnections?: () => void;
-      close: (cb?: () => void) => void;
-    };
-    srv.closeAllConnections?.();
-    srv.close(() => process.exit(0));
+    httpServer.closeAllConnections?.();
+    httpServer.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1000).unref();
   };
   process.on("SIGINT", () => shutdown("SIGINT"));

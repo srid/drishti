@@ -216,12 +216,24 @@ export function buildRouter(opts: BuildRouterOptions) {
     procedures: {
       process: {
         kill: ({ input }: { input: KillInput }) =>
-          Effect.promise(async () => {
+          // `Effect.suspend` (not `Effect.promise`): the forwarder RETURNS an
+          // Effect now, so wrapping it in a promise would resolve WITH the
+          // Effect object and forward nothing. Suspending also re-reads
+          // `liveProcedures.current` per call, which is the point of the holder.
+          Effect.suspend(() => {
             const procs = liveProcedures.current;
             if (!procs) {
-              return { ok: false, error: "no live agent connection" };
+              return Effect.succeed({
+                ok: false,
+                error: "no live agent connection",
+              });
             }
-            return procs.process.kill(input);
+            // `orDie`, because this procedure DECLARES no error: a forwarding
+            // failure is a defect on the parent's own channel, exactly as the
+            // previous `Effect.promise` wrapper made a rejection one. The
+            // declared `{ ok, error? }` output is the agent's verdict about a
+            // successful call, never a transport verdict.
+            return Effect.orDie(procs.process.kill(input));
           }),
       },
     },

@@ -62,20 +62,66 @@ export interface DaemonDial {
   dispose: () => Promise<void>;
 }
 
+/**
+ * THE run edge for this testlib's unary verbs.
+ *
+ * A unary member call is an `Effect` — a description that dispatches nothing
+ * until it is run. So the faces below cannot simply be CAST to a Promise
+ * shape: `await` on an un-run Effect compiles, resolves with the Effect object,
+ * and never touches the wire — a test that fails to dispatch the call it
+ * asserts about is worse than no test. Running it here, once, is what keeps
+ * every call site's `await client.control.hello()` honest.
+ */
+function unary<A>(call: () => Effect.Effect<A, unknown>): () => Promise<A> {
+  return () => Effect.runPromise(call());
+}
+
 function facesOver(
   dispatch: Parameters<typeof buildSurfaceFace>[1],
   dispose: () => Promise<void>,
 ): DaemonDial {
-  const app = buildSurfaceFace(agentDialSurface, dispatch)
-    .surface as unknown as DaemonDial["app"];
-  const control = (
+  const appFace = buildSurfaceFace(agentDialSurface, dispatch)
+    .surface as unknown as Omit<DaemonDial["app"], "process"> & {
+    process: {
+      kill: (input: {
+        pid: number;
+        signal?: "TERM" | "KILL" | "HUP" | "INT";
+      }) => Effect.Effect<{ ok: boolean; error?: string }, unknown>;
+    };
+  };
+  const app: DaemonDial["app"] = {
+    metricHistory: appFace.metricHistory,
+    system: appFace.system,
+    alerts: appFace.alerts,
+    process: {
+      kill: (input) => Effect.runPromise(appFace.process.kill(input)),
+    },
+  };
+  const core = (
     buildSurfaceFace(agentControlSurface, dispatch).surface as unknown as {
-      core: ControlFace;
+      core: {
+        hello: () => Effect.Effect<
+          Awaited<ReturnType<ControlFace["hello"]>>,
+          unknown
+        >;
+        drain: () => Effect.Effect<void, unknown>;
+      };
     }
   ).core;
+  const control: ControlFace = {
+    hello: unary(() => core.hello()),
+    drain: unary(() => core.drain()),
+  };
   const drainFace = buildSurfaceFace(agentDrainSurface, dispatch)
-    .surface as unknown as { ring: { drain: () => Promise<DrainVerdict> } };
-  return { app, control, drain: () => drainFace.ring.drain(), dispose };
+    .surface as unknown as {
+    ring: { drain: () => Effect.Effect<DrainVerdict, unknown> };
+  };
+  return {
+    app,
+    control,
+    drain: unary(() => drainFace.ring.drain()),
+    dispose,
+  };
 }
 
 /** Dial the daemon through a `--stdio` front child's pipes. */

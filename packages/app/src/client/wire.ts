@@ -32,6 +32,7 @@
  * wait.
  */
 
+import { Effect } from "effect";
 import type { WatchableWire } from "@kolu/surface/link";
 import { createProcessIdEcho } from "@kolu/surface-app/connect";
 import { createNotify } from "@kolu/surface-app/notify";
@@ -199,6 +200,21 @@ export function hostCollections(host: string) {
  *  its host-lifecycle procedures. */
 export function adminClient() {
   return conn.clients.admin;
+}
+
+/**
+ * THE client's ONE run edge for a unary member call.
+ *
+ * A unary verb returns an `Effect` now, and an `Effect` is a DESCRIPTION: it
+ * dispatches nothing until something runs it. `await`ing one compiles and
+ * silently does nothing — the shape that bit kolu nine times — so every call
+ * site in this client goes through this single named helper instead of
+ * reaching for `Effect.runPromise` itself. Solid's event handlers, `createEffect`
+ * bodies and store writers are synchronous callbacks with no Effect slot to
+ * compose into; this is where that seam is, named once so it stays countable.
+ */
+export function runCall<A, E>(call: Effect.Effect<A, E>): Promise<A> {
+  return Effect.runPromise(call);
 }
 
 /** The admin surface's bound PROCEDURES. `adminRpc().hosts.add(...)` /

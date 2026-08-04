@@ -200,6 +200,7 @@ import {
   hostStreams,
   notify,
   rememberServerProcessId,
+  runCall,
   surfaceAppClient,
 } from "./wire";
 
@@ -551,9 +552,9 @@ function MultiHostApp() {
   // reconnects this browser socket; this RPC reaches past it to the *agent*
   // links the parent holds over ssh.
   const recheckAllHosts = () => {
-    void adminRpc()
-      .hosts.recheck({})
-      .catch((err) => console.error("hosts.recheck failed", err));
+    void runCall(adminRpc().hosts.recheck({})).catch((err) =>
+      console.error("hosts.recheck failed", err),
+    );
   };
   // Re-probe on the becoming-visible edge, off the shared signal (not a second
   // listener); `defer` skips the initial value so only real transitions fire.
@@ -763,7 +764,7 @@ function MultiHostApp() {
 
   const onAdd = async (host: string): Promise<string | null> => {
     try {
-      const res = await adminRpc().hosts.add({ host });
+      const res = await runCall(adminRpc().hosts.add({ host }));
       if (!res.ok) return res.error ?? "add failed";
       setView({ kind: "host", host });
       return null;
@@ -774,7 +775,7 @@ function MultiHostApp() {
 
   const onRemove = async (host: string) => {
     try {
-      await adminRpc().hosts.remove({ host });
+      await runCall(adminRpc().hosts.remove({ host }));
       // Drop the intent if the removed host was the selected one, so the
       // URL clears to the fleet path. (`resolvedView` already falls the
       // pane back to fleet; resetting the intent keeps the address in sync.)
@@ -1211,9 +1212,9 @@ function HostView(props: {
   // `connection` cell streams the resulting copying→connecting→connected
   // transition back on its own.
   const onReconnect = () => {
-    void adminRpc()
-      .hosts.reconnect({ host: props.host })
-      .catch((err) => console.error(`reconnect ${props.host} failed`, err));
+    void runCall(adminRpc().hosts.reconnect({ host: props.host })).catch((err) =>
+      console.error(`reconnect ${props.host} failed`, err),
+    );
   };
 
   // W3.4 / U2.2: daemon status comes from the fleet store (single writer);
@@ -1576,10 +1577,12 @@ function HostView(props: {
                   : null
               }
               onKill={(signal) =>
-                hostRpc(props.host).process.kill({
-                  pid: s().pid,
-                  signal,
-                })
+                runCall(
+                  hostRpc(props.host).process.kill({
+                    pid: s().pid,
+                    signal,
+                  }),
+                )
               }
             />
           )}
