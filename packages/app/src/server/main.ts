@@ -306,13 +306,17 @@ async function main(): Promise<void> {
   );
   httpServer.listen({ host: bindHost, port: argv.flags.port }, () => {
     const info = httpServer.address();
-    const address =
-      info === null || typeof info === "string" ? bindHost : info.address;
-    const port =
-      info === null || typeof info === "string" ? argv.flags.port : info.port;
-    log(`listening on http://${address}:${port}`);
+    // We bind host+port, so `address()` inside this callback is always an
+    // `AddressInfo`. Crash rather than substitute the REQUESTED bind for the
+    // BOUND one: the log line's whole job is to say where we actually landed.
+    if (info === null || typeof info === "string") {
+      throw new Error(
+        `listen: expected a TCP address, got ${JSON.stringify(info)}`,
+      );
+    }
+    log(`listening on http://${info.address}:${info.port}`);
     if (["127.0.0.1", "localhost", "::1"].includes(bindHost)) {
-      log(`open http://localhost:${port}/`);
+      log(`open http://localhost:${info.port}/`);
     } else {
       log(
         `WARNING: bound to ${bindHost} (not loopback) — the RPC surface is unauthenticated; anyone who can reach this port can read fleet metrics and add ssh hosts. Prefer the default 127.0.0.1 unless this port is firewalled or behind a trusted proxy.`,
