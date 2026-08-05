@@ -13,6 +13,7 @@
 
 import type { Readable, Writable } from "node:stream";
 import { buildSurfaceFace } from "@kolu/surface/client";
+import { awaitStdioReadiness } from "@kolu/surface/links/readiness";
 import { stdioLink } from "@kolu/surface/links/stdio";
 import { unixSocketLink } from "@kolu/surface/links/unix-socket";
 import { Effect, Fiber, Option, Stream } from "effect";
@@ -124,15 +125,36 @@ function facesOver(
   };
 }
 
-/** Dial the daemon through a `--stdio` front child's pipes. */
+/**
+ * Dial the daemon through a `--stdio` front child's pipes.
+ *
+ * The readiness wait is the REAL gate, not a test convenience: `stdioLink`
+ * refuses to attach an RPC client (and therefore Effect RPC's pinger) to a
+ * stream nothing has proven speaks this protocol epoch, and the only way to a
+ * proof is reading the front's own `ready` banner off `read`
+ * (juspay/kolu#2101). So every test that dials a front here also exercises the
+ * front's converge-and-greet pre-step — a front that regressed to splicing
+ * blind fails these tests at the gate instead of ten seconds later as a
+ * nondescript transport death.
+ *
+ * The deadline is the test-lane budget, not the connector's 180s: a front on
+ * this same box either converges quickly or has something to say, and a suite
+ * should report that as a failure long before an ssh dial would give up.
+ */
 export async function dialOverStdio(
   read: Readable,
   write: Writable,
 ): Promise<DaemonDial> {
+  const readiness = await awaitStdioReadiness({
+    read,
+    deadlineMs: 30_000,
+    describe: "drishti-agent --stdio front",
+  });
   const link = await stdioLink({
     group: agentDaemonComposed.group,
     read,
     write,
+    readiness,
   });
   return facesOver(link.dispatch, () => link.dispose());
 }

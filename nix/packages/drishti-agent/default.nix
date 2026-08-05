@@ -18,7 +18,15 @@
 #   agent-touching source edit → BUILD_ID rotates
 #
 # UW3: accidental agent-drv change is a fleet-wide daemon restart.
-{ stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-daemon, osfacts-client }:
+#
+# juspay/kolu#2101: `@kolu/surface-daemon-supervisor` joined the hydrated set
+# when the `--stdio` front started CONVERGING the durable daemon before it
+# relays a byte. The kit runs in the fronting process, never in the daemon, so
+# it cannot change what a daemon restart loads — but the front is the agent
+# binary, so the closure has to carry it. `ts-pattern` joins agent.package.json
+# for the same reason: it is a real runtime import of that kit (unlike
+# `@kolu/log`, which surface-daemon takes as `import type` only).
+{ stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-daemon, kolu-surface-daemon-supervisor, osfacts-client }:
 let
   src = lib.fileset.toSource {
     root = ../../..;
@@ -66,6 +74,7 @@ stdenv.mkDerivation {
     sh scripts/hydrate-kolu-packages.sh \
       ${kolu-surface} @kolu/surface \
       ${kolu-surface-daemon} @kolu/surface-daemon \
+      ${kolu-surface-daemon-supervisor} @kolu/surface-daemon-supervisor \
       ${osfacts-client} osfacts-client
   '';
 

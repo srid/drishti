@@ -63,6 +63,7 @@ import {
   type SshProv,
 } from "@kolu/surface-remote";
 import { AGENT_SURFACE_VERSION } from "drishti-common";
+import { drishtiAgentConvergencePolicy } from "drishti-common/convergence-policy";
 import {
   agentControlSurface,
   agentDialSurface,
@@ -92,9 +93,6 @@ const CONNECT_TIMEOUT_MS = 30_000;
  *  above a local 2s because each liveness edge is a full ssh round-trip. */
 const DRAIN_TEARDOWN_CEILING_MS = 6_000;
 
-/** Drain budget: at most 2 drain attempts per lineage, then adopt the
- *  resident with a standing anomaly rather than go dark. */
-const DRAIN_MAX_ATTEMPTS = 2;
 
 // The three surfaces the agent daemon serves — the versioned app surface, the
 // frozen control core, and drishti's own daemon sibling — plus the composed
@@ -330,23 +328,17 @@ type ActiveCombined = {
   signal: AbortSignal;
 };
 
-/** drishti's connector-arm convergence policy — drainable; drain-newer on
- *  contract skew; drain-and-replace on build mismatch; budgeted adopt-stale. */
-export function drishtiAgentConvergencePolicy(binderBuildId: string) {
-  return {
-    capability: "drainable" as const,
-    baked: {
-      contractVersion: AGENT_SURFACE_VERSION,
-      build: daemonBuild(binderBuildId),
-    },
-    onContractSkew: { kind: "drain-newer-else-refuse" as const },
-    onBuildMismatch: { kind: "drain-and-replace" as const },
-    drainBudget: {
-      maxAttempts: DRAIN_MAX_ATTEMPTS,
-      onGiveUp: "adopt-stale" as const,
-    },
-  };
-}
+/** drishti's convergence policy — drainable; drain-newer on contract skew;
+ *  drain-and-replace on build mismatch; budgeted adopt-stale.
+ *
+ *  The DECLARATION moved to `drishti-common/convergence-policy` when the
+ *  agent's `--stdio` front became a second supervisor of the same daemon
+ *  (juspay/kolu#2101): a policy two supervisors must agree on cannot live
+ *  inside one of them, and the agent's Nix closure cannot see `packages/app` at
+ *  all. Re-exported here so no import path moved — what moved is the source of
+ *  truth, not the API. */
+export { DRAIN_MAX_ATTEMPTS } from "drishti-common/convergence-policy";
+export { drishtiAgentConvergencePolicy };
 
 /**
  * Process-exit oracle: succeed ONLY on ClosedInfo.kind === "exit".

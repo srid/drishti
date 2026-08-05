@@ -10,6 +10,7 @@
     ".": "./src/surface.ts",
     "./alerts": "./src/alerts.ts",
     "./browser": "./src/browser.ts",
+    "./convergence-policy": "./src/convergencePolicy.ts",
     "./daemon": "./src/daemon.ts",
     "./history": "./src/history.ts",
     "./metrics": "./src/metrics.ts",

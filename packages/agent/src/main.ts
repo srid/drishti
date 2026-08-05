@@ -27,11 +27,15 @@ import {
   daemonMain,
   daemonProcessMain,
   frontDaemonOverStdio,
+  readBakedIdentity,
   reExecAsDetachedDaemon,
   stderrLogger,
 } from "@kolu/surface-daemon";
+import { writeStdioReadiness } from "@kolu/surface/links/readiness";
 import type { SurfaceHandlers } from "@kolu/surface/server";
+import { Effect } from "effect";
 import type { Rpc, RpcGroup } from "effect/unstable/rpc";
+import { convergeAgentStdioFront } from "./convergeFront";
 import { HISTORY_RING_FILE } from "./historyRing";
 import {
   readProcessIdentity,
@@ -138,6 +142,39 @@ async function main(): Promise<void> {
       process.stdout.write("DEBUG: this line corrupts the protocol channel\n");
     }
     log(`drishti-agent --stdio: fronting daemon at ${home.socketPath}`);
+
+    // ── Converge BEFORE relaying (juspay/kolu#2101) ─────────────────────────
+    //
+    // The convergence kit, run HERE on the box where the gate file, the pid
+    // table and the signals live — the parity drishti's fleet arm shipped
+    // without. Only once an agent of this epoch demonstrably holds the
+    // rendezvous does the front greet and splice; a front that cannot converge
+    // says so on the wire and exits.
+    //
+    // THE PROCESS EDGE: the kit is Effect-native all the way down and this is a
+    // CLI entry whose caller is `main()`'s own `.catch`. The relay below is
+    // Promise-shaped by `frontDaemonOverStdio`'s contract, so there is nothing
+    // left to compose into — the crossing happens once, named, at the boundary.
+    const verdict = await Effect.runPromise(
+      convergeAgentStdioFront({
+        home,
+        stderrLog: home.file("agent.stderr.log"),
+        // The front's own baked id. It is the closure ssh just provisioned, so
+        // its identity IS the expectation the policy compares against.
+        buildId: readBakedIdentity("DRISHTI_AGENT").staleKey,
+      }),
+    );
+    // The banner is the FIRST protocol byte on stdout either way — written
+    // while the front still owns stdout, before `relay()` takes it over, which
+    // is what keeps it compatible with the byte-splice guarantee.
+    writeStdioReadiness(process.stdout, verdict);
+    if (verdict.verdict === "refused") {
+      // Exit non-zero WITHOUT relaying. The structured evidence already went to
+      // stderr from the converge itself; this line is the operator's summary.
+      log(`drishti-agent --stdio: refusing to relay — ${verdict.detail}`);
+      process.exit(1);
+    }
+
     await frontDaemonOverStdio({
       socketPath: home.socketPath,
       spawnDaemon: () =>
