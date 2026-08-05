@@ -496,10 +496,21 @@ export async function buildAgentRuntime(
       "alerts reactor: metrics source was never subscribed during surface " +
         "construction — the scan→source eager-subscribe invariant broke",
     );
-  void built.done.catch((err: unknown) => {
-    log(`surface runtime fault: ${(err as Error).message} — exiting`);
-    process.exit(1);
-  });
+  // NOTE — `built.done` is deliberately NOT observed here any more.
+  //
+  // It used to carry a `void built.done.catch(… process.exit(1))`. The verdict
+  // was right (a runtime fault is structural death, not a transient) but the
+  // mechanism was wrong: a bare exit from inside the runtime builder skips the
+  // daemon's shutdown spine, so the unix socket and the pid gate are never
+  // released and the history ring is never flushed. A successor then meets a
+  // gate naming a dead pid, and the ring has lost everything since the last
+  // periodic persist.
+  //
+  // `done` is returned instead, and whoever OWNS the process decides: the
+  // daemon binary arms `armRuntimeFaultExit` and hands the resulting signal to
+  // `daemonMain` as `faultSignal`, so the fault tears down in order and exits
+  // non-zero. A library that builds a runtime has no business killing a process
+  // it does not own — the test path (`serveAgent`) has no daemon to exit at all.
 
   // W6.5: after restoring non-empty ring alerts, keep them in the hold band
   // for a short grace window so the successor's first served alerts frame

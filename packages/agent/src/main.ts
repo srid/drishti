@@ -23,6 +23,7 @@
  */
 
 import {
+  armRuntimeFaultExit,
   daemonHome,
   daemonMain,
   daemonProcessMain,
@@ -214,6 +215,37 @@ async function main(): Promise<void> {
         },
       });
 
+      const daemonLog = stderrLogger();
+
+      // ── An owned surface-runtime fault exits the daemon ──────────────────
+      //
+      // `runtime.done` rejects on structural wiring death — a cell, a bus, a
+      // reactor edge. Serving on through one produces the deploy-#2 zombie:
+      // alive, gate held, socket answering, runtime dead, and the parent
+      // reconnecting forever into something that will never speak again.
+      //
+      // This used to be a bare `process.exit(1)` inside `buildAgentRuntime`,
+      // which got the verdict right and the MECHANISM wrong: it bypassed the
+      // shutdown spine, so the socket and the pid gate were never released and
+      // the history ring was never flushed. The successor then had to reap a
+      // gate whose owner was already gone, and the ring lost everything since
+      // the last periodic persist.
+      //
+      // Riding `faultSignal` instead means the daemon tears down in order —
+      // last rites, socket closed, gate released — and `daemonExitCode` scores
+      // `runtime-fault` non-zero, which is the supervisor's only channel for
+      // "that was a crash, not a stop".
+      const faultSignal = armRuntimeFaultExit({
+        done: runtime.done,
+        log: daemonLog,
+        subject: "drishti agent surface runtime",
+        // drishti's last rites are its history ring: the metric ring is the one
+        // piece of state a respawn cannot reconstruct, so it is persisted on the
+        // fault path exactly as the control-core drain persists it on the clean
+        // one. A throw here is logged and does not stop the exit.
+        lastRites: () => runtime.flushRing(),
+      });
+
       try {
         return await daemonMain({
           home,
@@ -226,8 +258,9 @@ async function main(): Promise<void> {
             ms: IDLE_TIMEOUT_MS,
             isIdle: runtime.isIdle,
           },
-          log: stderrLogger(),
+          log: daemonLog,
           signal: drainSignal.signal,
+          faultSignal,
           onReady: ({ socketPath, pid }) =>
             log(`listening on ${socketPath} (pid ${pid})`),
         });
