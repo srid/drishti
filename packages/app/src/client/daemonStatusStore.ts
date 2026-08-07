@@ -20,7 +20,7 @@ import {
   applyRenewStart,
   type RenewUiState,
 } from "./daemonStatusPresentation";
-import { adminRpc } from "./wire";
+import { adminRpc, runCall } from "./wire";
 
 export type DaemonStatusMap = Readonly<Record<string, DaemonStatus | null>>;
 export type RenewStateMap = Readonly<Record<string, RenewUiState>>;
@@ -59,8 +59,7 @@ export function createDaemonStatusStore(): DaemonStatusStore {
   const [dialogHost, setDialogHost] = createSignal<string | null>(null);
 
   const pollHost = (host: string) => {
-    void adminRpc()
-      .hosts.daemonStatus({ host })
+    void runCall(adminRpc().hosts.daemonStatus({ host }))
       .then((r) => {
         const folded = applyDaemonStatusOk(r);
         setByHost((prev) => ({ ...prev, [host]: folded.status }));
@@ -84,8 +83,7 @@ export function createDaemonStatusStore(): DaemonStatusStore {
       ...prev,
       [host]: applyRenewStart(prev[host] ?? { kind: "idle" }),
     }));
-    void adminRpc()
-      .hosts.renew({ host })
+    void runCall(adminRpc().hosts.renew({ host }))
       .then((r) => {
         setRenewByHost((prev) => ({
           ...prev,
@@ -105,8 +103,7 @@ export function createDaemonStatusStore(): DaemonStatusStore {
   };
 
   const reconnect = (host: string) => {
-    void adminRpc()
-      .hosts.reconnect({ host })
+    void runCall(adminRpc().hosts.reconnect({ host }))
       .then(() => pollHost(host))
       .catch((err) => console.error(`reconnect ${host} failed`, err));
   };

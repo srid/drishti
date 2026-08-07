@@ -18,7 +18,7 @@
  */
 
 import { defineSurface, type SurfaceTypes } from "@kolu/surface/define";
-import { z } from "zod";
+import { Effect, Schema } from "effect";
 import { alertsEqual, AlertsSchema, NO_ALERTS } from "./alerts";
 
 /** Present osfacts' network-order listener bytes at the consumer edge.
@@ -80,8 +80,16 @@ export function formatListenerAddress(address: string, port: number): string {
 // mirror-seam composition therefore live in the APP-only `drishti-common/browser`
 // subpath (./browser.ts), imported only by the parent re-serve + the client.
 
-const PidSchema = z.number().int().nonnegative();
-const ProcessFacetSchema = z.enum([
+// ⚠ **#17 mapping LAW for every schema in this file.** These shapes are the
+// WIRE (agent → parent → browser) and, for `MetricSampleSchema`, the DISK ring.
+// zod `.optional()` → `Schema.optionalKey` (never `Schema.optional`, which
+// round-trips an explicit `undefined` through `null`); zod `.default(v)` →
+// `Schema.withDecodingDefaultKey` (never `withDecodingDefault`);
+// `z.discriminatedUnion("kind", …)` → `Schema.Union`, NEVER
+// `Schema.TaggedUnion` (which would rename the discriminant to `_tag` and
+// change the bytes).
+const PidSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const ProcessFacetSchema = Schema.Literals([
   "proc",
   "ports",
   "mem",
@@ -93,76 +101,86 @@ const ProcessFacetSchema = z.enum([
   "status_threads",
   "argv",
 ]);
-const ProcessSchema = z.object({
+const ProcessSchema = Schema.Struct({
   /** Short process name from osfacts' versioned `P` row. */
-  name: z.string(),
+  name: Schema.String,
   /** Full argv joined for display/search and capped at the historic 200 chars. */
-  command: z.string(),
+  command: Schema.String,
   /** Per-process CPU use. Native rows are the poll-window rate derived from
    *  osfacts cumulative counters. Command-recovered rows (see `fallbacks`)
    *  carry the producer command's own measurement (e.g. Darwin `ps` `%cpu`). */
-  cpuPct: z.number().nonnegative(),
+  cpuPct: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   /** Effective uid rendered with the historic Linux policy: uid 0 is root,
    *  every other uid is decimal. Empty only when the uid facet is unreadable. */
-  user: z.string(),
+  user: Schema.String,
   /** Working directory from the independent cwd facet. */
-  cwd: z.string().nullable(),
-  state: z.string().length(1).nullable(),
-  nice: z.number().int().nullable(),
+  cwd: Schema.NullOr(Schema.String),
+  state: Schema.NullOr(Schema.String.check(Schema.isLengthBetween(1, 1))),
+  nice: Schema.NullOr(Schema.Int),
   /** Darwin does not expose a thread count through this facet. */
-  threads: z.number().int().positive().nullable(),
+  threads: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
   /** Parent process id from the same osfacts snapshot. 0 for a root/orphan,
    *  and for a pid represented only by a `U` row (no readable `P` row). */
   ppid: PidSchema,
   /** Resident set size reported by osfacts' `M` facet. Null when that facet
    *  is explicitly unreadable for this pid. */
-  rssBytes: z.number().int().nonnegative().nullable(),
+  rssBytes: Schema.NullOr(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  ),
   /** Process start identity as epoch milliseconds, derived from osfacts' `S`
    *  microsecond timestamp. Null when that facet is explicitly unreadable. */
-  startedAtMs: z.number().nonnegative().nullable(),
+  startedAtMs: Schema.NullOr(
+    Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  ),
   /** Listening TCP sockets attributed to this pid in the same snapshot.
    *  Address remains network-order hex: classification is consumer policy. */
-  listeners: z.array(
-    z.object({
-      port: z.number().int().positive().max(65535),
-      address: z.string(),
+  listeners: Schema.Array(
+    Schema.Struct({
+      port: Schema.Int.check(
+        Schema.isGreaterThan(0),
+        Schema.isLessThanOrEqualTo(65535),
+      ),
+      address: Schema.String,
       /** Socket-owner uid from osfacts' `L` row when the platform can report
        *  it. This qualifies the listener, not the process's credentials. */
-      uid: z.number().int().nonnegative().nullable(),
+      uid: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
     }),
   ),
   /** Values recovered through an external command after their authoritative
    *  osfacts facets were unreadable. Kept per-facet so consumers can disclose
    *  provenance without knowing which fallback commands exist. */
-  fallbacks: z.array(
-    z.object({
+  fallbacks: Schema.Array(
+    Schema.Struct({
       facet: ProcessFacetSchema,
-      command: z.string().min(1),
+      command: Schema.String.check(Schema.isMinLength(1)),
     }),
   ),
   /** Facet-specific mandatory osfacts `U` rows. A blind `ports` facet no
    *  longer makes the host listener table empty: OSF6 emits those listeners
    *  separately as claimed or unclaimed facts. */
-  unreadable: z.array(
-    z.object({
+  unreadable: Schema.Array(
+    Schema.Struct({
       facet: ProcessFacetSchema,
-      errno: z.string(),
+      errno: Schema.String,
     }),
   ),
 });
 
-const UnclaimedListenerSchema = z.object({
-  port: z.number().int().positive().max(65535),
-  address: z.string(),
+const UnclaimedListenerSchema = Schema.Struct({
+  port: Schema.Int.check(
+    Schema.isGreaterThan(0),
+    Schema.isLessThanOrEqualTo(65535),
+  ),
+  address: Schema.String,
   /** Linux can identify the socket owner without identifying a pid. Darwin
    *  legitimately leaves this null. */
-  uid: z.number().int().nonnegative().nullable(),
+  uid: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
 });
 
-const SourceErrorFactSchema = z.object({
-  operation: z.enum(["snapshot", "host"]),
-  source: z.string(),
-  facet: z.enum([
+const SourceErrorFactSchema = Schema.Struct({
+  operation: Schema.Literals(["snapshot", "host"]),
+  source: Schema.String,
+  facet: Schema.Literals([
     "proc",
     "ports",
     "ports_unclaimed",
@@ -180,7 +198,7 @@ const SourceErrorFactSchema = z.object({
     "net",
     "disk",
   ]),
-  code: z.string(),
+  code: Schema.String,
 });
 
 /** The process fields whose change re-publishes a row — the `processes`
@@ -188,7 +206,7 @@ const SourceErrorFactSchema = z.object({
  *  now declared once on the spec so the `derived.collection` reconciler dedups by
  *  it instead of the write site hand-holding it). Listener arrays are rebuilt
  *  from every snapshot, so compare their contents rather than references. */
-type ProcessValue = z.infer<typeof ProcessSchema>;
+type ProcessValue = typeof ProcessSchema.Type;
 const processEqual = (a: ProcessValue, b: ProcessValue): boolean =>
   a.name === b.name &&
   a.command === b.command &&
@@ -221,12 +239,12 @@ const processEqual = (a: ProcessValue, b: ProcessValue): boolean =>
       listener.uid === b.listeners[i]?.uid,
   );
 
-const CpuCoreSchema = z.object({
+const CpuCoreSchema = Schema.Struct({
   /** Busy-percentage since the previous poll tick (0-100). */
-  usagePct: z.number(),
+  usagePct: Schema.Number,
   /** Reported clock speed in MHz; honestly absent on Apple Silicon. */
-  speedMHz: z.number().positive().nullable(),
-  model: z.string(),
+  speedMHz: Schema.NullOr(Schema.Number.check(Schema.isGreaterThan(0))),
+  model: Schema.String,
 });
 
 /** Per-network-interface I/O. Keyed by NIC name (`eth0`, `en0`, …) in the
@@ -236,20 +254,20 @@ const CpuCoreSchema = z.object({
  *  link carried" context. Loopback is filtered out at the agent: it's
  *  intra-host traffic, not network I/O, and would otherwise dominate the
  *  list with constant noise. */
-const NetInterfaceSchema = z.object({
+const NetInterfaceSchema = Schema.Struct({
   /** Cumulative bytes received since boot. */
-  rxBytes: z.number(),
+  rxBytes: Schema.Number,
   /** Cumulative bytes transmitted since boot. */
-  txBytes: z.number(),
+  txBytes: Schema.Number,
   /** Receive throughput in bytes/sec over the last poll window. 0 on the
    *  first tick (no previous counters to delta against yet). */
-  rxRate: z.number(),
+  rxRate: Schema.Number,
   /** Transmit throughput in bytes/sec over the last poll window. */
-  txRate: z.number(),
+  txRate: Schema.Number,
 });
-const SystemSchema = z.object({
+const SystemSchema = Schema.Struct({
   /** 1-minute, 5-minute, 15-minute load averages. */
-  loadAvg: z.tuple([z.number(), z.number(), z.number()]),
+  loadAvg: Schema.Tuple([Schema.Number, Schema.Number, Schema.Number]),
   /** Mean busy-percentage across every core (0-100) — the single host-CPU
    *  aggregate, computed ONCE at the agent (which already reads per-core usage
    *  each tick) and carried on this fixed-cardinality cell. A glance card reads
@@ -258,17 +276,17 @@ const SystemSchema = z.object({
    *  N per-core value streams per host, the fleet's O(hosts×cores) CPU sink. The
    *  per-core `cpuCores` collection stays for the host drill-in that renders a
    *  bar per core. */
-  cpuPct: z.number(),
+  cpuPct: Schema.Number,
   /** Number of cores the agent observed — lets a glance card show "N cores"
    *  without touching the per-key `cpuCores` collection just for its key count. */
-  coreCount: z.number().int().nonnegative(),
+  coreCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   /** Bytes used / total — UI converts to GB. */
-  memUsed: z.number(),
-  memTotal: z.number(),
+  memUsed: Schema.Number,
+  memTotal: Schema.Number,
   /** Swap bytes used / total from osfacts V2. Both are 0 on a host with swap
    *  disabled; `swapPct` guards the divide. */
-  swapUsed: z.number(),
-  swapTotal: z.number(),
+  swapUsed: Schema.Number,
+  swapTotal: Schema.Number,
   /** Bytes used / total on the **root filesystem** (`/`) from osfacts V2.
    *  `diskUsed = total − free`: occupied blocks, matching the native reader's
    *  historic meaning (reserved blocks count as occupied, not user-available).
@@ -280,19 +298,19 @@ const SystemSchema = z.object({
    *  those here — a per-mount view is a future `diskDevices` collection
    *  (mirroring `networkInterfaces`), not a reinterpretation of this field.
    *  `pctOf` guards the divide. */
-  diskUsed: z.number(),
-  diskTotal: z.number(),
+  diskUsed: Schema.Number,
+  diskTotal: Schema.Number,
   /** Seconds since boot. */
-  uptime: z.number(),
+  uptime: Schema.Number,
   /** OS family observed through osfacts. */
-  os: z.enum(["linux", "darwin", "unknown"]),
+  os: Schema.Literals(["linux", "darwin", "unknown"]),
   /** Resolved hostname inside the agent (parent shows this in the
    *  header chip — useful when the parent ssh'd by an alias). */
-  hostname: z.string(),
+  hostname: Schema.String,
   /** Agent's poll cadence in milliseconds — the UI displays this so
    *  the cadence is single-sourced at the agent (which actually owns
    *  the setInterval). */
-  pollIntervalMs: z.number(),
+  pollIntervalMs: Schema.Number,
 });
 
 // ⚠ **Parent-to-agent link lifecycle — owned upstream (kolu #1568).**
@@ -305,7 +323,7 @@ const SystemSchema = z.object({
 // and re-exports the types at the top of this module, so a re-served mirror's
 // browser sees honest link health while the base surface stays connection-free.
 
-export const DEFAULT_SYSTEM: z.infer<typeof SystemSchema> = {
+export const DEFAULT_SYSTEM: typeof SystemSchema.Type = {
   loadAvg: [0, 0, 0],
   cpuPct: 0,
   coreCount: 0,
@@ -335,17 +353,17 @@ export const AGENT_SURFACE_VERSION = "1.0";
  *  instant. Captured by the **agent daemon** on each poll tick and retained
  *  in a durable on-disk ring (`history.ring.json` under the daemon home) so
  *  the ring survives parent deploys and reconnects. */
-export const MetricSampleSchema = z.object({
+export const MetricSampleSchema = Schema.Struct({
   /** Wall-clock capture time, epoch ms. */
-  t: z.number(),
+  t: Schema.Number,
   /** Mean busy-percentage across all cores at capture (0-100). */
-  cpu: z.number(),
+  cpu: Schema.Number,
   /** Memory used as a percentage of total at capture (0-100). */
-  mem: z.number(),
+  mem: Schema.Number,
   /** Swap used as a percentage of total at capture (0-100). */
-  swap: z.number(),
+  swap: Schema.Number,
   /** Root-filesystem used as a percentage of total at capture (0-100). */
-  disk: z.number(),
+  disk: Schema.Number,
 });
 
 /** Typed reasons a metric-history ring cannot be served. Single source for
@@ -365,26 +383,50 @@ export type MetricHistoryUnavailableReason =
  *  daemon (survives parent deploys); the parent re-serves it to browsers.
  *
  *  `unavailable` is a TYPED standing disposition — never a silently empty
- *  chart. `degraded` means samples still serve but durability was lost. */
-export const MetricHistoryMessage = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("snapshot"),
-    samples: z.array(MetricSampleSchema),
+ *  chart. `degraded` means samples still serve but durability was lost.
+ *
+ *  `Schema.Union`, **not** `Schema.TaggedUnion`: the discriminant is `kind`,
+ *  and a tagged union would rename it to `_tag` — these bytes are frozen (they
+ *  cross the agent→parent→browser hop AND the daemon-restart boundary). */
+export const MetricHistoryMessage = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("snapshot"),
+    samples: Schema.Array(MetricSampleSchema),
   }),
-  z.object({
-    kind: z.literal("delta"),
+  Schema.Struct({
+    kind: Schema.Literal("delta"),
     sample: MetricSampleSchema,
   }),
-  z.object({
-    kind: z.literal("unavailable"),
-    reason: z.enum(MetricHistoryUnavailableReasons),
+  Schema.Struct({
+    kind: Schema.Literal("unavailable"),
+    reason: Schema.Literals(MetricHistoryUnavailableReasons),
   }),
-  z.object({
-    kind: z.literal("degraded"),
-    reason: z.literal("persist-failed"),
-    samples: z.array(MetricSampleSchema),
+  Schema.Struct({
+    kind: Schema.Literal("degraded"),
+    reason: Schema.Literal("persist-failed"),
+    samples: Schema.Array(MetricSampleSchema),
   }),
 ]);
+
+/** `process.kill`'s argument — the two #17 landmines of this repo, both here.
+ *
+ *  `signal` absent on the wire ⇒ decoded as `"TERM"`.
+ *  `Schema.withDecodingDefaultKey`, never `withDecodingDefault`: the key may be
+ *  MISSING, never an explicit `undefined` (which the latter round-trips through
+ *  `null`, changing the bytes for every caller that spells the key). */
+const KillInputSchema = Schema.Struct({
+  pid: PidSchema,
+  signal: Schema.Literals(["TERM", "KILL", "HUP", "INT"]).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("TERM" as const)),
+  ),
+});
+/** `error` is `Schema.optionalKey`, never `Schema.optional`: a successful kill
+ *  OMITS the key rather than sending `"error":null`, exactly as zod's
+ *  `.optional()` did. */
+const KillOutputSchema = Schema.Struct({
+  ok: Schema.Boolean,
+  error: Schema.optionalKey(Schema.String),
+});
 
 export const surface = defineSurface({
   cells: {
@@ -433,13 +475,13 @@ export const surface = defineSurface({
      *  a complete listener table without pretending permission-blind sockets
      *  do not exist. */
     unclaimedListeners: {
-      keySchema: z.string(),
+      keySchema: Schema.String,
       schema: UnclaimedListenerSchema,
       verbs: ["keys", "get", "deltas"],
     },
     /** Named `E` rows accompanying an otherwise usable partial osfacts frame. */
     sourceErrors: {
-      keySchema: z.string(),
+      keySchema: Schema.String,
       schema: SourceErrorFactSchema,
       verbs: ["keys", "get", "deltas"],
     },
@@ -452,7 +494,7 @@ export const surface = defineSurface({
      *  The fleet card reads the `system.cpuPct` aggregate and never subscribes
      *  here at all. */
     cpuCores: {
-      keySchema: z.number().int().nonnegative(),
+      keySchema: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
       schema: CpuCoreSchema,
       // WIRE-READ-ONLY `derived.collection`. No `equals`: usage is a per-tick rate
       // that always moves, so the reconciler republishes every present key each
@@ -464,7 +506,7 @@ export const surface = defineSurface({
      *  most idle), so it opts into batched `deltas` too — dozens of per-key
      *  frames per tick collapse to one. */
     networkInterfaces: {
-      keySchema: z.string(),
+      keySchema: Schema.String,
       schema: NetInterfaceSchema,
       // WIRE-READ-ONLY `derived.collection`; no `equals` — throughput shifts almost
       // every tick, so unconditional per-key republish (as the poll loop did).
@@ -479,13 +521,7 @@ export const surface = defineSurface({
       // agent maps it to `SIG<name>`. Returns `{ ok }`, with `error` carrying the
       // reason on failure (ESRCH gone / EPERM not permitted) — surfaced to the
       // user, never silently swallowed.
-      kill: {
-        input: z.object({
-          pid: PidSchema,
-          signal: z.enum(["TERM", "KILL", "HUP", "INT"]).default("TERM"),
-        }),
-        output: z.object({ ok: z.boolean(), error: z.string().optional() }),
-      },
+      kill: { input: KillInputSchema, output: KillOutputSchema },
     },
   },
   streams: {
@@ -493,7 +529,7 @@ export const surface = defineSurface({
      *  the parent. Snapshot-then-delta (or a typed `unavailable` disposition
      *  when the on-disk ring is corrupt / unknown-version). */
     metricHistory: {
-      inputSchema: z.object({}),
+      inputSchema: Schema.Struct({}),
       outputSchema: MetricHistoryMessage,
     },
   },
@@ -514,7 +550,16 @@ export type SystemInfo = SF["cells"]["system"]["Value"];
 // `ConnectionInfo` / `ConnectionState` / `FailureCause` are re-exported from the
 // app-only `drishti-common/browser` subpath (./browser.ts), NOT here — see the
 // agent-safety note near the top of this file.
-export type MetricSample = z.infer<typeof MetricSampleSchema>;
-export type MetricHistoryMsg = z.infer<typeof MetricHistoryMessage>;
+export type MetricSample = typeof MetricSampleSchema.Type;
+export type MetricHistoryMsg = typeof MetricHistoryMessage.Type;
+/** `process.kill`'s argument as a CALLER spells it — the ENCODED side, where
+ *  `signal` is optional — and its result on the DECODED side. `SurfaceTypes`
+ *  covers the four reactive primitives; a procedure's two sides are read off
+ *  its own schemas (#13: an input is a pure argument, so it is Encoded). */
+export type KillArgs = typeof KillInputSchema.Encoded;
+/** The DECODED argument a handler receives — `signal` always present, because
+ *  the absent key decoded to `"TERM"` at the edge. */
+export type KillInput = typeof KillInputSchema.Type;
+export type KillResult = typeof KillOutputSchema.Type;
 // Stream message type is also available off the surface's typed streams map
 // once metricHistory is a first-class surface member (UW3 — agent owns the ring).

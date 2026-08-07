@@ -30,8 +30,10 @@ import {
   implementSurface,
   inMemoryChannel,
   inMemoryStore,
+  streamFromAbortableSource,
 } from "@kolu/surface/server";
 import { type ProcedureForwarders } from "@kolu/surface/mirror";
+import { Effect, type Stream } from "effect";
 import {
   type AgentClient,
   pumpRemoteSurface,
@@ -44,6 +46,7 @@ import {
   type CpuCore,
   DEFAULT_SYSTEM,
   type IfaceName,
+  type KillInput,
   type MetricHistoryMsg,
   type NetInterface,
   type Pid,
@@ -71,7 +74,7 @@ export interface BuildRouterOptions {
   session: HostSession;
 }
 
-/** Build the parent's oRPC router. The session's connection state
+/** Build the parent's served surface. The session's connection state
  *  drives the `system.state` field exposed to the browser; agent data
  *  flows through once the link is live. */
 export function buildRouter(opts: BuildRouterOptions) {
@@ -179,40 +182,59 @@ export function buildRouter(opts: BuildRouterOptions) {
         // Yield the parent's current ring (or a typed unavailable) on
         // subscribe, then forward each agent-driven frame. Subscribe to the
         // bus BEFORE the snapshot so a frame cannot fall between them.
-        source: async function* (_input, signal) {
-          const tail = historyBus.subscribe(signal);
-          if (historyView.kind === "unavailable") {
-            yield {
-              kind: "unavailable",
-              reason: historyView.reason,
-            } satisfies MetricHistoryMsg;
-          } else if (historyView.kind === "degraded") {
-            yield {
-              kind: "degraded",
-              reason: "persist-failed",
-              samples: [...historyView.samples],
-            } satisfies MetricHistoryMsg;
-          } else {
-            yield {
-              kind: "snapshot",
-              samples: [...historyView.samples],
-            } satisfies MetricHistoryMsg;
-          }
-          for await (const msg of tail) {
-            yield msg;
-          }
-        },
+        //
+        // `streamFromAbortableSource` is the framework's ONE producer-edge
+        // bridge (D10): the `AbortController` is scoped to the stream, so
+        // interrupting the consuming fiber unsubscribes the bus exactly as the
+        // old `{signal}` did — the generator body is otherwise unchanged.
+        source: (): Stream.Stream<MetricHistoryMsg> =>
+          streamFromAbortableSource<MetricHistoryMsg>(async function* (signal) {
+            const tail = historyBus.subscribe(signal);
+            if (historyView.kind === "unavailable") {
+              yield {
+                kind: "unavailable",
+                reason: historyView.reason,
+              } satisfies MetricHistoryMsg;
+            } else if (historyView.kind === "degraded") {
+              yield {
+                kind: "degraded",
+                reason: "persist-failed",
+                samples: [...historyView.samples],
+              } satisfies MetricHistoryMsg;
+            } else {
+              yield {
+                kind: "snapshot",
+                samples: [...historyView.samples],
+              } satisfies MetricHistoryMsg;
+            }
+            for await (const msg of tail) {
+              yield msg;
+            }
+          }),
       },
     },
     procedures: {
       process: {
-        kill: async ({ input }) => {
-          const procs = liveProcedures.current;
-          if (!procs) {
-            return { ok: false, error: "no live agent connection" };
-          }
-          return procs.process.kill(input);
-        },
+        kill: ({ input }: { input: KillInput }) =>
+          // `Effect.suspend` (not `Effect.promise`): the forwarder RETURNS an
+          // Effect now, so wrapping it in a promise would resolve WITH the
+          // Effect object and forward nothing. Suspending also re-reads
+          // `liveProcedures.current` per call, which is the point of the holder.
+          Effect.suspend(() => {
+            const procs = liveProcedures.current;
+            if (!procs) {
+              return Effect.succeed({
+                ok: false,
+                error: "no live agent connection",
+              });
+            }
+            // `orDie`, because this procedure DECLARES no error: a forwarding
+            // failure is a defect on the parent's own channel, exactly as the
+            // previous `Effect.promise` wrapper made a rejection one. The
+            // declared `{ ok, error? }` output is the agent's verdict about a
+            // successful call, never a transport verdict.
+            return Effect.orDie(procs.process.kill(input));
+          }),
       },
     },
   });
@@ -234,7 +256,7 @@ export function buildRouter(opts: BuildRouterOptions) {
   // ── Bridge remote agent surface → parent's local surface ──────────
   void pumpRemoteSurface({
     source: surface,
-    session: session as Session<AgentClient<typeof surface.contract>, SshProv>,
+    session: session as Session<AgentClient, SshProv>,
     makeSink: ({ seq }) => {
       let firstSystemFrame = true;
       const issuedAt = Date.now();
@@ -311,9 +333,53 @@ export function buildRouter(opts: BuildRouterOptions) {
       log("agent link down — keeping history ring until next agent snapshot");
     },
     log,
+    // FAULTS — a mirrored subscription DIED, as opposed to the link merely
+    // ending. Distinct from `log` on purpose (juspay/kolu#2101 G5): a dead
+    // projection is not chatter, and routing it through the same callback as
+    // "agent link down" is how kolu's deploy-#2 freeze went unreported for the
+    // whole incident — its fault line landed on `log.debug`, which production
+    // filters away.
+    //
+    // drishti was never exposed to that MUTE half: this `Logger` has no levels
+    // and no filtering, so every line reaches stderr. What it lacked was the
+    // distinction — a member's stream dying looked like narration. It is now
+    // prefixed `FAULT` and carries the error's own stack, so a dead mirror is
+    // greppable and attributable rather than one more line in a busy log.
+    //
+    // Scope matters and is reported verbatim: `member` means the mirror can
+    // never re-subscribe that member and the pump's promise rejects; `key`
+    // means one key's pump died and the host's mirror survives deliberately.
+    // Conflating them would make a survivable fault read like a dead host.
+    onFault: ({ label, err, scope }) => {
+      const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      log(
+        `FAULT (${scope}) ${label}: mirrored subscription died — ${detail}`,
+      );
+    },
   });
 
-  return { router: runtime.router, session };
+  // The per-host bridge runtime's OWN fault channel. It used to be dropped on
+  // the floor — `runtime.done` was never read — which is the silent half of the
+  // deploy-#2 class (juspay/kolu#2101 G5/G6) wearing parent-side clothes: the
+  // bridge's reactive wiring dies, the host's projection stops updating, and
+  // nothing anywhere says so.
+  //
+  // Unlike the agent daemon, the parent must NOT exit on this: it serves every
+  // host, and one host's bridge dying is not grounds to take the other hosts'
+  // canvases down with it. So the disposition is deliberately different — the
+  // fault is made LOUD and attributable, and the host keeps whatever the pump
+  // last wrote. That is a narrower promise than the agent's fault-exit, and it
+  // is stated rather than implied: the residual is a host whose data is frozen
+  // behind a chip the session still calls connected, which is a product call
+  // about what the UI should say, not something to decide in a pin bump.
+  void runtime.done.catch((err: unknown) => {
+    const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    log(
+      `FAULT bridge runtime: this host's local projection died — its data is now frozen. ${detail}`,
+    );
+  });
+
+  return { group: runtime.group, handlers: runtime.handlers, session };
 }
 
 /** The write-side methods the pump sink is allowed to touch — a

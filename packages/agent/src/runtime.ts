@@ -5,10 +5,8 @@
  * list this module (W8.3). In-repo relative imports (fixtures) still work.
  */
 
-import { ORPCError } from "@orpc/client";
 import {
   controlCoreFragment,
-  controlCoreSurface,
   readBakedIdentity,
 } from "@kolu/surface-daemon";
 import {
@@ -16,18 +14,27 @@ import {
   implementSurfaces,
   inMemoryChannel,
   inMemoryStore,
+  streamFromAbortableSource,
   type Channel,
+  type SurfaceHandlers,
 } from "@kolu/surface/server";
 import { derived, scan, source } from "@kolu/surface/reactor";
+import { Effect, Stream } from "effect";
+import type { Rpc, RpcGroup } from "effect/unstable/rpc";
 import {
   AGENT_SURFACE_VERSION,
   type CoreId,
   type CpuCore,
+  type KillInput,
   type MetricHistoryMsg,
   type MetricSample,
   type SystemInfo,
   surface,
 } from "drishti-common";
+import {
+  agentDaemonSurfaces,
+  type DrainVerdict,
+} from "drishti-common/daemon";
 import {
   applyHysteresis,
   type Alerts,
@@ -83,8 +90,13 @@ export type FlushResult =
   | { ok: true; skipped: true };
 
 export interface AgentRuntime {
-  // biome-ignore lint/suspicious/noExplicitAny: top-level oRPC router
-  router: any;
+  /** The served surface's flat wire group. `Rpc.Any` is the honest erasure: a
+   *  spec-walk-assembled group carries no type a caller could trust, and route-set
+   *  identity is asserted inside `implementSurface(s)`, not here. This is what
+   *  replaced the `router: any` the oRPC serving path forced. */
+  group: RpcGroup.RpcGroup<Rpc.Any>;
+  /** Every bound member handler, keyed by full wire tag. */
+  handlers: SurfaceHandlers;
   isIdle: () => boolean;
   flushRing: () => FlushResult;
   close: () => Promise<void>;
@@ -258,6 +270,62 @@ export async function buildAgentRuntime(
   // ⇒ eligible for daemonMain idleTimeout exit. Not a TCP connection count.
   let metricHistoryLeases = 0;
 
+  /** The metric-history frames one subscriber sees: the STANDING disposition
+   *  (unavailable / degraded / ok — never a one-shot, so a late subscriber
+   *  learns the same truth an early one did) followed by the live tail.
+   *
+   *  Subscribing happens BEFORE the standing frame is read, so a tick landing
+   *  between them cannot be dropped. */
+  async function* historyFrames(
+    signal: AbortSignal,
+  ): AsyncIterable<MetricHistoryMsg> {
+    const tail = historyBus.subscribe(signal);
+    if (historyView.kind === "unavailable") {
+      yield {
+        kind: "unavailable",
+        reason: historyView.reason,
+      } satisfies MetricHistoryMsg;
+    } else if (historyView.kind === "degraded") {
+      yield {
+        kind: "degraded",
+        reason: "persist-failed",
+        samples: [...historyView.samples],
+      } satisfies MetricHistoryMsg;
+    } else {
+      yield {
+        kind: "snapshot",
+        samples: [...historyView.samples],
+      } satisfies MetricHistoryMsg;
+    }
+    for await (const msg of tail) {
+      yield msg;
+    }
+  }
+
+  /** The lease is a SCOPED resource of the stream, not a `finally` inside the
+   *  generator — that is load-bearing, not tidiness. The framework's
+   *  AsyncIterable bridge deliberately never calls `.return()` on the producer
+   *  (awaiting it deadlocks a generator parked at an `await`), so a generator's
+   *  `finally` does NOT run when a consumer walks away. Acquire/release runs on
+   *  the stream's own scope, which fiber interruption always closes — and the
+   *  daemon's idle-exit oracle (`isIdle`) is exactly this counter, so a leaked
+   *  lease would keep a forgotten daemon alive forever. */
+  const metricHistoryStream = (): Stream.Stream<MetricHistoryMsg> =>
+    Stream.unwrap(
+      Effect.map(
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            metricHistoryLeases += 1;
+          }),
+          () =>
+            Effect.sync(() => {
+              metricHistoryLeases -= 1;
+            }),
+        ),
+        () => streamFromAbortableSource<MetricHistoryMsg>(historyFrames),
+      ),
+    );
+
   // The metrics SOURCE feeding the `alerts` reactor graph.
   let emitMetrics: ((f: MetricsFrame) => void) | null = null;
   const metrics = source<MetricsFrame>((emit) => {
@@ -312,61 +380,54 @@ export async function buildAgentRuntime(
     },
     streams: {
       metricHistory: {
-        source: async function* (
-          _input: Record<string, never>,
-          signal: AbortSignal | undefined,
-        ): AsyncIterable<MetricHistoryMsg> {
-          metricHistoryLeases += 1;
-          try {
-            // Subscribe BEFORE the first frame so a tick cannot drop a sample.
-            const tail = historyBus.subscribe(signal);
-            // STANDING state: every subscriber (including late ones) sees
-            // unavailable / degraded / ok as currently held — no one-shot.
-            if (historyView.kind === "unavailable") {
-              yield {
-                kind: "unavailable",
-                reason: historyView.reason,
-              } satisfies MetricHistoryMsg;
-            } else if (historyView.kind === "degraded") {
-              yield {
-                kind: "degraded",
-                reason: "persist-failed",
-                samples: [...historyView.samples],
-              } satisfies MetricHistoryMsg;
-            } else {
-              yield {
-                kind: "snapshot",
-                samples: [...historyView.samples],
-              } satisfies MetricHistoryMsg;
-            }
-            for await (const msg of tail) {
-              yield msg;
-            }
-          } finally {
-            metricHistoryLeases -= 1;
-          }
-        },
+        source: (): Stream.Stream<MetricHistoryMsg> => metricHistoryStream(),
       },
     },
     procedures: {
       process: {
-        kill: ({ input }: { input: { pid: number; signal: string } }) => {
-          try {
-            process.kill(input.pid, `SIG${input.signal}`);
-            return { ok: true };
-          } catch (err) {
-            return { ok: false, error: (err as Error).message };
-          }
-        },
+        kill: ({ input }: { input: KillInput }) =>
+          Effect.sync(() => {
+            try {
+              process.kill(input.pid, `SIG${input.signal}`);
+              return { ok: true };
+            } catch (err) {
+              return { ok: false, error: (err as Error).message };
+            }
+          }),
       },
     },
   };
 
-  // One construction object per branch — no null-then-assign on router/done/close/setSystem.
-  // setSystem is the framework's cell face so equals/onWrite/store.set/bus.publish all fire.
+  /**
+   * The ONE drain: flush the durable ring, then hand the caller-supplied
+   * `onDrain` the verdict (which aborts the daemon lifetime) 150ms later.
+   *
+   * LATCHED, so the two verbs that reach it — drishti's own
+   * `daemon.ring.drain` and the framework's frozen `control.core.drain` —
+   * flush exactly once between them regardless of order or of a supervisor
+   * calling both. Never throws: a failed final write is a REPORTED OUTCOME of a
+   * successful drain, not a failure of the call. That distinction is the whole
+   * reason drishti owns a drain verb (see `drishti-common/daemon`).
+   */
+  let drainVerdict: DrainVerdict | null = null;
+  const drainNow = (): DrainVerdict => {
+    if (drainVerdict !== null) return drainVerdict;
+    const flush = flushRing();
+    drainVerdict = flush.ok
+      ? { persisted: true }
+      : { persisted: false, error: flush.error };
+    setTimeout(() => {
+      void opts.onDrain?.(flush);
+    }, 150);
+    return drainVerdict;
+  };
+
+  // One construction object per branch — no null-then-assign on group/handlers/
+  // done/close/setSystem. setSystem is the framework's cell face so
+  // equals/onWrite/store.set/bus.publish all fire.
   type BuiltRuntime = {
-    // biome-ignore lint/suspicious/noExplicitAny: top-level oRPC router.
-    router: any;
+    group: RpcGroup.RpcGroup<Rpc.Any>;
+    handlers: SurfaceHandlers;
     done: Promise<void>;
     close: () => Promise<void>;
     setSystem: (sys: SystemInfo) => void;
@@ -380,43 +441,38 @@ export async function buildAgentRuntime(
         }
         const identity = readBakedIdentity("DRISHTI_AGENT");
         const startedAt = Date.now();
-        // W4.2: control-core drain is FROZEN void. Success returns void; final
-        // flush failure throws typed ORPCError (data carries the failure). The
-        // parent wraps fireDrain to capture the rejection — never decorate the
-        // wire schema or return illegal success objects.
         // W5.8: implement the frozen fragment lawfully — no `control as never`.
         // W6.7: surfaceVersionOverride is the private test seam (like ringPersistMs).
+        //
+        // `onDrain` NEVER throws. The frozen `drain` declares no error schema, so
+        // in this protocol epoch a rejecting hook is a DEFECT — "a daemon whose
+        // drain hook throws is broken, not busy". drishti's persist failure is
+        // neither: it is a verdict about a drain that worked, and it rides
+        // `daemon.ring.drain`'s declared OUTPUT instead.
         const control = controlCoreFragment({
           stateRoot: opts.stateRoot,
           surfaceVersion: opts.surfaceVersionOverride ?? AGENT_SURFACE_VERSION,
           startedAt,
           commit: identity.navigableCommit,
           buildId: identity.staleKey,
-          onDrain: async () => {
-            const flush = flushRing();
-            setTimeout(() => {
-              void opts.onDrain?.(flush);
-            }, 150);
-            if (!flush.ok) {
-              throw new ORPCError("DRISHTI_PERSIST_FAILED", {
-                message: flush.error,
-                data: {
-                  persistFailed: true as const,
-                  error: flush.error,
-                },
-              });
-            }
+          onDrain: () => {
+            drainNow();
           },
         });
-        const runtime = implementSurfaces(
-          { app: surface, control: controlCoreSurface },
-          {},
-          { app: appDeps as never, control },
-        );
+        const runtime = implementSurfaces(agentDaemonSurfaces, {}, {
+          app: appDeps as never,
+          control,
+          daemon: {
+            procedures: {
+              ring: { drain: () => Effect.sync(drainNow) },
+            },
+          },
+        } as never);
         // W4: flush must read live hysteresis, not only the boot seed.
         readAlerts = () => runtime.ctx.app.cells.alerts.get() as Alerts;
         return {
-          router: runtime.router,
+          group: runtime.group,
+          handlers: runtime.handlers,
           done: runtime.done,
           close: () => runtime.close(),
           setSystem: (sys) => runtime.ctx.app.cells.system.set(sys),
@@ -427,7 +483,8 @@ export async function buildAgentRuntime(
         const runtime = implementSurface(surface, appDeps as never);
         readAlerts = () => runtime.ctx.cells.alerts.get() as Alerts;
         return {
-          router: runtime.router,
+          group: runtime.group,
+          handlers: runtime.handlers,
           done: runtime.done,
           close: () => runtime.close(),
           setSystem: (sys) => runtime.ctx.cells.system.set(sys),
@@ -439,10 +496,21 @@ export async function buildAgentRuntime(
       "alerts reactor: metrics source was never subscribed during surface " +
         "construction — the scan→source eager-subscribe invariant broke",
     );
-  void built.done.catch((err: unknown) => {
-    log(`surface runtime fault: ${(err as Error).message} — exiting`);
-    process.exit(1);
-  });
+  // NOTE — `built.done` is deliberately NOT observed here any more.
+  //
+  // It used to carry a `void built.done.catch(… process.exit(1))`. The verdict
+  // was right (a runtime fault is structural death, not a transient) but the
+  // mechanism was wrong: a bare exit from inside the runtime builder skips the
+  // daemon's shutdown spine, so the unix socket and the pid gate are never
+  // released and the history ring is never flushed. A successor then meets a
+  // gate naming a dead pid, and the ring has lost everything since the last
+  // periodic persist.
+  //
+  // `done` is returned instead, and whoever OWNS the process decides: the
+  // daemon binary arms `armRuntimeFaultExit` and hands the resulting signal to
+  // `daemonMain` as `faultSignal`, so the fault tears down in order and exits
+  // non-zero. A library that builds a runtime has no business killing a process
+  // it does not own — the test path (`serveAgent`) has no daemon to exit at all.
 
   // W6.5: after restoring non-empty ring alerts, keep them in the hold band
   // for a short grace window so the successor's first served alerts frame
@@ -533,7 +601,8 @@ export async function buildAgentRuntime(
   };
 
   return {
-    router: built.router,
+    group: built.group,
+    handlers: built.handlers,
     // Callback name required by daemonMain idleTimeout; body is lease-based.
     isIdle: () => metricHistoryLeases === 0,
     flushRing,

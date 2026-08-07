@@ -3,35 +3,40 @@
  * this parent server knows about" and their `DaemonSession` lifecycle
  * (spawn/reconnect/recheck/destroy + control-core admit/convergence).
  *
- * UW3: each host session is a `DaemonSession` over the combined
- * app+control agent contract. The parent dials via `sshConnector` against
- * the agent's durable `--stdio` front; `convergeAdmit` decides whether to
- * adopt, drain-and-replace, or refuse the resident daemon.
+ * UW3: each host session is a `DaemonSession` over the agent's THREE-sibling
+ * wire (`drishti-common/daemon`) — the versioned app surface, the frozen
+ * control core, and drishti's own daemon sibling. One link, several faces:
+ * `sshConnector` builds the app face from the surface value it is given, and
+ * the other two are built over the same `Connection.dispatch`. The parent
+ * dials against the agent's durable `--stdio` front; `convergeAdmit` decides
+ * whether to adopt, drain-and-replace, or refuse the resident daemon.
  *
  * Drishti-written plugs on the framework skeleton:
  *   - **policy** — `drishtiAgentConvergencePolicy` (contract version, drain
  *     arms, budget)
  *   - **link projection** — session `onState` → `DrishtiConvergence` /
  *     `link-failed`
- *   - **combined-client stash** — WeakMap from app-scoped client → combined
- *     dial so admit/renew can reach control-core
+ *   - **sibling-face stash** — WeakMap from the app face `admit` receives to
+ *     the control + drain faces over the same wire
  *   - **exit oracle** — `awaitExitViaProcessOracle` (ClosedInfo.kind === "exit"
  *     only; transport loss never looks like process exit)
- *   - **renew** — drain + await exit via control-core for build-axis replace
+ *   - **renew** — drain + await exit for build-axis replace, through drishti's
+ *     OWN `daemon.ring.drain` so the persist verdict arrives as a value
  *
  * Decision table, budget arithmetic, and probe live in
  * `@kolu/surface-daemon-supervisor`. Host-set persistence is `hostsStore.ts`.
  */
 
-import { ORPCError } from "@orpc/client";
-import { composeSurfaceContracts, scopeSibling } from "@kolu/surface/define";
+import { Effect } from "effect";
+import { buildSurfaceFace } from "@kolu/surface/client";
+import type { SurfaceDispatch } from "@kolu/surface/link";
 import {
-  controlCoreSurface,
   daemonBuild,
   stderrLogger,
   type Logger as DaemonLogger,
 } from "@kolu/surface-daemon";
 import {
+  type ControlCoreProbeClient,
   type ConvergenceAnomaly,
   convergeAdmit,
   createConnectorDrainBudget,
@@ -57,7 +62,14 @@ import {
   sshConnector,
   type SshProv,
 } from "@kolu/surface-remote";
-import { AGENT_SURFACE_VERSION, surface } from "drishti-common";
+import { AGENT_SURFACE_VERSION } from "drishti-common";
+import { drishtiAgentConvergencePolicy } from "drishti-common/convergence-policy";
+import {
+  agentControlSurface,
+  agentDialSurface,
+  agentDrainSurface,
+  type DrainVerdict,
+} from "drishti-common/daemon";
 import { saveHosts } from "./hostsStore";
 import { makeLogger } from "./log";
 import { withAgentBootBarrier } from "./withAgentBootBarrier";
@@ -81,31 +93,57 @@ const CONNECT_TIMEOUT_MS = 30_000;
  *  above a local 2s because each liveness edge is a full ssh round-trip. */
 const DRAIN_TEARDOWN_CEILING_MS = 6_000;
 
-/** Drain budget: at most 2 drain attempts per lineage, then adopt the
- *  resident with a standing anomaly rather than go dark. */
-const DRAIN_MAX_ATTEMPTS = 2;
 
-/** The two surfaces the agent daemon serves: the versioned app surface and
- *  the frozen control core. One keyed map for `composeSurfaceContracts` /
- *  `sshConnector` / the agent's `implementSurfaces`. */
-export const agentDaemonSurfaces = {
-  app: surface,
-  control: controlCoreSurface,
-} as const;
+// The three surfaces the agent daemon serves — the versioned app surface, the
+// frozen control core, and drishti's own daemon sibling — plus the composed
+// wire both ends build from, now live in `drishti-common/daemon`, so the agent
+// that SERVES them and the parent that DIALS them cannot drift.
 
-/** Combined wire contract — `{ surface: { app, control } }`. */
-export const agentDaemonContract = composeSurfaceContracts(agentDaemonSurfaces);
-export type AgentDaemonContract = typeof agentDaemonContract;
+/** App-sibling-scoped client — what the pump + kill forward use.
+ *
+ *  `AgentClient` is non-generic now (`= SurfaceFace`): there is no contract
+ *  type to be generic over, and per-member precision lives in the spec-derived
+ *  bound faces rather than in a second mapped type over the addressing layer.
+ *  `sshConnector` builds this face from `agentDialSurface` directly, so the
+ *  old `scopeSibling(client, "app")` re-wrap has nothing left to do — the
+ *  connector's own client IS the app-scoped one. */
+export type AgentAppClient = AgentClient;
 
-/** Combined client (app + control.core). */
-export type AgentDaemonClient = AgentClient<AgentDaemonContract>;
+/** The frozen control-core face, in the exact shape the supervisor's probe
+ *  walks (`client.surface.control.core.{hello,drain}`). Built over the SAME
+ *  link dispatch as the app face — one wire, several faces.
+ *
+ *  It IS the framework's own `ControlCoreProbeClient` — an alias, not a
+ *  restatement. A hand-written twin would be a second copy of a shape that
+ *  moves whenever the frozen fragment does (it just did: both verbs return
+ *  Effects now), and the compiler would only catch the drift at the call. */
+export type ControlProbeClient = ControlCoreProbeClient;
 
-/** App-sibling-scoped client — what the pump + kill forward use. */
-export type AgentAppClient = AgentClient<typeof surface.contract>;
-
-/** Narrow a dialed COMBINED client to its `.surface.app` sibling. */
-export function scopeAgentApp(client: AgentDaemonClient): AgentAppClient {
-  return scopeSibling(client, "app") as unknown as AgentAppClient;
+/** Build the control + drain faces a dialled connection needs beyond its app
+ *  face. Both ride the link's own dispatch (`Connection.dispatch`), which the
+ *  connector hands back precisely so a two-sibling daemon is ONE link with
+ *  several faces instead of two dials. */
+function daemonFacesOver(dispatch: SurfaceDispatch): {
+  control: ControlProbeClient;
+  drain: Effect.Effect<DrainVerdict, unknown>;
+} {
+  const core = (
+    buildSurfaceFace(agentControlSurface, dispatch).surface as unknown as {
+      core: ControlProbeClient["surface"]["control"]["core"];
+    }
+  ).core;
+  const ring = (
+    buildSurfaceFace(agentDrainSurface, dispatch).surface as unknown as {
+      ring: { drain: () => Effect.Effect<DrainVerdict, unknown> };
+    }
+  ).ring;
+  return {
+    control: { surface: { control: { core } } },
+    // An Effect VALUE, like the framework's own `DrainableProbe.fireDrain`:
+    // building it dispatches nothing, so it is safely re-runnable and cannot
+    // be `await`ed into a no-op.
+    drain: Effect.suspend(() => ring.drain()),
+  };
 }
 
 /**
@@ -133,7 +171,8 @@ export type DrishtiConvergence =
       readonly message: string;
     };
 
-/** Captured final-flush failure from a drain that threw DRISHTI_PERSIST_FAILED. */
+/** A drain whose final durable-ring write did not land. Read off
+ *  `daemon.ring.drain`'s DECLARED output — see `convergenceFromDrainVerdict`. */
 export type DrainPersistFailure = {
   persistFailed: true;
   error: string;
@@ -157,42 +196,25 @@ export function convergenceFromDrainPersistFailure(
 }
 
 /**
- * Capture a tagged ORPCError from drain — code only, no string soup (W4.2).
- * Success is void; only failures throw.
+ * Read a drain's persist verdict off `daemon.ring.drain`'s DECLARED output.
+ *
+ * This replaces `captureDrainPersistFailure`, which narrowed an
+ * `ORPCError("DRISHTI_PERSIST_FAILED")` thrown out of the FROZEN control-core
+ * drain. That channel declares no error, and in this protocol epoch a
+ * rejecting `onDrain` is a defect — "a daemon whose drain hook throws is
+ * broken, not busy". A full disk is not a broken daemon: the drain worked and
+ * its final write did not land, which is a verdict about a SUCCESSFUL call.
+ * So drishti asks its own verb and reads a value; there is no error to narrow,
+ * no `err.code` to compare, and no cross-realm plain-object arm to keep.
  */
-export function captureDrainPersistFailure(
-  err: unknown,
+export function drainPersistFailureOf(
+  verdict: DrainVerdict,
 ): DrainPersistFailure | null {
-  if (err instanceof ORPCError && err.code === "DRISHTI_PERSIST_FAILED") {
-    const data = err.data as { error?: string } | undefined;
-    return {
-      persistFailed: true,
-      error:
-        (typeof data?.error === "string" && data.error) ||
-        err.message ||
-        "persist-failed",
-    };
-  }
-  // Also accept plain objects with code (cross-realm ORPCError).
-  if (
-    err !== null &&
-    typeof err === "object" &&
-    "code" in err &&
-    (err as { code: unknown }).code === "DRISHTI_PERSIST_FAILED"
-  ) {
-    const e = err as {
-      message?: string;
-      data?: { error?: string };
-    };
-    return {
-      persistFailed: true,
-      error:
-        (typeof e.data?.error === "string" && e.data.error) ||
-        e.message ||
-        "persist-failed",
-    };
-  }
-  return null;
+  if (verdict.persisted) return null;
+  return {
+    persistFailed: true,
+    error: verdict.error ?? "persist-failed",
+  };
 }
 
 /** The daemon session a host entry holds — supervision (convergence /
@@ -296,64 +318,47 @@ function isProvisioningPool(
 
 /** Live combined dial stashed under the app-scoped client admit receives. */
 type ActiveCombined = {
-  client: AgentDaemonClient;
+  /** The frozen control-core face — what the supervisor's probe walks. */
+  client: ControlProbeClient;
+  /** drishti's own drain, over the SAME link: flush, abort the lifetime, and
+   *  ANSWER whether the final ring write landed. */
+  drain: Effect.Effect<DrainVerdict, unknown>;
   dispose: () => void;
   processExit: Promise<void>;
   signal: AbortSignal;
 };
 
-/** drishti's connector-arm convergence policy — drainable; drain-newer on
- *  contract skew; drain-and-replace on build mismatch; budgeted adopt-stale. */
-export function drishtiAgentConvergencePolicy(binderBuildId: string) {
-  return {
-    capability: "drainable" as const,
-    baked: {
-      contractVersion: AGENT_SURFACE_VERSION,
-      build: daemonBuild(binderBuildId),
-    },
-    onContractSkew: { kind: "drain-newer-else-refuse" as const },
-    onBuildMismatch: { kind: "drain-and-replace" as const },
-    drainBudget: {
-      maxAttempts: DRAIN_MAX_ATTEMPTS,
-      onGiveUp: "adopt-stale" as const,
-    },
-  };
-}
+/** drishti's convergence policy — drainable; drain-newer on contract skew;
+ *  drain-and-replace on build mismatch; budgeted adopt-stale.
+ *
+ *  The DECLARATION moved to `drishti-common/convergence-policy` when the
+ *  agent's `--stdio` front became a second supervisor of the same daemon
+ *  (juspay/kolu#2101): a policy two supervisors must agree on cannot live
+ *  inside one of them, and the agent's Nix closure cannot see `packages/app` at
+ *  all. Re-exported here so no import path moved — what moved is the source of
+ *  truth, not the API. */
+export { DRAIN_MAX_ATTEMPTS } from "drishti-common/convergence-policy";
+export { drishtiAgentConvergencePolicy };
 
 /**
- * Process-exit oracle: resolve ONLY on ClosedInfo.kind === "exit".
+ * Process-exit oracle: succeed ONLY on ClosedInfo.kind === "exit".
  * transport-failed / endpoint-down / spawn-error are link or bootstrap
  * loss — never process exit; leave the wait hanging until the ceiling
  * yields drain-not-taken.
+ *
+ * It takes no `AbortSignal` any more. The signal had exactly one job — tell
+ * this poll-shaped wait to stop once the framework's ceiling won — and the
+ * framework now forks the oracle into a scope it closes on every path, so the
+ * wait is INTERRUPTED instead of notified. Interruption is not refusable; an
+ * abandoned AbortController was.
  *
  * Exported for unit tests that exercise the same wait semantics without
  * importing the full pool.
  */
 export function awaitExitViaProcessOracle(
   processExit: Promise<void>,
-  signal: AbortSignal,
-): Promise<void> {
-  return new Promise<void>((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
-    }
-    const onAbort = (): void => {
-      cleanup();
-      resolve();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    let done = false;
-    const cleanup = (): void => {
-      if (done) return;
-      done = true;
-      signal.removeEventListener("abort", onAbort);
-    };
-    void processExit.then(() => {
-      cleanup();
-      resolve();
-    });
-  });
+): Effect.Effect<void> {
+  return Effect.promise(() => processExit);
 }
 
 /**
@@ -392,20 +397,28 @@ function makeAgentAdmit(args: {
     if (active === undefined) {
       throw new Error("drishti agent admit: no matching combined connection");
     }
-    const probe = await probeDaemonIdentityFrom({
-      client: active.client,
-      dispose: active.dispose,
-      capability: "drainable",
-      awaitExit: (signal) =>
-        awaitExitViaProcessOracle(active.processExit, signal),
-      drainCeilingMs: DRAIN_TEARDOWN_CEILING_MS,
-    });
+    // `Admit` is `(client) => Promise<AdmitVerdict>` — surface-remote's
+    // session/reconnect machinery is the campaign's recorded Promise-shaped
+    // residual, and it OWNS this seam. So the framework's Effects are run
+    // here, at the boundary drishti does not own, rather than leaking a second
+    // Promise face upward.
+    const probe = await Effect.runPromise(
+      probeDaemonIdentityFrom({
+        client: active.client,
+        dispose: active.dispose,
+        capability: "drainable",
+        awaitExit: awaitExitViaProcessOracle(active.processExit),
+        drainCeilingMs: DRAIN_TEARDOWN_CEILING_MS,
+      }),
+    );
     if (active.signal.aborted) {
       throw new Error("drishti agent admit superseded");
     }
     // Stash frozen-fragment identity for the daemon dialog (typed projection).
     try {
-      const hello = await active.client.surface.control.core.hello();
+      const hello = await Effect.runPromise(
+        active.client.surface.control.core.hello(),
+      );
       args.setIdentity({
         stateRoot: hello.stateRoot,
         contractVersion: hello.surfaceVersion,
@@ -426,39 +439,36 @@ function makeAgentAdmit(args: {
       });
     }
 
-    // W4.2: wrap fireDrain to capture tagged persist-failure app-side.
-    // Framework plug stays void; we never present a failed final write as clean.
+    // W4.2: drain through drishti's OWN verb so the persist verdict comes back
+    // as a value. It is a strict superset of the frozen `control.core.drain`
+    // the supervisor's probe would otherwise fire — same latched flush, same
+    // lifetime abort, plus the answer — so calling it INSTEAD is not a
+    // divergence, it is the same drain with the one fact the frozen channel
+    // cannot carry. We never present a failed final write as clean.
     const drainCapture: { failure: DrainPersistFailure | null } = {
       failure: null,
     };
-    const drain = async (): Promise<void> => {
-      try {
-        await probe.fireDrain();
-      } catch (err) {
-        const captured = captureDrainPersistFailure(err);
-        if (captured !== null) {
-          drainCapture.failure = captured;
-          return; // drain fired; awaitExit still waits for process exit
-        }
-        throw err;
-      }
-    };
+    const drain = Effect.map(active.drain, (verdict) => {
+      drainCapture.failure = drainPersistFailureOf(verdict);
+    });
 
     const admitLog: DaemonLogger = stderrLogger();
     // Baked contract version for this budget — always AGENT_SURFACE_VERSION via
     // drishtiAgentConvergencePolicy (policyOf is package-private upstream).
     const bakedContractVersion = AGENT_SURFACE_VERSION;
-    const verdict = await convergeAdmit({
-      running: {
-        ...probe.identity,
-        instanceKey: probe.instanceKey,
-      },
-      budget: args.getBudget(),
-      drain,
-      awaitExit: probe.awaitExit,
-      ceilingMs: probe.drainCeilingMs,
-      log: admitLog,
-    });
+    const verdict = await Effect.runPromise(
+      convergeAdmit({
+        running: {
+          ...probe.identity,
+          instanceKey: probe.instanceKey,
+        },
+        budget: args.getBudget(),
+        drain,
+        awaitExit: probe.awaitExit,
+        ceilingMs: probe.drainCeilingMs,
+        log: admitLog,
+      }),
+    );
     if (active.signal.aborted) {
       throw new Error("drishti agent admit superseded");
     }
@@ -592,21 +602,14 @@ function attachDaemonSession(args: {
       const drainHolder: { failure: DrainPersistFailure | null } = {
         failure: null,
       };
-      const { took, drainRejection } = await drainAndAwaitExit(
-        async () => {
-          try {
-            await active.client.surface.control.core.drain();
-          } catch (err) {
-            const captured = captureDrainPersistFailure(err);
-            if (captured !== null) {
-              drainHolder.failure = captured;
-              return; // drain fired; awaitExit still waits for process exit
-            }
-            throw err;
-          }
-        },
-        (signal) => awaitExitViaProcessOracle(active.processExit, signal),
-        { ceilingMs: DRAIN_TEARDOWN_CEILING_MS },
+      const { took, drainRejection } = await Effect.runPromise(
+        drainAndAwaitExit(
+          Effect.map(active.drain, (verdict) => {
+            drainHolder.failure = drainPersistFailureOf(verdict);
+          }),
+          awaitExitViaProcessOracle(active.processExit),
+          { ceilingMs: DRAIN_TEARDOWN_CEILING_MS },
+        ),
       );
       if (!took) {
         throw new Error(
@@ -702,7 +705,14 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         };
         const OFF_NIX_MSG =
           "off-nix pool: no agent derivation (can't-judge path has no resolveDrvPath)";
-        const inner = sshConnector<AgentDaemonContract>({
+        const inner = sshConnector({
+          // Effect RPC cannot mint a client from a TYPE — it needs the flat
+          // `RpcGroup` and the spec to re-nest the face from. `agentDialSurface`
+          // carries the app sibling's spec/prefix (so this face IS the
+          // app-scoped client) with the COMBINED group (so the one RPC client
+          // behind it can also address the control and daemon siblings' tags,
+          // whose faces we build over the same dispatch below).
+          surface: agentDialSurface,
           host,
           binary: "drishti-agent",
           localEnv: Object.fromEntries(
@@ -731,21 +741,35 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         });
         const rawConnector: Connector<AgentAppClient, SshProv> = async (ctx) => {
           const conn = await inner(ctx);
+          if (conn.dispatch === undefined) {
+            // Every ssh dial has one; its absence would be a framework bug, and
+            // without it the control and daemon siblings are unreachable — a
+            // state where admit could never probe identity. Crash loudly.
+            conn.teardown();
+            throw new Error(
+              "drishti host dial returned no transport dispatch — the control-core " +
+                "and daemon faces cannot be built over it (a @kolu/surface-remote bug).",
+            );
+          }
           const processExit = conn.closed.then(
             (info: ClosedInfo) => {
               if (info.kind !== "exit") return NEVER_EXITS;
             },
             () => NEVER_EXITS,
           );
+          const faces = daemonFacesOver(conn.dispatch);
           const active: ActiveCombined = {
-            client: conn.client,
+            client: faces.control,
+            drain: faces.drain,
             dispose: conn.teardown,
             processExit,
             signal: ctx.signal,
           };
-          const scopedClient = scopeAgentApp(conn.client);
-          combinedByScopedClient.set(scopedClient, active);
-          return { ...conn, client: scopedClient };
+          // `conn.client` IS the app-scoped face (the connector built it from
+          // `agentDialSurface`), so the WeakMap is keyed by the very value
+          // `makeSession` hands `admit` — no re-wrap in between to re-key on.
+          combinedByScopedClient.set(conn.client, active);
+          return conn;
         };
         // Terminal agent-boot refusal (daemonHome non-0700 etc.): capture fatal
         // stderr, set typed outcome, throw ConnectError(terminal) — zero retries.
@@ -840,7 +864,9 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
       // sshConnector always runs `<binary> --stdio` (appended by the connector
       // itself — do NOT pass `--stdio` in extraArgs). That flag is the durable
       // front: adopt-or-spawn the gate-held daemon and relay bytes.
-      const inner = sshConnector<AgentDaemonContract>({
+      const inner = sshConnector({
+        // The surface as a VALUE (see the off-nix arm above for why).
+        surface: agentDialSurface,
         host,
         binary: "drishti-agent",
         // surface-remote is policy-free: the CONSUMER composes the localhost arm's
@@ -895,15 +921,25 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
           },
           () => NEVER_EXITS,
         );
+        if (conn.dispatch === undefined) {
+          conn.teardown();
+          throw new Error(
+            "drishti host dial returned no transport dispatch — the control-core " +
+              "and daemon faces cannot be built over it (a @kolu/surface-remote bug).",
+          );
+        }
+        const faces = daemonFacesOver(conn.dispatch);
         const active: ActiveCombined = {
-          client: conn.client,
+          client: faces.control,
+          drain: faces.drain,
           dispose: conn.teardown,
           processExit,
           signal: ctx.signal,
         };
-        const scopedClient = scopeAgentApp(conn.client);
-        combinedByScopedClient.set(scopedClient, active);
-        return { ...conn, client: scopedClient };
+        // `conn.client` IS the app-scoped face now — nothing to re-wrap, so
+        // the WeakMap is keyed by the very value `admit` receives.
+        combinedByScopedClient.set(conn.client, active);
+        return conn;
       };
 
       // Terminal agent-boot refusal: fatal stderr ⇒ typed outcome, zero retries.

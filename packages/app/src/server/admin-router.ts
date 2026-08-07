@@ -17,13 +17,12 @@
  *                     `browserSurface` primitive so a host's own data rides
  *                     THIS transport instead of a dedicated `?host=` socket.
  *
- * The first two are keyed siblings via `implementSurfaces`/
- * `composeSurfaceContracts` (`adminContract`); the map is a THIRD key
- * spliced in afterward — `serveSurfaceMap`'s router shape (`{ surface: {
- * <folded members>, entries } }`) is a flat single-surface object, not a
- * multi-sibling `implementSurfaces` input, so it's nested under the `hosts`
- * key exactly the way kolu nests its own padi map under `padi` in
- * `packages/server/src/index.ts`.
+ * The first two are keyed siblings via `implementSurfaces`; the map is served
+ * separately and MERGED in. On a flat tag namespace that merge is the whole
+ * splice: `serveSurfaceMap` already binds at full wire tags with the `hosts/`
+ * prefix baked in (`hostSurfaceMap.name`), so nothing here re-prefixes,
+ * re-adapts, or widens a contract to make room for it. See the merge below
+ * for what that replaced.
  *
  * `hosts.add` / `hosts.remove` still hand off to the pool for the session
  * side effects (spawn/destroy, persist to disk) — the map's `MapRegistry`
@@ -36,14 +35,16 @@
  * by hand after every mutation).
  */
 
-import { oc } from "@orpc/contract";
-import { implement } from "@orpc/server";
-import { directLink } from "@kolu/surface/links/direct";
-import { implementSurfaces } from "@kolu/surface/server";
+import { directDispatch } from "@kolu/surface/links/direct";
+import {
+  implementSurfaces,
+  type SurfaceHandlers,
+} from "@kolu/surface/server";
 import { serveHostMap } from "@kolu/surface-remote";
 import { sessionConnection } from "@kolu/surface-remote/connection";
 import { surfaceAppServer } from "@kolu/surface-app/server";
-import { adminContract, adminSurfaces } from "../common/admin-surface";
+import { Effect } from "effect";
+import { adminComposed, adminSurfaces } from "../common/admin-surface";
 import { hostSurfaceMap } from "../common/hostMap";
 import {
   emptyDaemonStatus,
@@ -87,7 +88,7 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // reconnecting tab's `pid` against the SAME id `identity.info` reports, rather
   // than minting a second one that would never match.
   const surfaceApp = surfaceAppServer();
-  const { router: surfacesRouter } = implementSurfaces(
+  const surfaces = implementSurfaces(
     adminSurfaces,
     // The ordinary constructor owns its in-memory channel internally now.
     {},
@@ -102,93 +103,100 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
       admin: {
         procedures: {
           hosts: {
-            add: async ({ input }: { input: { host: string } }) => {
-              // `HostInputSchema` already rejects blank, whitespace-containing,
-              // and sentinel strings at validation time; no re-check needed here.
-              const host = input.host.trim();
-              if (opts.pool.has(host)) {
-                return { ok: false, error: "host already exists" };
-              }
-              try {
-                await opts.pool.add(host);
-              } catch (err) {
-                return { ok: false, error: (err as Error).message };
-              }
-              // No manual publish: `serveHostMap`'s membership fuse (wired
-              // below) republishes the map's `entries` collection off the
-              // SAME `pool.subscribe` this `add` just satisfied.
-              return { ok: true };
-            },
-            remove: async ({ input }: { input: { host: string } }) => {
-              if (!opts.pool.has(input.host)) return { ok: false };
-              try {
-                await opts.pool.remove(input.host);
-              } catch (err) {
-                log(`remove ${input.host} failed: ${(err as Error).message}`);
-                return { ok: false };
-              }
-              return { ok: true };
-            },
-            reconnect: ({ input }: { input: { host: string } }) => {
-              // No `entries` publish here either: membership is unchanged.
-              // The session's probing→provisioning→connecting→connected transition
-              // streams back through the per-host `connection` cell AND the
-              // map's fused per-session `onState` → `EntryStatus` republish.
-              if (!opts.pool.has(input.host)) return { ok: false };
-              opts.pool.reconnect(input.host);
-              return { ok: true };
-            },
-            recheck: () => {
-              // Fleet-wide force-reprobe (browser regained connectivity /
-              // refocused). Like `reconnect`, no membership change; each
-              // host's recovery streams back through its own `connection`
-              // cell and `EntryStatus`.
-              opts.pool.recheckAll();
-              return { ok: true };
-            },
-            renew: async ({ input }: { input: { host: string } }) => {
-              // W7: manual build-axis replace via HostSession.renew.
-              if (!opts.pool.has(input.host)) {
-                return { ok: false, error: "host not found" };
-              }
-              const session = opts.pool.getSession(input.host);
-              if (session === undefined) {
-                return { ok: false, error: "host session missing" };
-              }
-              try {
-                await session.renew();
-                // After a successful drain the session should re-dial; force
-                // reconnect so the successor comes up without waiting for
-                // idle teardown paths.
+            add: ({ input }: { input: { host: string } }) =>
+              Effect.promise(async () => {
+                // `HostInputSchema` already rejects blank, whitespace-containing,
+                // and sentinel strings at validation time; no re-check needed here.
+                const host = input.host.trim();
+                if (opts.pool.has(host)) {
+                  return { ok: false, error: "host already exists" };
+                }
+                try {
+                  await opts.pool.add(host);
+                } catch (err) {
+                  return { ok: false, error: (err as Error).message };
+                }
+                // No manual publish: `serveHostMap`'s membership fuse (wired
+                // below) republishes the map's `entries` collection off the
+                // SAME `pool.subscribe` this `add` just satisfied.
+                return { ok: true };
+              }),
+            remove: ({ input }: { input: { host: string } }) =>
+              Effect.promise(async () => {
+                if (!opts.pool.has(input.host)) return { ok: false };
+                try {
+                  await opts.pool.remove(input.host);
+                } catch (err) {
+                  log(`remove ${input.host} failed: ${(err as Error).message}`);
+                  return { ok: false };
+                }
+                return { ok: true };
+              }),
+            reconnect: ({ input }: { input: { host: string } }) =>
+              Effect.sync(() => {
+                // No `entries` publish here either: membership is unchanged.
+                // The session's probing→provisioning→connecting→connected transition
+                // streams back through the per-host `connection` cell AND the
+                // map's fused per-session `onState` → `EntryStatus` republish.
+                if (!opts.pool.has(input.host)) return { ok: false };
                 opts.pool.reconnect(input.host);
                 return { ok: true };
-              } catch (err) {
-                return { ok: false, error: (err as Error).message };
-              }
-            },
-            convergence: ({ input }: { input: { host: string } }) => {
-              // W7: project HostSession.convergence() for honest UI / tests.
-              if (!opts.pool.has(input.host)) {
-                return { anomaly: null };
-              }
-              const session = opts.pool.getSession(input.host);
-              if (session === undefined) {
-                return { anomaly: null };
-              }
-              const c = session.convergence();
-              if (c === null) return { anomaly: null };
-              return { anomaly: projectConvergenceAnomaly(c) };
-            },
-            daemonStatus: ({ input }: { input: { host: string } }) => {
-              if (!opts.pool.has(input.host)) {
-                return emptyDaemonStatus("unknown");
-              }
-              const session = opts.pool.getSession(input.host);
-              if (session === undefined) {
-                return emptyDaemonStatus("unknown");
-              }
-              return projectDaemonStatus(session);
-            },
+              }),
+            recheck: () =>
+              Effect.sync(() => {
+                // Fleet-wide force-reprobe (browser regained connectivity /
+                // refocused). Like `reconnect`, no membership change; each
+                // host's recovery streams back through its own `connection`
+                // cell and `EntryStatus`.
+                opts.pool.recheckAll();
+                return { ok: true };
+              }),
+            renew: ({ input }: { input: { host: string } }) =>
+              Effect.promise(async () => {
+                // W7: manual build-axis replace via HostSession.renew.
+                if (!opts.pool.has(input.host)) {
+                  return { ok: false, error: "host not found" };
+                }
+                const session = opts.pool.getSession(input.host);
+                if (session === undefined) {
+                  return { ok: false, error: "host session missing" };
+                }
+                try {
+                  await session.renew();
+                  // After a successful drain the session should re-dial; force
+                  // reconnect so the successor comes up without waiting for
+                  // idle teardown paths.
+                  opts.pool.reconnect(input.host);
+                  return { ok: true };
+                } catch (err) {
+                  return { ok: false, error: (err as Error).message };
+                }
+              }),
+            convergence: ({ input }: { input: { host: string } }) =>
+              Effect.sync(() => {
+                // W7: project HostSession.convergence() for honest UI / tests.
+                if (!opts.pool.has(input.host)) {
+                  return { anomaly: null };
+                }
+                const session = opts.pool.getSession(input.host);
+                if (session === undefined) {
+                  return { anomaly: null };
+                }
+                const c = session.convergence();
+                if (c === null) return { anomaly: null };
+                return { anomaly: projectConvergenceAnomaly(c) };
+              }),
+            daemonStatus: ({ input }: { input: { host: string } }) =>
+              Effect.sync(() => {
+                if (!opts.pool.has(input.host)) {
+                  return emptyDaemonStatus("unknown");
+                }
+                const session = opts.pool.getSession(input.host);
+                if (session === undefined) {
+                  return emptyDaemonStatus("unknown");
+                }
+                return projectDaemonStatus(session);
+              }),
           },
         },
       },
@@ -201,7 +209,7 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // session's `onState` into the map's `entries`, projects `SessionState` →
   // `EntryStatus`, and hands the composed registry to `serveSurfaceMap` — the
   // ~90-line registry drishti used to hand-clone (`hostMapRegistry.ts`), now
-  // deleted. `linkFor` builds (and the adapter caches) a `directLink` over each
+  // deleted. `dispatchFor` builds (and the adapter caches) a `directDispatch` over each
   // host's own `buildRouter(...)` — the SAME per-host bridge (agent mirror +
   // kill forward) that used to back a dedicated `?host=` `RPCHandler`, folded
   // into the map's one combined link instead of a separate socket.
@@ -221,8 +229,7 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // red chip. This preserves the exact behavior the old omitted-`causeFor` had
   // (disconnected → warming, terminal → failed) without any fabricated cause.
   const hostsMap = serveHostMap(hostSurfaceMap, opts.pool, {
-    linkFor: (host, session) =>
-      directLink(buildRouter({ host, session }).router as never),
+    dispatchFor: (host, session) => directDispatch(buildRouter({ host, session })),
     failureOf: (_host, _session, state) =>
       state.phase === "failed"
         ? { reason: (state as { error: string }).error }
@@ -237,49 +244,65 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
     },
   });
 
-  // `implement(adminContract).router(...)` WALKS `adminContract` to build the
-  // runtime router — `adminContract` (the CLIENT-shared, 2-sibling contract)
-  // knows nothing about `hosts`, so an oRPC-blessed `.router()` call against
-  // it silently has no route for `hosts.entries`/`hosts.<member>` no matter
-  // what extra keys the handlers object carries (confirmed live: the
-  // `entries` subscription 404s). A SERVER-ONLY WIDENED contract is
-  // required — mirroring kolu's own `servedContract` (`packages/server/src/
-  // surface.ts`), which composes the client contract + `padiHostMap.surfaceContract`
-  // the identical way. `hostSurfaceMap.surfaceContract` (PR3) is the first-class
-  // folded fragment `{ <member>: contract, entries: contract }` the map exposes
-  // for exactly this splice — spliced in as the `hosts` key with no `as any`,
-  // never shared with the client (the client dials the map SEPARATELY via
-  // `connectSurfaceMap`, never through this widened contract).
-  const servedAdminContract = oc.router({
-    ...adminContract,
-    surface: {
-      ...adminContract.surface,
-      hosts: hostSurfaceMap.surfaceContract,
-    },
-  });
-
-  // Splice the map's flat `{ surface: { <folded members>, entries } }`
-  // router in under the `hosts` key, beside `admin`/`surfaceApp` —
-  // `surfacesRouter` (the runtime's FINAL router, opaque `unknown`) is a plain
-  // object at runtime, so merging here reads its `.surface` directly. Cast
-  // through `any` for the dynamic splice, mirroring kolu-server's own
-  // `{ ...(surfaceRouter as any), … }` — the runtime shape is a valid router.
-  // biome-ignore lint/suspicious/noExplicitAny: opaque runtime router spliced dynamically; runtime shape is valid (same cast kolu-server uses).
-  const surfacesRouterObj = surfacesRouter as any;
-  const router = implement(servedAdminContract).router({
-    ...surfacesRouterObj,
-    surface: {
-      ...surfacesRouterObj.surface,
-      hosts: (hostsMap.router as { surface: Record<string, unknown> })
-        .surface,
-    },
-  });
+  // ── The splice, which is now a record merge ──────────────────────────────
+  //
+  // This used to be the most delicate ~40 lines in the repo. Under oRPC a
+  // contract was a nested MATCHER TREE, and `implement(contract).router(...)`
+  // re-adapted finalized routers against it — so the client-shared 2-sibling
+  // `adminContract` had no route for `hosts.*` no matter what extra keys the
+  // handlers object carried, and a map subscription silently 404'd while
+  // everything else stayed green. The fix was a server-only WIDENED contract
+  // (`oc.router({...adminContract, surface: {…, hosts: map.surfaceContract}})`)
+  // plus an `as any` splice of two opaque runtime routers.
+  //
+  // On a flat tag namespace a tag carries its own route. `serveSurfaceMap`
+  // already binds the map's handlers at their FULL wire tags with the `hosts/`
+  // prefix baked in (`hostSurfaceMap.name`), and `implementSurfaces` does the
+  // same for the two siblings — so the host merges two `{group, handlers}`
+  // pairs and there is nothing left to widen, re-adapt, or cast.
+  const group = surfaces.group.merge(hostsMap.group);
+  const handlers: SurfaceHandlers = Object.create(null);
+  for (const [tag, handler] of [
+    ...Object.entries(surfaces.handlers),
+    ...Object.entries(hostsMap.handlers),
+  ]) {
+    if (tag in handlers) {
+      throw new Error(
+        `buildAdminRouter: two handlers bound at wire tag "${tag}" — the admin ` +
+          "siblings and the host map must stay disjoint.",
+      );
+    }
+    handlers[tag] = handler;
+  }
+  // `RpcGroup.merge` is a last-writer-wins `Map.set` with no collision
+  // detection, so the size check is the collision detector — the same
+  // assertion `defineSurface` makes about the walk it owns. It is also the
+  // successor to the deleted matcher-tree reasoning: route-set identity, in
+  // both directions, is what "the map is actually served" means now.
+  const expected = surfaces.group.requests.size + hostsMap.group.requests.size;
+  if (group.requests.size !== expected) {
+    const collisions = [...hostsMap.group.requests.keys()].filter((tag) =>
+      surfaces.group.requests.has(tag),
+    );
+    throw new Error(
+      `buildAdminRouter: merging the admin siblings with the host map dropped ` +
+        `${expected - group.requests.size} tag(s) — colliding: ${collisions.join(", ")}.`,
+    );
+  }
+  if (Object.keys(handlers).length !== group.requests.size) {
+    throw new Error(
+      `buildAdminRouter: ${Object.keys(handlers).length} handler(s) bound for ` +
+        `${group.requests.size} advertised tag(s) — an advertised tag nobody bound ` +
+        "404s at the far end, and a handler at an unminted tag is dead code.",
+    );
+  }
 
   // `processId` is this parent process's live id — `main.ts`'s WS-upgrade gate
   // feeds it to `rejectStaleProcess` so a tab that reconnects after a parent
   // restart is rejected at the handshake.
   return {
-    router,
+    group,
+    handlers,
     processId: surfaceApp.processId,
     /** Tear down the map's own machinery — `serveHostMap.dispose()` tears down
      *  `serveSurfaceMap`'s membership republish sub PLUS the adapter's fused

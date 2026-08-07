@@ -1,8 +1,8 @@
-# Hoist workspace dependencies to root node_modules. @kolu/surface-nix-host's
-# source (cp'd from the nix store into node_modules/@kolu/surface-nix-host by
-# shellHook) needs @kolu/surface, @orpc/*, and zod resolvable from one
+# Hoist workspace dependencies to root node_modules. The @kolu/* sources
+# (cp'd from the nix store into node_modules/@kolu/* by shellHook) need
+# @kolu/surface, `effect` and `@effect/platform-node` resolvable from one
 # node_modules. Isolated linker would leave each workspace package's deps in
-# its own node_modules — surface-nix-host would resolve nothing from root.
+# its own node_modules — the hydrated sources would resolve nothing from root.
 #
 # Client-component test preload lives on the `just test` command line (app-
 # scoped), not here: a root [test] entry is an agent-derivation input and

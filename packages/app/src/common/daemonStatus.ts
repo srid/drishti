@@ -6,160 +6,186 @@
  *
  * U2.5: ConvergenceAnomalyWire is a CLOSED discriminated union — each arm
  * preserves required evidence; an added server arm is an exhaustiveness failure.
+ *
+ * Every union here is `Schema.Union`, never `Schema.TaggedUnion`: the
+ * discriminant is `kind`, and a tagged union would rename it to `_tag` — these
+ * shapes cross the admin socket to the browser and their bytes are frozen.
  */
-import { z } from "zod";
+import { Schema } from "effect";
 
 /** Frozen-fragment identity fields the parent probes at admit. */
-export const DaemonIdentitySchema = z.object({
-  stateRoot: z.string().nullable(),
-  contractVersion: z.string().nullable(),
-  startedAt: z.number().nullable(),
-  commit: z.string().nullable(),
-  buildId: z.string().nullable(),
+export const DaemonIdentitySchema = Schema.Struct({
+  stateRoot: Schema.NullOr(Schema.String),
+  contractVersion: Schema.NullOr(Schema.String),
+  startedAt: Schema.NullOr(Schema.Number),
+  commit: Schema.NullOr(Schema.String),
+  buildId: Schema.NullOr(Schema.String),
 });
-export type DaemonIdentity = z.infer<typeof DaemonIdentitySchema>;
+export type DaemonIdentity = typeof DaemonIdentitySchema.Type;
 
-const AxisSchema = z.enum(["build", "contract"]);
+const AxisSchema = Schema.Literals(["build", "contract"]);
 
 /** HostSession.outcome() as wire JSON — closed kinds. */
-export const HostOutcomeSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("replaced"),
+export const HostOutcomeSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("replaced"),
     axis: AxisSchema,
   }),
-  z.object({
-    kind: z.literal("refused"),
-    anomalyKind: z.enum([
+  Schema.Struct({
+    kind: Schema.Literal("refused"),
+    anomalyKind: Schema.Literals([
       "adopted-stale",
       "skew-refused",
       "unconverged",
       "cross-supervisor",
     ]),
   }),
-  z.object({ kind: z.literal("adopted") }),
-  z.object({
-    kind: z.literal("adopted-stale"),
-    anomalyKind: z.literal("adopted-stale"),
+  Schema.Struct({ kind: Schema.Literal("adopted") }),
+  Schema.Struct({
+    kind: Schema.Literal("adopted-stale"),
+    anomalyKind: Schema.Literal("adopted-stale"),
   }),
-  z.object({
-    kind: z.literal("resolve-failed"),
-    resolutionKind: z.enum([
+  Schema.Struct({
+    kind: Schema.Literal("resolve-failed"),
+    resolutionKind: Schema.Literals([
       "unavailable",
       "source-unbaked",
       "nix-unavailable",
       "network-exhausted",
     ]),
   }),
-  z.object({
-    kind: z.literal("boot-refused"),
+  Schema.Struct({
+    kind: Schema.Literal("boot-refused"),
     /** Verbatim agent fatal message (prefixed line payload only). */
-    message: z.string(),
+    message: Schema.String,
   }),
 ]);
-export type HostOutcomeWire = z.infer<typeof HostOutcomeSchema>;
+export type HostOutcomeWire = typeof HostOutcomeSchema.Type;
 
-const BuildWireSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("known"), id: z.string() }),
-  z.object({ kind: z.literal("off-nix") }),
+const BuildWireSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("known"), id: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("off-nix") }),
 ]);
 
-const ConvergenceIdentityWireSchema = z.object({
-  contractVersion: z.string(),
+const ConvergenceIdentityWireSchema = Schema.Struct({
+  contractVersion: Schema.String,
   build: BuildWireSchema,
 });
 
-const InstanceKeyWireSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("instance"),
-    key: z.union([z.string(), z.number()]),
+const InstanceKeyWireSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("instance"),
+    key: Schema.Union([Schema.String, Schema.Number]),
   }),
-  z.object({ kind: z.literal("pre-instance") }),
+  Schema.Struct({ kind: Schema.Literal("pre-instance") }),
 ]);
 
 /** Framework UnconvergedCause — closed on the wire (U2.5). */
-export const UnconvergedCauseWireSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("budget-exhausted"),
+export const UnconvergedCauseWireSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("budget-exhausted"),
     axis: AxisSchema,
-    attempts: z.number(),
-    maxAttempts: z.number(),
+    attempts: Schema.Number,
+    maxAttempts: Schema.Number,
   }),
-  z.object({
-    kind: z.literal("drain-not-taken"),
+  Schema.Struct({
+    kind: Schema.Literal("drain-not-taken"),
     axis: AxisSchema,
-    ceilingMs: z.number(),
-    rejection: z.string().nullable(),
+    ceilingMs: Schema.Number,
+    rejection: Schema.NullOr(Schema.String),
   }),
-  z.object({
-    kind: z.literal("adopt-bind-failed"),
-    axis: AxisSchema.nullable(),
+  Schema.Struct({
+    kind: Schema.Literal("adopt-bind-failed"),
+    axis: Schema.NullOr(AxisSchema),
   }),
-  z.object({ kind: z.literal("identity-unverifiable") }),
-  z.object({
-    kind: z.literal("probe-failed"),
-    message: z.string(),
+  Schema.Struct({ kind: Schema.Literal("identity-unverifiable") }),
+  Schema.Struct({
+    kind: Schema.Literal("probe-failed"),
+    message: Schema.String,
+  }),
+  /**
+   * PLAN D6 / review #3, new with the Effect protocol epoch: the daemon at our
+   * rendezvous answered our first frame with bytes this supervisor cannot
+   * decode — it speaks the PREVIOUS epoch (oRPC's base64 peer framing). Not a
+   * version skew: a version is something you read off a wire you can speak.
+   *
+   * Raised ONLY for a peer whose gate file is ours and whose pid we verified,
+   * so a stranger squatting the socket still folds to `probe-failed`. drishti's
+   * policy never recycles, so this always arrives on a `refused` outcome: the
+   * survivor is left standing and the operator must stop it out of band.
+   */
+  Schema.Struct({
+    kind: Schema.Literal("unspeakable-protocol"),
+    socketPath: Schema.String,
+    gatePath: Schema.String,
+    /** The verified holder pid — the daemon left standing. */
+    pid: Schema.Number,
   }),
 ]);
-export type UnconvergedCauseWire = z.infer<typeof UnconvergedCauseWireSchema>;
+export type UnconvergedCauseWire = typeof UnconvergedCauseWireSchema.Type;
 
 /**
  * Standing convergence anomaly — CLOSED discriminated union.
  * Required evidence per arm; never optional "maybe present" fields.
  */
-export const ConvergenceAnomalyWireSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("adopted-stale"),
-    detail: z.string(),
+export const ConvergenceAnomalyWireSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("adopted-stale"),
+    detail: Schema.String,
     running: ConvergenceIdentityWireSchema,
     expected: ConvergenceIdentityWireSchema,
   }),
-  z.object({
-    kind: z.literal("skew-refused"),
-    detail: z.string(),
+  Schema.Struct({
+    kind: Schema.Literal("skew-refused"),
+    detail: Schema.String,
     running: ConvergenceIdentityWireSchema,
     expected: ConvergenceIdentityWireSchema,
   }),
-  z.object({
-    kind: z.literal("unconverged"),
-    detail: z.string(),
-    running: ConvergenceIdentityWireSchema.nullable(),
+  Schema.Struct({
+    kind: Schema.Literal("unconverged"),
+    detail: Schema.String,
+    running: Schema.NullOr(ConvergenceIdentityWireSchema),
     expected: ConvergenceIdentityWireSchema,
     cause: UnconvergedCauseWireSchema,
   }),
-  z.object({
-    kind: z.literal("cross-supervisor"),
-    detail: z.string(),
+  Schema.Struct({
+    kind: Schema.Literal("cross-supervisor"),
+    detail: Schema.String,
     drained: InstanceKeyWireSchema,
     observed: InstanceKeyWireSchema,
     running: ConvergenceIdentityWireSchema,
   }),
-  z.object({
-    kind: z.literal("link-failed"),
-    detail: z.string(),
+  Schema.Struct({
+    kind: Schema.Literal("link-failed"),
+    detail: Schema.String,
   }),
-  z.object({
-    kind: z.literal("drained-with-persist-failure"),
-    detail: z.string(),
-    error: z.string(),
+  Schema.Struct({
+    kind: Schema.Literal("drained-with-persist-failure"),
+    detail: Schema.String,
+    error: Schema.String,
   }),
-  z.object({
-    kind: z.literal("boot-refused"),
-    detail: z.string(),
+  Schema.Struct({
+    kind: Schema.Literal("boot-refused"),
+    detail: Schema.String,
     /** Verbatim agent fatal message (same as outcome.message). */
-    message: z.string(),
+    message: Schema.String,
   }),
 ]);
-export type ConvergenceAnomalyWire = z.infer<typeof ConvergenceAnomalyWireSchema>;
+export type ConvergenceAnomalyWire =
+  typeof ConvergenceAnomalyWireSchema.Type;
 
-/** Runtime parse pin for closed wire (U2.5 mutation: open schema fails this). */
-export function parseConvergenceAnomalyWire(
+/** Runtime parse pin for closed wire (U2.5 mutation: open schema fails this).
+ *  `decodeUnknownSync` THROWS, exactly as zod's `.parse` did — a wire value
+ *  that does not fit the closed union is a defect, never a shape to degrade
+ *  around. */
+export const parseConvergenceAnomalyWire: (
   value: unknown,
-): ConvergenceAnomalyWire {
-  return ConvergenceAnomalyWireSchema.parse(value);
-}
+) => ConvergenceAnomalyWire = Schema.decodeUnknownSync(
+  ConvergenceAnomalyWireSchema,
+);
 
 /** Session phase words the pool/session publish. */
-export const SessionPhaseSchema = z.enum([
+export const SessionPhaseSchema = Schema.Literals([
   "probing",
   "provisioning",
   "connecting",
@@ -168,13 +194,13 @@ export const SessionPhaseSchema = z.enum([
   "failed",
   "unknown",
 ]);
-export type SessionPhaseWire = z.infer<typeof SessionPhaseSchema>;
+export type SessionPhaseWire = typeof SessionPhaseSchema.Type;
 
 /** Full per-host daemon status for the UI chip + dialog. */
-export const DaemonStatusSchema = z.object({
-  anomaly: ConvergenceAnomalyWireSchema.nullable(),
-  outcome: HostOutcomeSchema.nullable(),
-  identity: DaemonIdentitySchema.nullable(),
+export const DaemonStatusSchema = Schema.Struct({
+  anomaly: Schema.NullOr(ConvergenceAnomalyWireSchema),
+  outcome: Schema.NullOr(HostOutcomeSchema),
+  identity: Schema.NullOr(DaemonIdentitySchema),
   phase: SessionPhaseSchema,
 });
-export type DaemonStatus = z.infer<typeof DaemonStatusSchema>;
+export type DaemonStatus = typeof DaemonStatusSchema.Type;

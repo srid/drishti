@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "//": "@kolu/surface-app is NOT a bun dependency — like @kolu/surface, @kolu/surface-remote, @kolu/surface-map, @kolu/surface-daemon, and @kolu/surface-daemon-supervisor it is hydrated into node_modules/@kolu/* (raw .ts sources; no build step). Sourced hermetically from the npins-pinned kolu tree (npins/sources.json → kolu): nix/overlay.nix extracts each as a nix-store path, nix/env.nix exports $DRISHTI_KOLU_*, and the dev shell / install recipe / build derivation copy them into node_modules. Runtime dependencies of those hydrated sources are declared here; neverthrow carries Surface Remote's explicit agent-source result, quick-lru bounds its successful derivation cache, split2 frames child output, ts-pattern keeps its closed state folds exhaustive (and supervisor convergence), and dequal backs Surface Map's STRUCTURAL republish gate (kolu#2022). @kolu/solid-pwa-install is hydrated the same way. UW3: surface-daemon-supervisor powers convergeAdmit / probeDaemonIdentityFrom on the parent; the agent half lives in the agent package via surface-daemon.",
+  "//": "@kolu/surface-app is NOT a bun dependency — like @kolu/surface, @kolu/surface-remote, @kolu/surface-map, @kolu/surface-daemon, and @kolu/surface-daemon-supervisor it is hydrated into node_modules/@kolu/* (raw .ts sources; no build step). Sourced hermetically from the npins-pinned kolu tree (npins/sources.json → kolu): nix/overlay.nix extracts each as a nix-store path, nix/env.nix exports $DRISHTI_KOLU_*, and the dev shell / install recipe / build derivation copy them into node_modules. Runtime dependencies of those hydrated sources are declared here; `effect` + `@effect/platform-node` carry the whole RPC/schema/transport stack AND the parent's HTTP server (surface-app serves the fresh shell as `effect/unstable/http` LAYERS now — hono and @hono/node-server are gone from kolu and from here), pinned to the EXACT version the hydrated sources declare; neverthrow carries Surface Remote's explicit agent-source result, quick-lru bounds its successful derivation cache, split2 frames child output, ts-pattern keeps its closed state folds exhaustive (and supervisor convergence), and dequal backs Surface Map's STRUCTURAL republish gate (kolu#2022). @kolu/solid-pwa-install is hydrated the same way. UW3: surface-daemon-supervisor powers convergeAdmit / probeDaemonIdentityFrom on the parent; the agent half lives in the agent package via surface-daemon.",
   "scripts": {
     "dev": "bun --watch src/server/main.ts",
     "start": "bun src/server/main.ts",
@@ -12,10 +12,7 @@
   "dependencies": {
     "@babel/core": "^7.25.0",
     "@babel/preset-typescript": "^7.25.0",
-    "@hono/node-server": "^1.19.13",
-    "@orpc/client": "^1.13.13",
-    "@orpc/contract": "^1.13.13",
-    "@orpc/server": "^1.13.13",
+    "@effect/platform-node": "4.0.0-beta.103",
     "@solid-primitives/keyed": "^1.5.3",
     "@solid-primitives/page-visibility": "^2.1.5",
     "@solid-primitives/scheduled": "^1.5.3",
@@ -25,15 +22,13 @@
     "cleye": "^2.3.0",
     "dequal": "^2.0.3",
     "drishti-common": "workspace:*",
-    "hono": "^4.12.16",
+    "effect": "4.0.0-beta.103",
     "neverthrow": "^8.2.0",
-    "partysocket": "^1.1.16",
     "quick-lru": "^7.3.0",
     "solid-js": "^1.9.0",
     "split2": "^4.2.0",
     "ts-pattern": "^5.9.0",
-    "ws": "^8.20.1",
-    "zod": "^4.3.6"
+    "ws": "^8.20.1"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.11.1",

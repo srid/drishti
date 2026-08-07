@@ -22,11 +22,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { composeSurfaceContracts } from "@kolu/surface/define";
-import { unixSocketLink } from "@kolu/surface/links/unix-socket";
-import { controlCoreSurface, daemonHome } from "@kolu/surface-daemon";
-import { surface } from "drishti-common";
+import { daemonHome } from "@kolu/surface-daemon";
 import { applyHysteresis, NO_ALERTS } from "drishti-common/alerts";
+import { dialOverUnixSocket, firstFrame } from "./dialDaemon.testlib";
 import {
   HISTORY_RING_FILE,
   loadHistoryRing,
@@ -35,10 +33,6 @@ import {
 import { NO_BASELINES } from "./ringBaselines";
 
 const agentMain = join(import.meta.dir, "main.ts");
-const agentDaemonContract = composeSurfaceContracts({
-  app: surface,
-  control: controlCoreSurface,
-});
 
 const temps: string[] = [];
 const children: ChildProcess[] = [];
@@ -142,63 +136,19 @@ describe("W3.3 baseline + alert restore process-level", () => {
     expect(existsSync(dh.socketPath)).toBe(true);
 
     // Dial daemon socket (not stdio front) for cell streams.
-    const sock = await unixSocketLink<typeof agentDaemonContract>({
-      socketPath: dh.socketPath,
-    });
+    const sock = await dialOverUnixSocket(dh.socketPath);
     try {
-      const client = sock.client as {
-        surface: {
-          control: { core: { hello: () => Promise<unknown> } };
-          app: {
-            system: {
-              get: (
-                i: Record<string, never>,
-                o?: { signal?: AbortSignal },
-              ) => Promise<AsyncIterable<{ cpuPct?: number }>>;
-            };
-            alerts: {
-              get: (
-                i: Record<string, never>,
-                o?: { signal?: AbortSignal },
-              ) => Promise<AsyncIterable<{ items?: string[] }>>;
-            };
-          };
-        };
-      };
-      await client.surface.control.core.hello();
-
-      const ac = new AbortController();
-      const stream = await client.surface.app.system.get(
-        {},
-        { signal: ac.signal },
-      );
-      let cpuPct = 0;
-      for await (const frame of stream) {
-        cpuPct = frame.cpuPct ?? 0;
-        break;
-      }
-      ac.abort();
+      await sock.control.hello();
 
       // Mutation pin W3.3a: delete importBaselines ⇒ first frame cpuPct is 0.
-      expect(cpuPct).toBeGreaterThan(0);
+      const system = await firstFrame(sock.app.system.get());
+      expect(system.cpuPct).toBeGreaterThan(0);
 
       // W6.5: alerts stream must carry planted pre-drain state (no fallback).
-      {
-        const acA = new AbortController();
-        const aStream = await client.surface.app.alerts.get(
-          {},
-          { signal: acA.signal },
-        );
-        let items: string[] = [];
-        for await (const frame of aStream) {
-          items = frame.items ?? [];
-          break;
-        }
-        acA.abort();
-        expect(items).toContain("cpu");
-      }
+      const alerts = await firstFrame(sock.app.alerts.get());
+      expect(alerts.items).toContain("cpu");
     } finally {
-      sock.dispose();
+      await sock.dispose();
     }
 
     front.kill("SIGTERM");
@@ -274,24 +224,14 @@ describe("W3.3 baseline + alert restore process-level", () => {
     expect(Number.isFinite(oldPid)).toBe(true);
 
     await delay(1500);
-    const sock = await unixSocketLink({
-      socketPath: dh.socketPath,
-    });
-    let drainThrew = false;
+    const sock = await dialOverUnixSocket(dh.socketPath);
     try {
-      await (
-        sock.client as {
-          surface: { control: { core: { drain: () => Promise<unknown> } } };
-        }
-      ).surface.control.core.drain();
-    } catch {
-      // drain success is void; process exit may reject the link — either is ok
-      // as long as the pid transitions below.
-      drainThrew = true;
+      // drishti's own drain — it ANSWERS, so a clean drain is observable here
+      // rather than inferred from the absence of a throw.
+      expect(await sock.drain()).toEqual({ persisted: true });
     } finally {
-      sock.dispose();
+      await sock.dispose();
     }
-    void drainThrew;
     // Allow deferred lifetime abort + final flush to settle on disk.
     await delay(400);
 
@@ -334,59 +274,16 @@ describe("W3.3 baseline + alert restore process-level", () => {
     expect(newPid).toBeGreaterThan(0);
 
     // W6.5: first system frame + alerts through surface (no ring fallback).
-    const sock2 = await unixSocketLink({ socketPath: dh.socketPath });
+    const sock2 = await dialOverUnixSocket(dh.socketPath);
     try {
-      const c = sock2.client as {
-        surface: {
-          control: { core: { hello: () => Promise<unknown> } };
-          app: {
-            system: {
-              get: (
-                i: Record<string, never>,
-                o?: { signal?: AbortSignal },
-              ) => Promise<AsyncIterable<{ cpuPct?: number }>>;
-            };
-            alerts: {
-              get: (
-                i: Record<string, never>,
-                o?: { signal?: AbortSignal },
-              ) => Promise<AsyncIterable<{ items?: string[] }>>;
-            };
-          };
-        };
-      };
-      await c.surface.control.core.hello();
-      {
-        const ac = new AbortController();
-        const stream = await c.surface.app.system.get(
-          {},
-          { signal: ac.signal },
-        );
-        let cpuPct = 0;
-        for await (const frame of stream) {
-          cpuPct = frame.cpuPct ?? 0;
-          break;
-        }
-        ac.abort();
-        expect(cpuPct).toBeGreaterThan(0);
-      }
-      {
-        const ac = new AbortController();
-        const stream = await c.surface.app.alerts.get(
-          {},
-          { signal: ac.signal },
-        );
-        let items: string[] = [];
-        for await (const frame of stream) {
-          items = frame.items ?? [];
-          break;
-        }
-        ac.abort();
-        // No ring-file / regex fallback — surface must carry pre-drain alert.
-        expect(items).toContain("cpu");
-      }
+      await sock2.control.hello();
+      const system = await firstFrame(sock2.app.system.get());
+      expect(system.cpuPct).toBeGreaterThan(0);
+      // No ring-file / regex fallback — surface must carry pre-drain alert.
+      const alerts = await firstFrame(sock2.app.alerts.get());
+      expect(alerts.items).toContain("cpu");
     } finally {
-      sock2.dispose();
+      await sock2.dispose();
     }
   }, 90_000);
 

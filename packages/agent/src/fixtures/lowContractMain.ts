@@ -13,8 +13,6 @@ import {
   daemonHome,
   daemonMain,
   daemonProcessMain,
-  frontDaemonOverStdio,
-  reExecAsDetachedDaemon,
   stderrLogger,
 } from "@kolu/surface-daemon";
 import {
@@ -24,6 +22,7 @@ import {
 import { HISTORY_RING_FILE } from "../historyRing";
 import { createProcReader } from "../proc";
 import { buildAgentRuntime } from "../runtime";
+import { runSkewFixtureFront } from "./skewFront";
 
 /** Older major.minor than AGENT_SURFACE_VERSION ("1.0") — mine is newer. */
 const LOW_CONTRACT_VERSION = "0.9.0";
@@ -40,14 +39,9 @@ async function main(): Promise<void> {
 
   if (wantStdio) {
     log(`fronting daemon at ${home.socketPath}`);
-    await frontDaemonOverStdio({
-      socketPath: home.socketPath,
-      spawnDaemon: () =>
-        reExecAsDetachedDaemon({
-          stripArgs: ["--stdio"],
-          stderrLog: home.file("agent.stderr.log"),
-        }),
-      log: (msg) => process.stderr.write(`[low-contract-fixture] ${msg}\n`),
+    await runSkewFixtureFront({
+      home,
+      label: "low-contract-fixture",
     });
     return;
   }
@@ -74,7 +68,8 @@ async function main(): Promise<void> {
           home,
           processIdentity: selfProcessIdentity(),
           readProcessIdentity,
-          router: runtime.router,
+          group: runtime.group,
+          handlers: runtime.handlers,
           lifetime: {
             kind: "idleTimeout",
             ms: IDLE_TIMEOUT_MS,

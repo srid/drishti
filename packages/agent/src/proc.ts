@@ -4,8 +4,16 @@
  * On Darwin, Apple's privileged ps recovers only per-process CPU/RSS facts
  * osfacts explicitly marks unreadable; it never overwrites readable facts.
  * Node's os module is used only for host identity and OS selection.
+ *
+ * osfacts-client's spawning verbs are Effects (juspay/osfacts#5), so this module
+ * carries the agent's TWO osfacts run edges — one per fact family, in
+ * `processFrame` and `hostFrame` below. They are here and not higher because
+ * `ProcReader` feeds the reactor's `source({ read })`, whose `read` is
+ * `() => Promise<T>` by design; pushing the Effects up would only relocate the
+ * run, not remove it, and would put two Promise faces on the same reader.
  */
 
+import { Effect } from "effect";
 import { hostname, platform } from "node:os";
 import {
   host as readOsfactsHost,
@@ -48,6 +56,14 @@ export interface HostFrame {
   networkInterfaces: Map<IfaceName, NetInterface>;
   sourceErrors: SourceErrorFact[];
 }
+
+/** A `Process` row still under construction: `listeners` stays MUTABLE while
+ *  the ports pass attributes sockets to it. The wire type's array is readonly
+ *  (Effect Schema decodes arrays readonly), and a mutable array is assignable
+ *  to a readonly one — so a draft is a `Process` the moment it is handed out. */
+type ProcessDraft = Omit<Process, "listeners"> & {
+  listeners: Array<Process["listeners"][number]>;
+};
 
 export interface ProcessFrame {
   processes: Map<Pid, Process>;
@@ -168,7 +184,11 @@ export function processesFromOsfacts(
   reading: SnapshotReading,
   cpuPct: ReadonlyMap<Pid, number> = new Map(),
 ): ProcessFrame {
-  const processes = new Map<Pid, Process>();
+  // A DRAFT row while the frame is assembled: the wire `Process` has a readonly
+  // `listeners` (Effect Schema decodes arrays readonly), but the ports pass below
+  // attributes sockets to already-built rows. The draft widens exactly that one
+  // field back to mutable; every draft is still a valid `Process` on the way out.
+  const processes = new Map<Pid, ProcessDraft>();
   const memory = new Map(reading.memory.map((row) => [row.pid, row.rssBytes]));
   const starts = new Map(
     reading.startTimes.map((row) => [row.pid, row.startUnixUs / 1000]),
@@ -334,6 +354,11 @@ export function hostFromOsfacts(
   return { frame, baseline: { takenMs, cpus, networks } };
 }
 
+/** The two injectable osfacts seams, stated as `typeof` the verbs they stand in
+ *  for so a client API change lands here as a type error rather than as a
+ *  double that has quietly drifted from the thing it doubles. Both are
+ *  Effect-returning since juspay/osfacts#5: a double must hand back an Effect,
+ *  and a Promise-returning one no longer compiles. */
 export type SnapshotHost = typeof snapshotHost;
 export type ReadHost = typeof readOsfactsHost;
 export type ReadDarwinProcessUsage = typeof readDarwinProcessUsage;
@@ -358,23 +383,29 @@ export function createOsfactsReader(
   let processBaseline: ProcessBaseline | undefined;
   let hostBaseline: HostBaseline | undefined;
 
-  const exportBaselines = (): import("./ringBaselines").RingBaselines => {
-    const out: import("./ringBaselines").RingBaselines = {};
-    if (processBaseline !== undefined) {
-      out.process = {
-        takenMs: processBaseline.takenMs,
-        cpuTimes: [...processBaseline.cpuTimes.entries()],
-      };
-    }
-    if (hostBaseline !== undefined) {
-      out.host = {
-        takenMs: hostBaseline.takenMs,
-        cpus: [...hostBaseline.cpus.entries()],
-        networks: [...hostBaseline.networks.entries()],
-      };
-    }
-    return out;
-  };
+  // Assembled in one literal rather than mutated field by field: the ring
+  // schema's `process` / `host` are `Schema.optionalKey`, whose decoded fields
+  // are readonly — and an ABSENT key is the shape `NO_BASELINES` means, so
+  // spreading a conditional `{}` says exactly that.
+  const exportBaselines = (): import("./ringBaselines").RingBaselines => ({
+    ...(processBaseline === undefined
+      ? {}
+      : {
+          process: {
+            takenMs: processBaseline.takenMs,
+            cpuTimes: [...processBaseline.cpuTimes.entries()],
+          },
+        }),
+    ...(hostBaseline === undefined
+      ? {}
+      : {
+          host: {
+            takenMs: hostBaseline.takenMs,
+            cpus: [...hostBaseline.cpus.entries()],
+            networks: [...hostBaseline.networks.entries()],
+          },
+        }),
+  });
 
   const importBaselines = (
     baselines: import("./ringBaselines").RingBaselines,
@@ -436,18 +467,26 @@ export function createOsfactsReader(
               };
             })
         : Promise.resolve({ usage: new Map(), errors: [] });
+    // RUN EDGE (snapshot). `readSnapshot` describes a spawn; nothing forks
+    // until this runs it, and running it HERE — inside the cache-window guard,
+    // once — is what keeps "one osfacts subprocess per fact family per window"
+    // true. `runPromise` rejects with the client's failure VALUE, so the
+    // tagged `OsfactsClientError` reaches `readSourceErrors` below exactly as
+    // the old rejection did, unwrapped.
     const promise = Promise.all([
-      readSnapshot(bin, {
-        procs: true,
-        ports: true,
-        mem: true,
-        startTime: true,
-        cpuTime: true,
-        uid: true,
-        cwd: true,
-        status: true,
-        argv: true,
-      }),
+      Effect.runPromise(
+        readSnapshot(bin, {
+          procs: true,
+          ports: true,
+          mem: true,
+          startTime: true,
+          cpuTime: true,
+          uid: true,
+          cwd: true,
+          status: true,
+          argv: true,
+        }),
+      ),
       nativeCensus,
     ]).then(([reading, census]) => {
       const current = new Map<Pid, number>(
@@ -491,13 +530,20 @@ export function createOsfactsReader(
     const takenMs = now();
     if (hostCache && takenMs - hostCache.takenMs < maxAgeMs)
       return hostCache.promise;
-    const promise = readHost(bin, {
-      load: true,
-      mem: true,
-      cpu: true,
-      net: true,
-      disk: true,
-    }).then((reading) => {
+    // RUN EDGE (host) — the snapshot edge's twin, for the same reason.
+    // `hostFromOsfacts` stays OUTSIDE the Effect deliberately: it throws
+    // `OsfactsSourceError`, which `readSourceErrors` recovers by reading the
+    // message marker. Folded in as an `Effect.map` that throw would become a
+    // DEFECT and reach the caller wrapped, and the marker read would go blind.
+    const promise = Effect.runPromise(
+      readHost(bin, {
+        load: true,
+        mem: true,
+        cpu: true,
+        net: true,
+        disk: true,
+      }),
+    ).then((reading) => {
       const mapped = hostFromOsfacts(
         reading,
         hostBaseline,

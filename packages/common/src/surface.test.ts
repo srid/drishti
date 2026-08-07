@@ -39,3 +39,35 @@ describe("surface mutation surface is exactly process.kill", () => {
     expect(Object.keys(streams)).toContain("metricHistory");
   });
 });
+
+// The agent daemon serves a SECOND drishti-owned surface beside this one — the
+// `daemon` sibling carrying `ring.drain` (see `./daemon`). It is deliberately
+// NOT a member of the surface above, because this surface is re-served verbatim
+// to the browser: a drain verb here would hand every tab the authority to stop
+// any host's daemon. That separation is the whole design, so it gets a pin.
+describe("the daemon control sibling is NOT on the mirrored surface", () => {
+  it("keeps `ring.drain` off the surface the browser sees", async () => {
+    const { daemonControlSurface } = await import("./daemon");
+    expect([...daemonControlSurface.group.requests.keys()]).toContain(
+      "surface/ring/drain",
+    );
+    // Standalone tags above; MOUNTED as the `daemon` sibling on the wire.
+    expect([...surface.group.requests.keys()]).not.toContain(
+      "surface/ring/drain",
+    );
+    const { browserSurface } = await import("./browser");
+    expect(Object.keys(browserSurface.spec.procedures ?? {})).toEqual([
+      "process",
+    ]);
+  });
+
+  it("mounts it at `surface/daemon/ring/drain`, disjoint from the app sibling", async () => {
+    const { agentDaemonComposed } = await import("./daemon");
+    const tags = [...agentDaemonComposed.group.requests.keys()];
+    expect(tags).toContain("surface/daemon/ring/drain");
+    expect(tags).toContain("surface/control/core/drain");
+    expect(tags).toContain("surface/app/process/kill");
+    // The merge dropped nothing: three siblings, no colliding tag.
+    expect(new Set(tags).size).toBe(tags.length);
+  });
+});

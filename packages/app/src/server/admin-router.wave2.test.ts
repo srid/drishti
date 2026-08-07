@@ -8,13 +8,20 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { call } from "@orpc/server";
+import type {
+  ConvergenceAnomalyWire,
+  DaemonStatus,
+} from "../common/daemonStatus";
 import { buildAdminRouter } from "./admin-router";
+import { adminHostsTag, callHandler } from "./callHandler.testlib";
 import {
   type DrishtiConvergence,
   type HostPool,
   type HostSession,
 } from "./hostRegistry";
+
+/** `hosts.convergence`'s output. */
+type Convergence = { anomaly: ConvergenceAnomalyWire | null };
 
 function stubPool(args: {
   convergence: DrishtiConvergence | null;
@@ -85,13 +92,19 @@ describe("buildAdminRouter convergence + renew (W2.7)", () => {
       const pool = stubPool({ convergence: anomaly });
       const admin = buildAdminRouter({ pool });
 
-      // Real buildAdminRouter procedures — invoke via oRPC `call`.
-      // biome-ignore lint/suspicious/noExplicitAny: oRPC runtime router
-      const hosts = (admin.router as any).surface.admin.hosts;
-      expect(hosts.convergence).toBeDefined();
-      expect(hosts.renew).toBeDefined();
+      // Real buildAdminRouter procedures — invoked at their WIRE TAGS, which
+      // on a flat namespace IS the route. `callHandler` throws on an unbound
+      // tag, so a deleted procedure still goes red.
+      expect(Object.keys(admin.handlers)).toContain(
+        adminHostsTag("convergence"),
+      );
+      expect(Object.keys(admin.handlers)).toContain(adminHostsTag("renew"));
 
-      const projected = await call(hosts.convergence, { host: "localhost" });
+      const projected = await callHandler<Convergence>(
+        admin.handlers,
+        adminHostsTag("convergence"),
+        { host: "localhost" },
+      );
       expect(projected.anomaly?.kind).toBe("cross-supervisor");
       if (projected.anomaly?.kind === "cross-supervisor") {
         expect(projected.anomaly.drained).toEqual({
@@ -108,10 +121,18 @@ describe("buildAdminRouter convergence + renew (W2.7)", () => {
         });
       }
 
-      const renewed = await call(hosts.renew, { host: "localhost" });
+      const renewed = await callHandler(
+        admin.handlers,
+        adminHostsTag("renew"),
+        { host: "localhost" },
+      );
       expect(renewed).toEqual({ ok: true });
 
-      const after = await call(hosts.convergence, { host: "localhost" });
+      const after = await callHandler(
+        admin.handlers,
+        adminHostsTag("convergence"),
+        { host: "localhost" },
+      );
       expect(after).toEqual({ anomaly: null });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -121,15 +142,20 @@ describe("buildAdminRouter convergence + renew (W2.7)", () => {
   it("unknown host returns null anomaly / renew error", async () => {
     const pool = stubPool({ convergence: null });
     const admin = buildAdminRouter({ pool });
-    // biome-ignore lint/suspicious/noExplicitAny: oRPC runtime router
-    const hosts = (admin.router as any).surface.admin.hosts;
-    expect(await call(hosts.convergence, { host: "missing" })).toEqual({
-      anomaly: null,
-    });
-    expect(await call(hosts.renew, { host: "missing" })).toEqual({
-      ok: false,
-      error: "host not found",
-    });
+    expect(
+      await callHandler<Convergence>(
+        admin.handlers,
+        adminHostsTag("convergence"),
+        { host: "missing" },
+      ),
+    ).toEqual({ anomaly: null });
+    expect(
+      await callHandler<{ ok: boolean; error?: string }>(
+        admin.handlers,
+        adminHostsTag("renew"),
+        { host: "missing" },
+      ),
+    ).toEqual({ ok: false, error: "host not found" });
   });
 
   it("daemonStatus projects identity + phase for a connected-style session", async () => {
@@ -148,15 +174,18 @@ describe("buildAdminRouter convergence + renew (W2.7)", () => {
       },
     });
     const admin = buildAdminRouter({ pool });
-    // biome-ignore lint/suspicious/noExplicitAny: oRPC runtime router
-    const hosts = (admin.router as any).surface.admin.hosts;
-    expect(hosts.daemonStatus).toBeDefined();
-    const status = await call(hosts.daemonStatus, { host: "localhost" });
+    expect(Object.keys(admin.handlers)).toContain(
+      adminHostsTag("daemonStatus"),
+    );
+    const status = await callHandler<DaemonStatus>(
+      admin.handlers,
+      adminHostsTag("daemonStatus"),
+      { host: "localhost" },
+    );
     expect(status.anomaly?.kind).toBe("adopted-stale");
-    expect(status.anomaly?.running?.build).toEqual({
-      kind: "known",
-      id: "old",
-    });
+    if (status.anomaly?.kind === "adopted-stale") {
+      expect(status.anomaly.running.build).toEqual({ kind: "known", id: "old" });
+    }
     expect(status.identity?.buildId).toBe("bld");
     expect(status.phase).toBe("disconnected");
   });
@@ -182,15 +211,19 @@ describe("buildAdminRouter convergence + renew (W2.7)", () => {
       },
     });
     const admin = buildAdminRouter({ pool });
-    // biome-ignore lint/suspicious/noExplicitAny: oRPC runtime router
-    const hosts = (admin.router as any).surface.admin.hosts;
-    const projected = await call(hosts.convergence, { host: "localhost" });
+    const projected = await callHandler<Convergence>(
+      admin.handlers,
+      adminHostsTag("convergence"),
+      { host: "localhost" },
+    );
     expect(projected.anomaly?.kind).toBe("skew-refused");
     if (projected.anomaly?.kind === "skew-refused") {
       expect(projected.anomaly.running.contractVersion).toBe("2.0");
       expect(projected.anomaly.expected.contractVersion).toBe("1.0");
     }
-    const r = await call(hosts.renew, { host: "localhost" });
+    const r = await callHandler(admin.handlers, adminHostsTag("renew"), {
+      host: "localhost",
+    });
     expect(r).toEqual({ ok: true });
     expect(renewed).toBe(true);
   });
@@ -220,12 +253,11 @@ describe("buildAdminRouter convergence + renew (W2.7)", () => {
       },
     });
     const admin = buildAdminRouter({ pool });
-    // biome-ignore lint/suspicious/noExplicitAny: oRPC runtime router
-    const hosts = (admin.router as any).surface.admin.hosts;
-    const r = (await call(hosts.renew, { host: "localhost" })) as {
-      ok: boolean;
-      error?: string;
-    };
+    const r = await callHandler<{ ok: boolean; error?: string }>(
+      admin.handlers,
+      adminHostsTag("renew"),
+      { host: "localhost" },
+    );
     expect(r.ok).toBe(false);
     expect(r.error ?? "").toMatch(/is not bound/);
   });

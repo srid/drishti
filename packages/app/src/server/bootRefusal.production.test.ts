@@ -21,7 +21,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { call } from "@orpc/server";
 import {
   agentBinaryCache,
   directAgentDerivation,
@@ -29,7 +28,9 @@ import {
   type Connector,
   makeSession,
 } from "@kolu/surface-remote";
+import type { DaemonStatus } from "../common/daemonStatus";
 import { buildAdminRouter } from "./admin-router";
+import { adminHostsTag, callHandler } from "./callHandler.testlib";
 import { chipFromDaemonStatus } from "../client/daemonStatusPresentation";
 import { projectDaemonStatus } from "./daemonStatusProjection";
 import {
@@ -349,9 +350,11 @@ describe("U3.1 production assembly — REAL buildHostPool planted 0755", () => {
 
       // Admin router projects the same typed state through the real pool.
       const admin = buildAdminRouter({ pool });
-      // biome-ignore lint/suspicious/noExplicitAny: oRPC router
-      const hosts = (admin.router as any).surface.admin.hosts;
-      const status = await call(hosts.daemonStatus, { host });
+      const status = await callHandler<DaemonStatus>(
+        admin.handlers,
+        adminHostsTag("daemonStatus"),
+        { host },
+      );
       expect(status.anomaly?.kind).toBe("boot-refused");
       if (status.anomaly?.kind === "boot-refused") {
         expect(status.anomaly.message).toMatch(

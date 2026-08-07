@@ -22,13 +22,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { composeSurfaceContracts } from "@kolu/surface/define";
-import { stdioLink } from "@kolu/surface/links/stdio";
+import { daemonHome } from "@kolu/surface-daemon";
+import type { MetricHistoryMsg } from "drishti-common";
 import {
-  controlCoreSurface,
-  daemonHome,
-} from "@kolu/surface-daemon";
-import { surface } from "drishti-common";
+  type DaemonDial,
+  dialOverStdio,
+  dialOverUnixSocket,
+  firstFrame,
+  framesUntil,
+} from "./dialDaemon.testlib";
 import {
   HISTORY_RING_FILE,
   HISTORY_RING_VERSION,
@@ -41,15 +43,17 @@ import {
 
 const agentMain = join(import.meta.dir, "main.ts");
 
-const agentDaemonContract = composeSurfaceContracts({
-  app: surface,
-  control: controlCoreSurface,
-});
-
 const temps: string[] = [];
 const children: ChildProcess[] = [];
 
 afterEach(async () => {
+  for (const dial of dials.splice(0)) {
+    try {
+      await dial.dispose();
+    } catch {
+      // a link whose peer already died is fine
+    }
+  }
   for (const c of children.splice(0)) {
     try {
       c.kill("SIGKILL");
@@ -207,79 +211,42 @@ function homeDir(home: string): string {
   );
 }
 
-function dialFront(front: ChildProcess) {
+const dials: DaemonDial[] = [];
+
+/** Dial a `--stdio` front child. Every dial is disposed in `afterEach` — the
+ *  link owns a `Scope` holding the protocol's fibers now, so dropping one
+ *  leaks them. */
+async function dialFront(front: ChildProcess): Promise<DaemonDial> {
   if (front.stdin === null || front.stdout === null) {
     throw new Error("front missing stdio pipes");
   }
-  return stdioLink<typeof agentDaemonContract>({
-    read: front.stdout,
-    write: front.stdin,
-  });
+  const dial = await dialOverStdio(front.stdout, front.stdin);
+  dials.push(dial);
+  return dial;
 }
 
-type CombinedClient = {
-  surface: {
-    app: {
-      metricHistory: {
-        get: (
-          input: Record<string, never>,
-          opts?: { signal?: AbortSignal },
-        ) => Promise<
-          AsyncIterable<{
-            kind: string;
-            reason?: string;
-            samples?: unknown[];
-          }>
-        >;
-      };
-    };
-    control: {
-      core: {
-        hello: () => Promise<{ buildId?: string; startedAt: number }>;
-        drain: () => Promise<void>;
-      };
-    };
-  };
-};
-
-type HistoryFrame = {
-  kind: string;
-  reason?: string;
-  samples?: unknown[];
-  sample?: unknown;
-};
-
-async function firstHistoryFrame(
-  client: CombinedClient,
-  signal: AbortSignal,
-): Promise<HistoryFrame> {
-  const stream = await client.surface.app.metricHistory.get({}, { signal });
-  for await (const frame of stream) {
-    return frame as HistoryFrame;
-  }
-  throw new Error("metricHistory stream ended without a frame");
-}
-
+/** The samples a subscriber has accumulated once it has seen `atLeast` of
+ *  them — a snapshot RESETS the accumulator (it is the whole ring), a delta
+ *  appends. */
 async function collectHistorySamples(
-  client: CombinedClient,
-  signal: AbortSignal,
+  dial: DaemonDial,
   atLeast: number,
   timeoutMs = 15_000,
-): Promise<unknown[]> {
-  const stream = await client.surface.app.metricHistory.get({}, { signal });
-  const samples: unknown[] = [];
-  const deadline = Date.now() + timeoutMs;
-  for await (const raw of stream) {
-    const frame = raw as HistoryFrame;
-    if (frame.kind === "snapshot" && Array.isArray(frame.samples)) {
-      samples.length = 0;
-      samples.push(...frame.samples);
-    } else if (frame.kind === "delta" && frame.sample !== undefined) {
-      samples.push(frame.sample);
+): Promise<{ t: number }[]> {
+  const samples: { t: number }[] = [];
+  const fold = (frames: readonly MetricHistoryMsg[]): boolean => {
+    samples.length = 0;
+    for (const frame of frames) {
+      if (frame.kind === "snapshot") {
+        samples.length = 0;
+        samples.push(...frame.samples);
+      } else if (frame.kind === "delta") {
+        samples.push(frame.sample);
+      }
     }
-    if (samples.length >= atLeast) return samples;
-    if (Date.now() > deadline) break;
-  }
+    return samples.length >= atLeast;
+  };
+  await framesUntil(dial.app.metricHistory.get({}), fold, timeoutMs);
   return samples;
 }
 
@@ -294,33 +261,11 @@ describe("real window e2e", () => {
     assertTwoFieldGate(home);
     process.kill(pid1, 0);
 
-    const client1 = dialFront(front1) as unknown as CombinedClient;
-    expect((await client1.surface.control.core.hello()).buildId).toBe(buildId);
+    const client1 = await dialFront(front1);
+    expect((await client1.control.hello()).buildId).toBe(buildId);
 
     // Wait for at least one live sample so the ring has served history.
-    const ac1 = new AbortController();
-    // Poll until we see a snapshot with samples or a delta.
-    let before: unknown[] = [];
-    {
-      const stream = await client1.surface.app.metricHistory.get(
-        {},
-        { signal: ac1.signal },
-      );
-      const deadline = Date.now() + 12_000;
-      for await (const frame of stream) {
-        const f = frame as HistoryFrame;
-        if (f.kind === "snapshot" && (f.samples?.length ?? 0) > 0) {
-          before = [...(f.samples ?? [])];
-          break;
-        }
-        if (f.kind === "delta" && f.sample !== undefined) {
-          before = [f.sample];
-          break;
-        }
-        if (Date.now() > deadline) break;
-      }
-      ac1.abort();
-    }
+    const before = await collectHistorySamples(client1, 1, 12_000);
     expect(before.length).toBeGreaterThan(0);
 
     // W2.2: wait for front1 EXIT event — not a fixed sleep.
@@ -332,19 +277,13 @@ describe("real window e2e", () => {
     await waitForSocket(home);
     expect(gatePid(home)).toBe(pid1);
 
-    const client2 = dialFront(front2) as unknown as CombinedClient;
-    const ac2 = new AbortController();
-    const afterFrame = await firstHistoryFrame(client2, ac2.signal);
-    ac2.abort();
+    const client2 = await dialFront(front2);
+    const afterFrame = await firstFrame(client2.app.metricHistory.get({}));
     expect(afterFrame.kind).toBe("snapshot");
-    const after = afterFrame.samples ?? [];
+    const after = afterFrame.kind === "snapshot" ? afterFrame.samples : [];
     // Ring intact: every pre-disconnect sample timestamp is still present.
-    const beforeTs = new Set(
-      before.map((s) => (s as { t: number }).t),
-    );
-    const afterTs = new Set(
-      after.map((s) => (s as { t: number }).t),
-    );
+    const beforeTs = new Set(before.map((s) => s.t));
+    const afterTs = new Set(after.map((s) => s.t));
     for (const t of beforeTs) {
       expect(afterTs.has(t)).toBe(true);
     }
@@ -362,24 +301,13 @@ describe("real window e2e", () => {
     const frontPrev = spawnFront(home, previousBuildId);
     await waitForSocket(home);
     const prevPid = gatePid(home);
-    const clientPrev = dialFront(frontPrev) as unknown as CombinedClient;
-    expect((await clientPrev.surface.control.core.hello()).buildId).toBe(
-      previousBuildId,
-    );
+    const clientPrev = await dialFront(frontPrev);
+    expect((await clientPrev.control.hello()).buildId).toBe(previousBuildId);
 
     // Wait until LIVE samples exist (daemon sampled — not pre-planted).
-    const acLive = new AbortController();
-    const liveSamples = await collectHistorySamples(
-      clientPrev,
-      acLive.signal,
-      1,
-      12_000,
-    );
-    acLive.abort();
+    const liveSamples = await collectHistorySamples(clientPrev, 1, 12_000);
     expect(liveSamples.length).toBeGreaterThan(0);
-    const liveTs = new Set(
-      liveSamples.map((s) => (s as { t: number }).t),
-    );
+    const liveTs = new Set(liveSamples.map((s) => s.t));
 
     // Force a ring file presence check after samples (periodic flush may lag;
     // drain must write regardless).
@@ -387,21 +315,15 @@ describe("real window e2e", () => {
     const mtimeBefore = existsSync(path) ? statSync(path).mtimeMs : 0;
 
     // Drain via a separate unix-socket dial so the front's stdio transport is
-    // not the one that dies with the daemon (stdioLink would throw closed).
-    const { unixSocketLink } = await import("@kolu/surface/links/unix-socket");
+    // not the one that dies with the daemon (the stdio link would fail closed).
+    // drishti's OWN drain verb, so the persist verdict comes back as a VALUE.
     const sockPath = await waitForSocket(home);
-    const sock = await unixSocketLink<typeof agentDaemonContract>({
-      socketPath: sockPath,
-    });
+    const sock = await dialOverUnixSocket(sockPath);
     try {
-      await (
-        sock.client as unknown as CombinedClient
-      ).surface.control.core.drain();
-    } catch {
-      // Drain tears down the peer; a closed transport after a successful
-      // drain is expected. Process exit + ring file are the observations.
+      const verdict = await sock.drain();
+      expect(verdict).toEqual({ persisted: true });
     } finally {
-      sock.dispose();
+      await sock.dispose();
     }
 
     const exitDeadline = Date.now() + 10_000;
@@ -441,13 +363,11 @@ describe("real window e2e", () => {
     const frontSucc = spawnFront(home, currentBuildId);
     await waitForSocket(home);
     expect(gatePid(home)).not.toBe(prevPid);
-    const clientSucc = dialFront(frontSucc) as unknown as CombinedClient;
-    const acS = new AbortController();
-    const frame = await firstHistoryFrame(clientSucc, acS.signal);
-    acS.abort();
+    const clientSucc = await dialFront(frontSucc);
+    const frame = await firstFrame(clientSucc.app.metricHistory.get({}));
     expect(frame.kind).toBe("snapshot");
     const servedTs = new Set(
-      (frame.samples ?? []).map((s) => (s as { t: number }).t),
+      (frame.kind === "snapshot" ? frame.samples : []).map((s) => s.t),
     );
     let servedRecovered = 0;
     for (const t of liveTs) {
@@ -470,13 +390,10 @@ describe("real window e2e", () => {
 
       const front = spawnFront(home, "e2e-disp-garbage");
       await waitForSocket(home);
-      const client = dialFront(front) as unknown as CombinedClient;
-      const ac = new AbortController();
-      const frame = await firstHistoryFrame(client, ac.signal);
-      ac.abort();
+      const client = await dialFront(front);
+      const frame = await firstFrame(client.app.metricHistory.get({}));
 
-      expect(frame.kind).toBe("unavailable");
-      expect(frame.reason).toBe("corrupt");
+      expect(frame).toEqual({ kind: "unavailable", reason: "corrupt" });
       expect(existsSync(path)).toBe(false);
       expect(
         readdirSync(homeDir(home)).filter((n) =>
@@ -484,11 +401,9 @@ describe("real window e2e", () => {
         ).length,
       ).toBe(1);
 
-      const ac2 = new AbortController();
-      const late = await firstHistoryFrame(client, ac2.signal);
-      ac2.abort();
-      expect(late.kind).toBe("unavailable");
-      expect(late.reason).toBe("corrupt");
+      // STANDING, not one-shot: a LATE subscriber reads the same disposition.
+      const late = await firstFrame(client.app.metricHistory.get({}));
+      expect(late).toEqual({ kind: "unavailable", reason: "corrupt" });
 
       front.kill("SIGTERM");
     }
@@ -505,18 +420,13 @@ describe("real window e2e", () => {
 
       const front = spawnFront(home, "e2e-disp-vplus");
       await waitForSocket(home);
-      const client = dialFront(front) as unknown as CombinedClient;
-      const ac = new AbortController();
-      const frame = await firstHistoryFrame(client, ac.signal);
-      ac.abort();
+      const client = await dialFront(front);
+      const frame = await firstFrame(client.app.metricHistory.get({}));
 
-      expect(frame.kind).toBe("unavailable");
-      expect(frame.reason).toBe("unknown-version");
+      expect(frame).toEqual({ kind: "unavailable", reason: "unknown-version" });
       expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(planted);
 
-      const ac2 = new AbortController();
-      const late = await firstHistoryFrame(client, ac2.signal);
-      ac2.abort();
+      const late = await firstFrame(client.app.metricHistory.get({}));
       expect(late.kind).toBe("unavailable");
 
       front.kill("SIGTERM");

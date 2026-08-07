@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
+import { Effect } from "effect";
 import { osfactsSourceStatus } from "drishti-common/source-errors";
-import { parseHostOutput, parseSnapshotOutput } from "osfacts-client";
+import {
+  OsfactsSpawnError,
+  parseHostOutput,
+  parseSnapshotOutput,
+} from "osfacts-client";
 import {
   computeCpuUsage,
   computeNetThroughput,
@@ -101,8 +106,8 @@ describe("osfacts V2 process observation", () => {
       "/nix/store/osfacts/bin/osfacts",
       "linux",
       "test",
-      async () => readings[index++]!,
-      async () => parseHostOutput(hostFixture),
+      () => Effect.sync(() => readings[index++]!),
+      () => Effect.succeed(parseHostOutput(hostFixture)),
       () => clock,
     );
     expect((await reader.readProcesses()).get(42)?.cpuPct).toBe(0);
@@ -120,8 +125,8 @@ describe("osfacts V2 process observation", () => {
       "/nix/store/osfacts/bin/osfacts",
       "darwin",
       "mac",
-      async () => reading,
-      async () => parseHostOutput(hostFixture),
+      () => Effect.succeed(reading),
+      () => Effect.succeed(parseHostOutput(hostFixture)),
       () => clock,
       async () => {
         psCalls++;
@@ -149,8 +154,8 @@ describe("osfacts V2 process observation", () => {
       "/nix/store/osfacts/bin/osfacts",
       "linux",
       "linux",
-      async () => parseSnapshotOutput(snapshotFixture),
-      async () => parseHostOutput(hostFixture),
+      () => Effect.succeed(parseSnapshotOutput(snapshotFixture)),
+      () => Effect.succeed(parseHostOutput(hostFixture)),
       () => 1_000,
       async () => {
         psCalls++;
@@ -170,8 +175,8 @@ describe("osfacts V2 process observation", () => {
       "/nix/store/osfacts/bin/osfacts",
       "darwin",
       "mac",
-      async () => reading,
-      async () => parseHostOutput(hostFixture),
+      () => Effect.succeed(reading),
+      () => Effect.succeed(parseHostOutput(hostFixture)),
       () => 1_000,
       async () => {
         throw Object.assign(new Error("ps unavailable"), { code: "ENOENT" });
@@ -212,8 +217,8 @@ describe("osfacts V2 process observation", () => {
       "/nix/store/osfacts/bin/osfacts",
       "darwin",
       "mac",
-      async () => reading,
-      async () => parseHostOutput(hostFixture),
+      () => Effect.succeed(reading),
+      () => Effect.succeed(parseHostOutput(hostFixture)),
       () => 1_000,
       async () =>
         new Map([[42, { cpuPct: 11.5, rssBytes: 16_777_216 }]]),
@@ -244,11 +249,15 @@ describe("osfacts V2 process observation", () => {
       "/nix/store/osfacts/bin/osfacts",
       "linux",
       "test",
-      async (bin, facets) => {
-        calls.push({ bin, facets });
-        return reading;
-      },
-      async () => hostReading,
+      // `Effect.sync`, not a plain closure returning `Effect.succeed`: the
+      // record now happens when the reader RUNS the description, so this
+      // counts spawns rather than descriptions built.
+      (bin, facets) =>
+        Effect.sync(() => {
+          calls.push({ bin, facets });
+          return reading;
+        }),
+      () => Effect.succeed(hostReading),
       () => 10,
     );
     await Promise.all([
@@ -332,8 +341,8 @@ describe("osfacts V2 process observation", () => {
       "/nix/store/osfacts/bin/osfacts",
       "linux",
       "test",
-      async () => reading,
-      async () => parseHostOutput(hostFixture),
+      () => Effect.succeed(reading),
+      () => Effect.succeed(parseHostOutput(hostFixture)),
       () => 10,
     );
     expect((await reader.readProcesses()).has(42)).toBe(true);
@@ -343,6 +352,58 @@ describe("osfacts V2 process observation", () => {
         source: "darwin_tcp_pcblist",
         facet: "ports_unclaimed",
         code: "BLIND_OR_EMPTY",
+      },
+    ]);
+  });
+
+  /**
+   * THE run edge, pinned by its one observable consequence.
+   *
+   * osfacts-client's spawning verbs are Effects (juspay/osfacts#5), and
+   * `proc.ts` runs them with `Effect.runPromise` so `ProcReader` can stay the
+   * Promise-shaped reader the reactor's `source({ read })` requires. That run
+   * is only safe if it hands the client's failure through UNCHANGED: an Effect
+   * runner that wrapped the failure (in a fiber-failure envelope, or in
+   * anything carrying a synthesised message) would silently break
+   * `readSourceErrors`, whose recovery reads a marker out of the error's own
+   * message. Identity — `toBe`, not `toBeInstanceOf` — is what says the
+   * rejection IS the value the verb failed with.
+   *
+   * And the other arm keeps answering: a snapshot read that fails must not
+   * take the host aggregate's source errors down with it, which is the whole
+   * reason `readSourceErrors` settles the two frames rather than awaiting them.
+   */
+  it("hands a failed osfacts read through the run edge as the client's own tagged error", async () => {
+    const failure = new OsfactsSpawnError({
+      message: "osfacts `/nix/store/osfacts/bin/osfacts` failed (ENOENT)",
+    });
+    const reader = createOsfactsReader(
+      "/nix/store/osfacts/bin/osfacts",
+      "linux",
+      "test",
+      () => Effect.fail(failure),
+      () =>
+        Effect.succeed(
+          parseHostOutput(`${hostFixture}E\tthermal\tcpu\tUNSUPPORTED\n`),
+        ),
+      () => 10,
+    );
+
+    const rejection = await reader.readProcesses().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(rejection).toBe(failure);
+
+    // Not an osfacts SOURCE error (no marker in its message), so it publishes
+    // no fact — and the host arm's E row still arrives.
+    expect(osfactsSourceStatus(rejection)).toBeNull();
+    expect([...(await reader.readSourceErrors()).values()]).toEqual([
+      {
+        operation: "host",
+        source: "thermal",
+        facet: "cpu",
+        code: "UNSUPPORTED",
       },
     ]);
   });
@@ -442,18 +503,19 @@ describe("osfacts V2 host observation", () => {
       "/nix/store/osfacts/bin/osfacts",
       "linux",
       "test",
-      async () => parseSnapshotOutput(snapshotFixture),
-      async (_bin, facets) => {
-        calls++;
-        expect(facets).toEqual({
-          load: true,
-          mem: true,
-          cpu: true,
-          net: true,
-          disk: true,
-        });
-        return parseHostOutput(hostFixture);
-      },
+      () => Effect.succeed(parseSnapshotOutput(snapshotFixture)),
+      (_bin, facets) =>
+        Effect.sync(() => {
+          calls++;
+          expect(facets).toEqual({
+            load: true,
+            mem: true,
+            cpu: true,
+            net: true,
+            disk: true,
+          });
+          return parseHostOutput(hostFixture);
+        }),
       () => 10,
     );
     await Promise.all([

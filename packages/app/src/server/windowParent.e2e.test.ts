@@ -32,13 +32,16 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { call } from "@orpc/server";
 import {
   agentBinaryCache,
   directAgentDerivation,
 } from "@kolu/surface-remote";
 import { daemonHome } from "@kolu/surface-daemon";
+import { Effect, Stream } from "effect";
+import type { MetricHistoryMsg } from "drishti-common";
+import type { ConvergenceAnomalyWire } from "../common/daemonStatus";
 import { buildAdminRouter } from "./admin-router";
+import { adminHostsTag, callHandler } from "./callHandler.testlib";
 import {
   buildHostPool,
   drishtiAgentConvergencePolicy,
@@ -57,6 +60,9 @@ const lowContractMain = join(
 
 const temps: string[] = [];
 const children: ChildProcess[] = [];
+/** `hosts.convergence`'s output. */
+type Convergence = { anomaly: ConvergenceAnomalyWire | null };
+
 const pools: HostPool[] = [];
 
 afterEach(async () => {
@@ -370,15 +376,14 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
       expect(typeof session!.convergence).toBe("function");
 
       // W8.2: structured admit verdict projected on HostSession.outcome().
+      // The app-scoped face the session pins. A streaming member returns a
+      // `Stream` now — no `{ signal }`, and teardown is fiber interruption.
       type HistClient = {
         surface: {
           metricHistory: {
             get: (
               i: Record<string, never>,
-              o?: { signal?: AbortSignal },
-            ) => Promise<
-              AsyncIterable<{ kind: string; samples?: unknown[] }>
-            >;
+            ) => Stream.Stream<MetricHistoryMsg>;
           };
         };
       };
@@ -429,34 +434,37 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
       const successorClient = (await session!.pin()) as unknown as HistClient;
 
       // W6.1: served successor history THROUGH THE SURFACE (not ring-file).
-      const acH = new AbortController();
-      const histStream = await successorClient.surface.metricHistory.get(
-        {},
-        { signal: acH.signal },
+      // The fiber is interrupted the moment the predicate holds — the
+      // `AbortController` this used to carry IS that interrupt, spelled by hand.
+      const histFrames = await Effect.runPromise(
+        Stream.runCollect(
+          Stream.takeUntil(
+            successorClient.surface.metricHistory.get({}),
+            (frame: MetricHistoryMsg) =>
+              (frame.kind === "snapshot" && frame.samples.length > 0) ||
+              frame.kind === "delta",
+          ).pipe(Stream.take(8)),
+        ) as Effect.Effect<readonly MetricHistoryMsg[], never, never>,
       );
-      let histFrame: { kind: string; samples?: unknown[] } | null = null;
-      const hDeadline = Date.now() + 15_000;
-      for await (const frame of histStream) {
-        histFrame = frame;
-        if (
-          (frame.kind === "snapshot" || frame.kind === "delta") &&
-          (frame.samples?.length ?? 0) > 0
-        ) {
-          break;
-        }
-        if (Date.now() > hDeadline) break;
-      }
-      acH.abort();
+      const histFrame = histFrames.at(-1) ?? null;
       expect(histFrame).not.toBeNull();
       expect(
-        histFrame!.kind === "snapshot" || histFrame!.kind === "delta",
+        histFrame?.kind === "snapshot" || histFrame?.kind === "delta",
       ).toBe(true);
-      expect((histFrame!.samples ?? []).length).toBeGreaterThan(0);
+      const servedSamples =
+        histFrame?.kind === "snapshot"
+          ? histFrame.samples.length
+          : histFrame?.kind === "delta"
+            ? 1
+            : 0;
+      expect(servedSamples).toBeGreaterThan(0);
 
       const admin = buildAdminRouter({ pool });
-      // biome-ignore lint/suspicious/noExplicitAny: oRPC router
-      const hostsProc = (admin.router as any).surface.admin.hosts;
-      const projected = await call(hostsProc.convergence, { host });
+      const projected = await callHandler<Convergence>(
+        admin.handlers,
+        adminHostsTag("convergence"),
+        { host },
+      );
       expect(projected).toHaveProperty("anomaly");
 
       try {
@@ -574,14 +582,20 @@ describe("W6.4 real refuse + renew via production pool", () => {
       }
 
       const admin = buildAdminRouter({ pool });
-      // biome-ignore lint/suspicious/noExplicitAny: oRPC router
-      const hostsProc = (admin.router as any).surface.admin.hosts;
-      const projected = await call(hostsProc.convergence, { host });
+      const projected = await callHandler<Convergence>(
+        admin.handlers,
+        adminHostsTag("convergence"),
+        { host },
+      );
       expect(projected.anomaly).not.toBeNull();
-      expect(projected.anomaly.kind).toBe("skew-refused");
+      expect(projected.anomaly?.kind).toBe("skew-refused");
 
       // Real renew must succeed and clear the refusal (or transition pid).
-      const renewResult = await call(hostsProc.renew, { host });
+      const renewResult = await callHandler(
+        admin.handlers,
+        adminHostsTag("renew"),
+        { host },
+      );
       expect(renewResult).toEqual({ ok: true });
 
       // Effect: previous refused pid gone after renew drain.
@@ -757,10 +771,19 @@ describe("W4.1 / W4.4 production assembly confinement", () => {
     );
   });
 
-  it("automatic admit wraps fireDrain for persist-failure capture", () => {
-    expect(src).toMatch(/await probe\.fireDrain\(\)/);
-    expect(src).toMatch(/captureDrainPersistFailure/);
+  it("automatic admit drains through drishti's own verb and reads the verdict", () => {
+    // The frozen control-core drain declares no error and no output, so the
+    // persist verdict cannot ride it at all. drishti asks `daemon.ring.drain`,
+    // which ANSWERS, and projects the answer onto the standing anomaly.
+    expect(src).toMatch(
+      /Effect\.map\(active\.drain, \(verdict\) => \{[\s\S]*?drainPersistFailureOf\(verdict\)/,
+    );
     expect(src).toMatch(/convergenceFromDrainPersistFailure/);
+    expect(src).not.toMatch(/probe\.fireDrain\(\)/);
+    // `await` on a member face compiles and never dispatches — the shape that
+    // bit kolu nine times. A drain that is described and never run reports
+    // every final write as clean.
+    expect(src).not.toMatch(/await active\.drain/);
   });
 
   it("runtime has no control as never cast (W7 / W5.8)", () => {

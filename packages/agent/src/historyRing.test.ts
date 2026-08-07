@@ -269,3 +269,61 @@ describe("loadHistoryRing / saveHistoryRing", () => {
     }
   });
 });
+
+/**
+ * BYTE fixtures for the DISK format (#17 obligation).
+ *
+ * The ring survives daemon restarts, so a successor built from a different
+ * commit reads bytes its predecessor wrote. Decode-equality would pass while
+ * `optionalKey` had silently become `optional` and started writing
+ * `"alerts":null` — which the `?? NO_ALERTS` restore has no arm for.
+ */
+describe("history.ring.json — the bytes on disk", () => {
+  it("writes exactly the four keys, in order, with no nulls", () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const path = join(dir, "history.ring.json");
+    saveHistoryRing(path, [sample(1)], { items: ["cpu"] }, NO_BASELINES);
+    expect(readFileSync(path, "utf8")).toBe(
+      `{"v":${HISTORY_RING_VERSION},` +
+        '"samples":[{"t":1,"cpu":10,"mem":20,"swap":0,"disk":30}],' +
+        '"alerts":{"items":["cpu"]},' +
+        '"baselines":{}}',
+    );
+  });
+
+  it("reads a ring with alerts + baselines ABSENT (a pre-W4 predecessor's file)", () => {
+    // `optionalKey`: an absent key stays absent and restores to the empty fold.
+    // Under `Schema.optional` this same file would still decode — but the
+    // WRITER would start emitting nulls, which this file's shape forbids.
+    const dir = tempDir();
+    dirs.push(dir);
+    const path = join(dir, "history.ring.json");
+    writeFileSync(
+      path,
+      `{"v":${HISTORY_RING_VERSION},"samples":[{"t":7,"cpu":1,"mem":2,"swap":3,"disk":4}]}`,
+      "utf8",
+    );
+    const loaded = loadHistoryRing(path);
+    expect(loaded.kind).toBe("ok");
+    expect(loaded.samples).toEqual([{ t: 7, cpu: 1, mem: 2, swap: 3, disk: 4 }]);
+    expect(loaded.alerts).toEqual(NO_ALERTS);
+    expect(loaded.baselines).toEqual(NO_BASELINES);
+  });
+
+  it("REFUSES an explicit null where a key may only be absent", () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const path = join(dir, "history.ring.json");
+    writeFileSync(
+      path,
+      `{"v":${HISTORY_RING_VERSION},"samples":[],"alerts":null}`,
+      "utf8",
+    );
+    // A null is not the absent key — it is a shape this format never had, so
+    // it is corrupt (moved aside, never deleted), not silently coerced.
+    const loaded = loadHistoryRing(path);
+    expect(loaded.kind).toBe("unavailable");
+    expect(readdirSync(dir).some((n) => n.includes(".corrupt-"))).toBe(true);
+  });
+});

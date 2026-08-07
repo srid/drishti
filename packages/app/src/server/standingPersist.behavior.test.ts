@@ -24,13 +24,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { call } from "@orpc/server";
 import {
   agentBinaryCache,
   directAgentDerivation,
 } from "@kolu/surface-remote";
 import { daemonHome } from "@kolu/surface-daemon";
 import { buildAdminRouter } from "./admin-router";
+import { adminHostsTag, callHandler } from "./callHandler.testlib";
 import { buildHostPool, type HostPool } from "./hostRegistry";
 
 const daemonTestsEnabled = process.env.KOLU_DAEMON_TESTS === "1";
@@ -250,9 +250,11 @@ describe("W6.3 standing persist-failure automatic path", () => {
       }
 
       const admin = buildAdminRouter({ pool });
-      // biome-ignore lint/suspicious/noExplicitAny: oRPC router
-      const hostsProc = (admin.router as any).surface.admin.hosts;
-      const renewResult = await call(hostsProc.renew, { host });
+      const renewResult = await callHandler(
+        admin.handlers,
+        adminHostsTag("renew"),
+        { host },
+      );
       expect(renewResult).toEqual({ ok: true });
 
       // After successful renew, standing failure is cleared.

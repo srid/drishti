@@ -23,13 +23,20 @@
  */
 
 import {
+  armRuntimeFaultExit,
   daemonHome,
   daemonMain,
   daemonProcessMain,
   frontDaemonOverStdio,
+  readBakedIdentity,
   reExecAsDetachedDaemon,
   stderrLogger,
 } from "@kolu/surface-daemon";
+import { writeStdioReadiness } from "@kolu/surface/links/readiness";
+import type { SurfaceHandlers } from "@kolu/surface/server";
+import { Effect } from "effect";
+import type { Rpc, RpcGroup } from "effect/unstable/rpc";
+import { convergeAgentStdioFront } from "./convergeFront";
 import { HISTORY_RING_FILE } from "./historyRing";
 import {
   readProcessIdentity,
@@ -73,8 +80,8 @@ function usage(exitCode = 1): never {
  *  *role*, not a particular transport. Resolves to `unknown` because the agent
  *  only awaits serving's *end*, not its value. */
 type Serve = (opts: {
-  // biome-ignore lint/suspicious/noExplicitAny: the kolu handler's router type.
-  router: any;
+  group: RpcGroup.RpcGroup<Rpc.Any>;
+  handlers: SurfaceHandlers;
   onFirstRequest: () => void;
 }) => Promise<unknown>;
 
@@ -100,7 +107,8 @@ export async function serveAgent(
     );
   }, 5000);
   await serve({
-    router: runtime.router,
+    group: runtime.group,
+    handlers: runtime.handlers,
     onFirstRequest: () => {
       clearInterval(waitingHeartbeat);
       log(`first RPC received — link is live (pid=${process.pid})`);
@@ -135,6 +143,39 @@ async function main(): Promise<void> {
       process.stdout.write("DEBUG: this line corrupts the protocol channel\n");
     }
     log(`drishti-agent --stdio: fronting daemon at ${home.socketPath}`);
+
+    // ── Converge BEFORE relaying (juspay/kolu#2101) ─────────────────────────
+    //
+    // The convergence kit, run HERE on the box where the gate file, the pid
+    // table and the signals live — the parity drishti's fleet arm shipped
+    // without. Only once an agent of this epoch demonstrably holds the
+    // rendezvous does the front greet and splice; a front that cannot converge
+    // says so on the wire and exits.
+    //
+    // THE PROCESS EDGE: the kit is Effect-native all the way down and this is a
+    // CLI entry whose caller is `main()`'s own `.catch`. The relay below is
+    // Promise-shaped by `frontDaemonOverStdio`'s contract, so there is nothing
+    // left to compose into — the crossing happens once, named, at the boundary.
+    const verdict = await Effect.runPromise(
+      convergeAgentStdioFront({
+        home,
+        stderrLog: home.file("agent.stderr.log"),
+        // The front's own baked id. It is the closure ssh just provisioned, so
+        // its identity IS the expectation the policy compares against.
+        buildId: readBakedIdentity("DRISHTI_AGENT").staleKey,
+      }),
+    );
+    // The banner is the FIRST protocol byte on stdout either way — written
+    // while the front still owns stdout, before `relay()` takes it over, which
+    // is what keeps it compatible with the byte-splice guarantee.
+    writeStdioReadiness(process.stdout, verdict);
+    if (verdict.verdict === "refused") {
+      // Exit non-zero WITHOUT relaying. The structured evidence already went to
+      // stderr from the converge itself; this line is the operator's summary.
+      log(`drishti-agent --stdio: refusing to relay — ${verdict.detail}`);
+      process.exit(1);
+    }
+
     await frontDaemonOverStdio({
       socketPath: home.socketPath,
       spawnDaemon: () =>
@@ -174,19 +215,52 @@ async function main(): Promise<void> {
         },
       });
 
+      const daemonLog = stderrLogger();
+
+      // ── An owned surface-runtime fault exits the daemon ──────────────────
+      //
+      // `runtime.done` rejects on structural wiring death — a cell, a bus, a
+      // reactor edge. Serving on through one produces the deploy-#2 zombie:
+      // alive, gate held, socket answering, runtime dead, and the parent
+      // reconnecting forever into something that will never speak again.
+      //
+      // This used to be a bare `process.exit(1)` inside `buildAgentRuntime`,
+      // which got the verdict right and the MECHANISM wrong: it bypassed the
+      // shutdown spine, so the socket and the pid gate were never released and
+      // the history ring was never flushed. The successor then had to reap a
+      // gate whose owner was already gone, and the ring lost everything since
+      // the last periodic persist.
+      //
+      // Riding `faultSignal` instead means the daemon tears down in order —
+      // last rites, socket closed, gate released — and `daemonExitCode` scores
+      // `runtime-fault` non-zero, which is the supervisor's only channel for
+      // "that was a crash, not a stop".
+      const faultSignal = armRuntimeFaultExit({
+        done: runtime.done,
+        log: daemonLog,
+        subject: "drishti agent surface runtime",
+        // drishti's last rites are its history ring: the metric ring is the one
+        // piece of state a respawn cannot reconstruct, so it is persisted on the
+        // fault path exactly as the control-core drain persists it on the clean
+        // one. A throw here is logged and does not stop the exit.
+        lastRites: () => runtime.flushRing(),
+      });
+
       try {
         return await daemonMain({
           home,
           processIdentity: selfProcessIdentity(),
           readProcessIdentity,
-          router: runtime.router,
+          group: runtime.group,
+          handlers: runtime.handlers,
           lifetime: {
             kind: "idleTimeout",
             ms: IDLE_TIMEOUT_MS,
             isIdle: runtime.isIdle,
           },
-          log: stderrLogger(),
+          log: daemonLog,
           signal: drainSignal.signal,
+          faultSignal,
           onReady: ({ socketPath, pid }) =>
             log(`listening on ${socketPath} (pid ${pid})`),
         });
