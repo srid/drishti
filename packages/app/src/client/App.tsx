@@ -16,9 +16,10 @@
 
 import type { EntryState } from "@kolu/surface-map";
 import { unenrolledStreamCall } from "@kolu/surface/client";
+import { probeSurfaceIdentity } from "@kolu/surface/identity";
 import { createSubscription, surfaceClientsHealth } from "@kolu/surface/solid";
 import { shellCommit } from "@kolu/surface-app/lifecycle";
-import { SurfaceAppProvider, surfaceAppProbe } from "@kolu/surface-app/solid";
+import { SurfaceAppProvider } from "@kolu/surface-app/solid";
 import { Meta, Title } from "@solidjs/meta";
 import {
   type Accessor,
@@ -199,7 +200,6 @@ import {
   hostRpc,
   hostStreams,
   notify,
-  rememberServerProcessId,
   runCall,
   surfaceAppClient,
 } from "./wire";
@@ -440,36 +440,34 @@ function projectHistory(
 //
 //  - controlPlane = the surface-app client over the admin transport: surface-app
 //    rides drishti's one global, always-open connection as a SIBLING surface
-//    (kolu#1197/#1201). It carries the `buildInfo` cell + the `identity.info`
-//    probe; the admin surface (host set) is its sibling on the same wire.
+//    (kolu#1197/#1201). It carries the `buildInfo` cell; the admin surface (host
+//    set) is its sibling on the same wire.
 //  - clientCommit = the commit this client was built at, read off the no-store
 //    HTML shell via `shellCommit()` (the global `surfaceApp()`/`buildSurfaceClient`
 //    injects as `window.__SURFACE_APP_COMMIT__`, NOT a bundler define inside a
 //    content-hashed asset — kolu#1319). The same value `surfaceAppServer()` reads
 //    server-side, so skew is a real comparison.
-//  - ws + probe = the admin socket's open/close paired with the shared
-//    `surfaceAppProbe` helper (the scoped `surface.identity.info` probe), so a
-//    reconnect to a *restarted* parent reads as a restart, not a transient drop.
-//  - onProcessId = the turnkey `{ ws, probe }` source now publishes each observed
-//    server `processId` (kolu#1231); we stash it in the `wire.ts` mutable the
-//    admin/per-host URL thunks echo as the `pid` handshake param. The provider
-//    also retires the admin socket itself on a stale-restart, so drishti no
-//    longer hand-rolls either the probe-wrapper echo or the admin retirement —
-//    the per-host sockets, which have no provider lifecycle, keep their own
-//    close-listener retirement in `wire.ts`.
+//  - ws + probe = the admin socket's open/close paired with the FRAMEWORK-RESERVED
+//    `system/identity` round-trip (`probeSurfaceIdentity`, scoped by the
+//    `surfaceApp` sibling key), so a reconnect to a *restarted* parent reads as a
+//    restart, not a transient drop. surface-app declares no identity member of its
+//    own any more — every surface answers this one, with the same per-process id
+//    the parent's stale-tab gate compares against (juspay/kolu#2133).
+//  - there is no `onProcessId`. The `pid` echo was drishti's to feed from here and
+//    is now `connectSurfaces`' own (it probes the same reserved member on every
+//    open), so the handshake holds with no app step to omit.
 export default function App() {
   return (
     <SurfaceAppProvider
       controlPlane={surfaceAppClient()}
       clientCommit={shellCommit()}
       wire={adminSocket()}
-      probe={() => surfaceAppProbe(surfaceAppClient())}
+      probe={() => probeSurfaceIdentity(surfaceAppClient().rpc)}
       // `wire.ts`'s `connectSurfaces` already wires the half-open watchdog over
       // this admin wire (minting the branded `{ live }` the clients require), so
       // the lifecycle opts ITS watchdog out — one watchdog on the wire, not two.
       // (The lifecycle mints no brand, so this is ownership coordination only.)
       heartbeat={false}
-      onProcessId={rememberServerProcessId}
       // No `restartCloseCode`: the stale-close vocabulary lives in the LINK now
       // (surface-app hands it `isStaleProcessClose`), which halts its own retry
       // schedule and reports the terminal `WireStatus` `"retired"`. There is no

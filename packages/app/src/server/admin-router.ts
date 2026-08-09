@@ -7,8 +7,9 @@
  *   - `admin`      — drishti's own host-lifecycle PROCEDURES
  *                     (add/remove/reconnect/recheck). No collection of its
  *                     own any more (see `admin-surface.ts`'s docstring).
- *   - `surfaceApp` — the global build-identity `buildInfo` cell + the
- *                     `identity.info` restart probe (kolu#1197/#1201).
+ *   - `surfaceApp` — the global build-identity `buildInfo`
+ *                     cell (kolu#1197/#1201); the restart axis is the
+ *                     framework-reserved `system/identity` member.
  *   - `hosts`      — the `@kolu/surface-map` HOST MAP (`hostMap.ts`):
  *                     `serveHostMap` folds the warm session pool's
  *                     membership + each session's connection state into the
@@ -65,7 +66,7 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // Two SIBLING surfaces over the one admin transport (kolu#1197/#1201):
   // drishti's OWN `admin` surface (the host-lifecycle procedures) under the
   // `admin` key, and surface-app's COMPLETE surface (the build-identity
-  // `buildInfo` cell + the `identity.info` restart probe) under the
+  // `buildInfo` cell) under the
   // `surfaceApp` key. They are NOT merged — `implementSurfaces` keys each
   // surface, serving them at `/surface/admin/…` and `/surface/surfaceApp/…`
   // with a key-namespaced channel per surface.
@@ -74,7 +75,8 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // the build-identity cell store (commit resolved once: SURFACE_APP_COMMIT env
   // → git → "dev"; the same commit is baked into the client bundle via
   // build.ts's Bun.build define, so client and server stamp one value and skew
-  // is detectable across deploys) AND the `identity.info` probe impl (one
+  // is detectable across deploys). The restart axis is NOT here: it is the
+  // framework-reserved `system/identity` member every surface answers (one
   // processId per process — restart the parent → new id → the control-plane
   // status flips to "restarted"). The buildInfo cell's async republish is fired
   // by the surface runtime — no app-visible connect.
@@ -83,10 +85,11 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // here we add only the server-only per-surface deps, keyed the same way.
   // Per-key deps are typed against each surface's own spec now (kolu#1201), so
   // the concretely-typed admin / surface-app deps bind directly — no cast.
-  // `surfaceAppServer()` mints this process's `processId` (no override passed),
-  // and now EXPOSES it — so the stale-tab handshake gate in `main.ts` compares a
-  // reconnecting tab's `pid` against the SAME id `identity.info` reports, rather
-  // than minting a second one that would never match.
+  // `surfaceAppServer()` no longer mints or exposes a `processId`, and the gate in
+  // `main.ts` no longer takes one: a process has ONE identity —
+  // `surfaceProcessId()` (`@kolu/surface/identity`) — which the framework-reserved
+  // `system/identity` member answers with and which the gate compares against, so
+  // there is nothing left for a consumer to keep in step (juspay/kolu#2133).
   const surfaceApp = surfaceAppServer();
   const surfaces = implementSurfaces(
     adminSurfaces,
@@ -297,13 +300,13 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
     );
   }
 
-  // `processId` is this parent process's live id — `main.ts`'s WS-upgrade gate
-  // feeds it to `rejectStaleProcess` so a tab that reconnects after a parent
-  // restart is rejected at the handshake.
+  // No `processId` is handed out any more. `main.ts`'s WS-upgrade gate reads this
+  // process's own `surfaceProcessId()` — the same value the framework-reserved
+  // `system/identity` member answers with, and so the same one a reconnecting tab
+  // echoes back — leaving nothing to thread from here (juspay/kolu#2133).
   return {
     group,
     handlers,
-    processId: surfaceApp.processId,
     /** Tear down the map's own machinery — `serveHostMap.dispose()` tears down
      *  `serveSurfaceMap`'s membership republish sub PLUS the adapter's fused
      *  per-member `onState` subs and cached links in one call. Called from

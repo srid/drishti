@@ -385,12 +385,14 @@ async function main(): Promise<void> {
         // closes with STALE_PROCESS_CLOSE_CODE before the RPC server attaches —
         // so its live subscriptions never replay against a process that never had
         // them. An absent `pid` (the first-ever connect) always passes.
-        // `admin.processId` is the live id the `identity.info` probe reports, so
-        // the gate and the probe single-source. The installed `error` listener
+        // It takes no live id: it compares the claim against this process's own
+        // `surfaceProcessId()`, which is exactly what the reserved `system/identity`
+        // member answers and so exactly what a tab echoes back — the two sides
+        // cannot be pointed at different strings. The installed `error` listener
         // persists for the connection lifetime — so the per-branch handlers below
         // no longer re-install one.
         if (
-          gateStaleSocket(ws, url, admin.processId, {
+          gateStaleSocket(ws, url, {
             onError: (err) =>
               log(`browser ws error (host=${host}): ${err.message}`),
             onReject: () =>

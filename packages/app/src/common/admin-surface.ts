@@ -24,7 +24,7 @@
  *
  * The admin connection is also drishti's CONTROL PLANE: the one
  * always-open, global connection. surface-app's build-identity surface
- * (the `buildInfo` cell + the `identity.info` restart probe) rides this
+ * (the `buildInfo` cell) rides this
  * same transport — but as a SIBLING surface, NOT merged into the admin
  * surface (kolu#1197/#1201). `composeSurfaceContracts` multiplexes the
  * two: drishti's own `admin` surface under the `admin` key, surface-app's

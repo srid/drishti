@@ -34,7 +34,6 @@
 
 import { Effect } from "effect";
 import type { WatchableWire } from "@kolu/surface/link";
-import { createProcessIdEcho } from "@kolu/surface-app/connect";
 import { createNotify } from "@kolu/surface-app/notify";
 import { connectSurfaces } from "@kolu/surface-app/solid";
 import { connectSurfaceMap } from "@kolu/surface-map/client";
@@ -43,15 +42,14 @@ import { adminSurfaces } from "../common/admin-surface";
 import { ADMIN_HOST_SENTINEL } from "../common/host";
 import { hostSurfaceMap } from "../common/hostMap";
 
-// ONE `pid` echo for the ONE socket. The parent mints a fresh `processId`
-// per boot; the echo threads the last-known one back as the `pid` query
-// param on every (re)connect so the parent recognizes a stale tab after a
-// restart and rejects it at the handshake. `App.tsx` feeds this via the
-// provider's `onProcessId` callback (the turnkey `{ ws, probe }` source
-// publishes each observed id); it's null until the first probe, so the
-// first connect omits the param.
-const echo = createProcessIdEcho();
-export const rememberServerProcessId = echo.remember;
+// There is no `pid` echo to declare or feed here any more. `connectSurfaces`
+// owns the whole stale-tab handshake now: it probes the framework-reserved
+// `system/identity` member on every wire OPEN and threads the parent's
+// `processId` back as the `pid` query param on the next (re)dial, so the parent
+// recognizes a stale tab after a restart and rejects it at the handshake. drishti
+// used to declare the echo here and feed it from `<SurfaceAppProvider onProcessId>`
+// — an app-side step which, omitted, leaves the parent's gate unable to reject
+// anything at all (juspay/kolu#2133).
 
 // The ONE WS URL — WITHOUT the `pid` (the echo appends it). `host=` is kept
 // as the routing sentinel `main.ts`'s upgrade handler still checks, though
@@ -77,7 +75,7 @@ function wsBase(): string {
 
 // The admin transport multiplexes TWO sibling surfaces (kolu#1197/#1201):
 // drishti's own `admin` surface (host-lifecycle procedures) and
-// surface-app's complete surface (`buildInfo` + the `identity.info` probe).
+// surface-app's complete surface (the `buildInfo` cell).
 // `connectSurfaces` splits the one link into a per-key client bundle and
 // folds them into ONE `health()` fact (`live` AND-reduced across siblings
 // off the one socket). It ALWAYS wires the half-open watchdog (it mints the
@@ -85,8 +83,8 @@ function wsBase(): string {
 // requires). The `<SurfaceAppProvider>` lifecycle over the SAME socket
 // (`App.tsx`) opts ITS own watchdog out (`heartbeat={false}`) so the socket
 // isn't double-watched; the lifecycle still retires the socket on a
-// stale-restart, so this opts out of self-retire (`retireOnStaleClose:
-// false`).
+// stale-restart. The `retired` handler below is this seam's own required
+// answer to the terminal state.
 /** The ONE drishti client-error interpreter (SR11, fork-A) — the single place drishti's
  *  app-owned {@link ClientErrorPolicy} arm is rendered. drishti has no Toaster, so it
  *  LOGS: `console.error(label, err)` where `label` is the member's declared message. It
@@ -105,7 +103,6 @@ export function interpretClientError(p: ClientErrorPolicy, err: Error): void {
 const conn = await connectSurfaces({
   surfaces: adminSurfaces,
   url: wsBase,
-  echo,
   // The host map's tags ride THIS wire but are not reached through
   // `clients.<key>` — they are dialled over `conn.transport` below. Effect
   // RPC's flat client resolves a call's payload/success SCHEMAS by looking its
@@ -119,6 +116,16 @@ const conn = await connectSurfaces({
   // seam symmetric with `connectSurfaceMap` below (and honest the day a root member ever
   // declares a policy). See design §A: the app spells ONE interpreter.
   onClientError: (p, e) => interpretClientError(p as ClientErrorPolicy, e),
+  // REQUIRED, and deliberately so — this is the one state a wire never recovers
+  // from: the parent retired this tab, the link has stopped dialling for good, and
+  // every call on it now fails. The user-facing recovery already rides the same
+  // wire (`<SurfaceAppProvider>`'s lifecycle reads the terminal status as a
+  // definitive `restarted`, and `<TransportOverlay>` offers the Reload), so what
+  // this adds is the RECORD, in drishti's idiom — it has no Toaster; it logs.
+  retired: () =>
+    console.error(
+      "the parent retired this tab — it was bound to a process that no longer exists; reload to recover",
+    ),
 });
 
 /** The watchable wire under every client here — status observability plus the
@@ -225,11 +232,11 @@ export function adminRpc() {
 }
 
 /** The surface-app client over the admin transport — the global
- *  build-identity `buildInfo` cell + the `identity.info` restart probe.
- *  Handed to `<SurfaceAppProvider controlPlane=...>` and
- *  `surfaceAppProbe(...)`. The `surfaceApp` key is consumed by the scope,
- *  so the probe's wire path is `/surface/surfaceApp/identity/info` (the key
- *  does NOT reappear). */
+ *  build-identity `buildInfo` cell, and (through its tag-scoped face) the
+ *  FRAMEWORK-RESERVED `system/identity` restart probe. Handed to
+ *  `<SurfaceAppProvider controlPlane=...>` and `probeSurfaceIdentity(...)`. The
+ *  `surfaceApp` key is consumed by the scope, so the probe's wire path is
+ *  `/surface/surfaceApp/system/identity` (the key does NOT reappear). */
 export function surfaceAppClient() {
   return conn.clients.surfaceApp;
 }
