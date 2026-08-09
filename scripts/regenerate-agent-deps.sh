@@ -23,8 +23,8 @@ cat >"$tmp/package.json" <<'EOF'
   "workspaces": ["packages/agent", "packages/common"],
   "overrides": {
     "@babel/helper-module-imports": "^7.29.7",
-    "@effect/platform-node": "4.0.0-beta.103",
-    "effect": "4.0.0-beta.103"
+    "@effect/platform-node": "4.0.0-beta.106",
+    "effect": "4.0.0-beta.106"
   }
 }
 EOF
