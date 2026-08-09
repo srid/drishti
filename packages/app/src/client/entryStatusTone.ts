@@ -19,7 +19,7 @@
  * data rides the ONE admin transport instead of its own socket).
  */
 
-import type { EntryState, FailureEvidence } from "@kolu/surface-map";
+import { type EntryState, type FailureEvidence, isSettling } from "@kolu/surface-map";
 import {
   type ConnectionInfo,
   type ConnectionState,
@@ -27,13 +27,15 @@ import {
 } from "drishti-common/browser";
 
 // A pure kind→tone lookup as a `Record` keyed on the full `EntryState["kind"]`
-// union — so adding a fourth displayed kind is a compile error here
-// (exhaustive by construction), not a silent fall-through a `switch` would
-// hide.
+// union — so adding a displayed kind is a compile error here (exhaustive by
+// construction), not a silent fall-through a `switch` would hide.
 const DOT_TONE: Record<EntryState["kind"], string> = {
   connected: "bg-emerald-500", // live — the map floors this on transport liveness
   warming: "bg-amber-500", // probing / provisioning / connecting — coming up
   failed: "bg-red-500", // provisioning or link failed
+  // We cannot see the publisher, so we say nothing about the host: grey, never
+  // the amber that means "coming up" and never the red that means "failed".
+  unobservable: "bg-gray-400 dark:bg-gray-600",
   "not-a-member": "bg-gray-400 dark:bg-gray-600", // unreached — we only render members
 };
 
@@ -42,30 +44,42 @@ export function dotClass(status: EntryState): string {
   return DOT_TONE[status.kind];
 }
 
+// The three lookups below were `switch (status.kind)` with a `default:`, which is
+// how a new arm gets silently painted as an existing one — `unobservable` would
+// have landed on amber "connecting…", the exact conflation kolu#2129 split apart.
+// They are `Record`s now, for the same reason `DOT_TONE` always was.
+
 /** The status-word text color class, following the same tone. */
+const TEXT_TONE: Record<EntryState["kind"], string> = {
+  connected: "text-emerald-500",
+  warming: "text-amber-500",
+  failed: "text-red-500",
+  unobservable: "text-gray-500",
+  "not-a-member": "text-amber-500",
+};
 export function statusTextClass(status: EntryState): string {
-  switch (status.kind) {
-    case "connected":
-      return "text-emerald-500";
-    case "failed":
-      return "text-red-500";
-    default:
-      return "text-amber-500";
-  }
+  return TEXT_TONE[status.kind];
 }
 
 /** A terse label — the fleet card / tab-chip tight fallback. */
+const LABEL: Record<EntryState["kind"], string> = {
+  connected: "connected",
+  warming: "connecting…",
+  failed: "failed",
+  // Not "connecting…": that word claims a campaign is under way, and this arm
+  // means we have lost the ability to see whether one is.
+  unobservable: "unknown",
+  "not-a-member": "not configured",
+};
 export function statusLabel(status: EntryState): string {
-  switch (status.kind) {
-    case "connected":
-      return "connected";
-    case "warming":
-      return "connecting…";
-    case "failed":
-      return "failed";
-    default:
-      return "not configured";
-  }
+  return labelForKind(status.kind);
+}
+/** The same label from a bare arm name — for the one caller (the tab chip's tooltip)
+ *  that holds the kind without the whole state. Exported rather than letting that
+ *  caller interpolate the raw arm into user-visible text, which is how `unobservable`
+ *  would have shown up in a tooltip as the word "unobservable". */
+export function labelForKind(kind: EntryState["kind"]): string {
+  return LABEL[kind];
 }
 
 /** A one-line human note for the dot's `title` — the failure reason when
@@ -78,7 +92,12 @@ export function statusTitle(status: EntryState<{ reason: string }>): string {
       return "connecting…";
     case "failed":
       return `failed: ${status.failure.reason}`;
-    default:
+    // The one arm whose tooltip is genuinely the most useful thing on screen: the
+    // host is probably fine and our admin link is not, so name the last word we
+    // actually heard rather than pretending to a current one.
+    case "unobservable":
+      return `status unknown — drishti can't reach this host's publisher (last seen: ${status.published})`;
+    case "not-a-member":
       return "not a member";
   }
 }
@@ -103,10 +122,16 @@ export function failureRecord(
     : null;
 }
 
-/** Whether this status should pulse (work in progress). A terminally-failed
- *  or fully-connected entry sits steady; only `warming` is "in flight". */
+/** Whether this status should pulse (unsettled). A terminally-failed or fully-connected
+ *  entry sits steady; `warming` and `unobservable` are both "not settled yet".
+ *
+ *  Delegates to the framework's `isSettling` rather than re-spelling `kind === "warming"`:
+ *  that test used to be right and stopped being right the moment the floor grew its own
+ *  arm — a dropped admin link would have frozen the pulse on a host that is still very
+ *  much in motion. This is the one call kolu#2129 added so the spin-only consumer pays
+ *  nothing for the split. */
 export function statusPending(status: EntryState): boolean {
-  return status.kind === "warming";
+  return isSettling(status);
 }
 
 /**
@@ -123,16 +148,23 @@ export function statusPending(status: EntryState): boolean {
  * source. A `not-a-member` entry (never reached) carries no connection.
  *
  * Neither does a FAILED one, since kolu#2022: a live word is work-in-flight and a
- * failed entry has none — its post-mortem is the `failureRecord` instead. So this
- * returns the payload only for the two LIVE arms, and callers that paint a word
- * must go through `connectionPhaseOf` rather than defaulting the absence.
+ * failed entry has none — its post-mortem is the `failureRecord` instead. Nor does
+ * an `unobservable` one (kolu#2129): our own link to the publisher is down, so the
+ * last word we heard is by definition frozen, and the arm carries no field for it.
+ * So this returns the payload only for the two LIVE arms, and callers that paint a
+ * word must go through `connectionPhaseOf` rather than defaulting the absence.
+ *
+ * Spelled as a POSITIVE test on the two arms that have the field, not a negative
+ * list of the ones that don't: a negative list silently admits every future arm
+ * into the "live" bucket, which is how the previous spelling would have read a
+ * blind entry as one carrying a current connection.
  */
 export function connectionOf<F>(
   status: EntryState<F, ConnectionInfo>,
 ): ConnectionInfo | undefined {
-  return status.kind === "not-a-member" || status.kind === "failed"
-    ? undefined
-    : status.connection;
+  return status.kind === "connected" || status.kind === "warming"
+    ? status.connection
+    : undefined;
 }
 
 /** The connection PHASE to PAINT beside the dot — the one word authority, total over
@@ -149,11 +181,16 @@ export function connectionOf<F>(
  *  would fire on every failed host.
  *
  *  A failed entry's word is `failed`, read off the coarse arm the dot reads. Only the
- *  live arms fall back to `DEFAULT_CONNECTION`'s phase, which is what that value means. */
+ *  live arms fall back to `DEFAULT_CONNECTION`'s phase, which is what that value means.
+ *
+ *  `unobservable` (kolu#2129) is the same trap wearing a different hat, and is caught the
+ *  same way: it has no payload either, so the default would have painted "connecting…"
+ *  over a host whose publisher we simply cannot hear. Its word is `disconnected` — a
+ *  statement about the link we lost, which is the only thing we actually know. */
 export function connectionPhaseOf(
   status: EntryState<{ reason: string }, ConnectionInfo>,
 ): ConnectionState {
-  return status.kind === "failed"
-    ? "failed"
-    : (connectionOf(status)?.phase ?? DEFAULT_CONNECTION.phase);
+  if (status.kind === "failed") return "failed";
+  if (status.kind === "unobservable") return "disconnected";
+  return connectionOf(status)?.phase ?? DEFAULT_CONNECTION.phase;
 }

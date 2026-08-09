@@ -20,6 +20,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "effect": "4.0.0-beta.103"
+    "effect": "4.0.0-beta.106"
   }
 }
