@@ -10,6 +10,7 @@ import { Show } from "solid-js";
 import type { EntryState } from "@kolu/surface-map";
 import type { ConnectionInfo, ConnectionState } from "drishti-common/browser";
 import { STATE } from "./connectionColors";
+import { labelForKind } from "./entryStatusTone";
 import { FleetDaemonStatusChip } from "./DaemonStatusChip";
 import { HostDot } from "./HostDot";
 
@@ -24,7 +25,11 @@ const TAB_ACTIVE =
 export const TabHostGlance: Component<{
   host: string;
   active: boolean;
-  connectionKind: string;
+  /** The entry's arm, typed — NOT a widened `string`. A `string` here meant this prop
+   *  absorbed any change to the union, up to and including a rename, without the build
+   *  noticing; it also let the raw arm name land in a tooltip unreviewed. Typed, the
+   *  tooltip below goes through `labelForKind`, which is exhaustive over the union. */
+  connectionKind: EntryState["kind"];
   alertCount: number;
   onSelect: () => void;
   onClose: () => void;
@@ -40,7 +45,7 @@ export const TabHostGlance: Component<{
       data-testid={`tab-select-${props.host}`}
       class="flex items-center gap-2"
       onClick={() => props.onSelect()}
-      title={`${props.host} — ${props.connectionKind}`}
+      title={`${props.host} — ${labelForKind(props.connectionKind)}`}
     >
       <HostDot state={props.entryState} />
       <span class="font-semibold">{props.host}</span>

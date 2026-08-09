@@ -16,7 +16,7 @@
   "//overrides": "ONE effect copy fleet-wide. The hydrated @kolu/* sources resolve `effect` from THIS node_modules (bunfig linker=hoisted), and Effect's tagged-error narrowing is `_tag`-structural precisely because two module instances would otherwise stop recognising each other's classes — but `instanceof`, Context keys and Schema identity are not. Pinning here means a transitive bump cannot smuggle in a second copy. Mirrored verbatim in packages/agent/agent.package.json and scripts/regenerate-agent-deps.sh's heredoc — all three must move together.",
   "overrides": {
     "@babel/helper-module-imports": "^7.29.7",
-    "@effect/platform-node": "4.0.0-beta.103",
-    "effect": "4.0.0-beta.103"
+    "@effect/platform-node": "4.0.0-beta.106",
+    "effect": "4.0.0-beta.106"
   }
 }
