@@ -15,19 +15,14 @@ rm -f "$tmp/packages/agent/agent.lock" \
   "$tmp/packages/agent/agent.bunfig.toml" \
   "$tmp/packages/agent/agent.bun.nix"
 
-cat >"$tmp/package.json" <<'EOF'
-{
-  "name": "drishti-agent-workspace",
-  "private": true,
-  "type": "module",
-  "workspaces": ["packages/agent", "packages/common"],
-  "overrides": {
-    "@babel/helper-module-imports": "^7.29.7",
-    "@effect/platform-node": "4.0.0-beta.103",
-    "effect": "4.0.0-beta.106"
-  }
-}
-EOF
+# The agent workspace's manifest is `packages/agent/agent.package.json` — the SAME file
+# `nix/packages/drishti-agent` copies to `package.json` at build time. Copy it; never
+# re-spell it. It used to be duplicated as a heredoc here, and the two copies drifted:
+# this one carried `effect: 4.0.0-beta.106` while the committed one still said `.103`, so
+# the regenerated lock claimed .106 and the BUILT agent installed .103 — which showed up
+# only as a boot crash (`Schema.TaggedError is not a function`), because nothing
+# typechecks the agent's runtime closure. One manifest, one place to bump.
+cp packages/agent/agent.package.json "$tmp/package.json"
 cat >"$tmp/bunfig.toml" <<'EOF'
 [install]
 linker = "hoisted"

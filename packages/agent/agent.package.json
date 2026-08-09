@@ -3,9 +3,10 @@
   "private": true,
   "type": "module",
   "workspaces": ["packages/agent", "packages/common"],
+  "//": "THE agent projection's manifest — the one `nix/packages/drishti-agent` copies to package.json, and (since it stopped being duplicated in a shell heredoc) the one `scripts/regenerate-agent-deps.sh` resolves agent.lock/agent.bun.nix against. `effect` is overridden because the agent runs kolu's hydrated @kolu/surface sources, which must see the SAME effect kolu built them against; @effect/platform-node stays at .103 deliberately — its peer range accepts effect ^4.0.0-beta.103 (which .106 satisfies), while .106 widens an optional `ioredis` peer that makes bun mint a peer-specialized cache key the nix-provided read-only bun cache cannot be written into.",
   "overrides": {
     "@babel/helper-module-imports": "^7.29.7",
     "@effect/platform-node": "4.0.0-beta.103",
-    "effect": "4.0.0-beta.103"
+    "effect": "4.0.0-beta.106"
   }
 }
