@@ -16,9 +16,9 @@
     url = "https://registry.npmjs.org/@effect/platform-node-shared/-/platform-node-shared-4.0.0-beta.106.tgz";
     hash = "sha512-TRTzLmhCwVM8G7dXz16lI3wE2vZFSs1jNs/+3WhnuOZgOUeJz9vzBK/KKlGRbbi0QbtEqmW4rAy1y9Fj4MZfsw==";
   };
-  "@effect/platform-node@4.0.0-beta.106" = fetchurl {
-    url = "https://registry.npmjs.org/@effect/platform-node/-/platform-node-4.0.0-beta.106.tgz";
-    hash = "sha512-Me7uorWWroWp4OuWHbFg7EqyIex45QzZ3EPwh2p8y/t3VCWVy4KSFtL9AKOKpd7QK1krUWxRK/26J/hTsqvwZg==";
+  "@effect/platform-node@4.0.0-beta.103" = fetchurl {
+    url = "https://registry.npmjs.org/@effect/platform-node/-/platform-node-4.0.0-beta.103.tgz";
+    hash = "sha512-VD8fbpendwFokMwzC7/MxazjhEVDihPC5NZtomYEyZwGaA1LXMvwP1y8pfXwfshUkG56TN4EMQqzu72c0B9FhA==";
   };
   "@ioredis/commands@1.10.0" = fetchurl {
     url = "https://registry.npmjs.org/@ioredis/commands/-/commands-1.10.0.tgz";
