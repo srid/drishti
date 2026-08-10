@@ -58,6 +58,7 @@ import {
 import { loadHosts, resolveHostsFile, saveHosts } from "./hostsStore";
 import { installStderrTimestamps, makeLogger } from "./log";
 import { startWakeMonitor } from "./wakeMonitor";
+import { WS_MAX_PAYLOAD_BYTES } from "./wsFrameCap";
 
 // Stamp every stderr line (drishti's, kolu's, and the forwarded remote
 // agent's) with a timestamp before anything logs — the connection
@@ -331,9 +332,12 @@ async function main(): Promise<void> {
   // go. The `host` query param is kept as the ONE remaining routing
   // sentinel (`ADMIN_HOST_SENTINEL`) so the upgrade handler still rejects
   // any other value rather than silently accepting an unrouted socket.
+  // maxPayload is the FRAMEWORK's frame cap, sourced (`wsFrameCap.ts`) rather
+  // than restated: a smaller number here would refuse frames `@kolu/surface`
+  // is willing to carry, one layer below the one that can classify them.
   const wss = new WebSocketServer({
     noServer: true,
-    maxPayload: 8 * 1024 * 1024,
+    maxPayload: WS_MAX_PAYLOAD_BYTES,
   });
 
   // Liveness heartbeat (@kolu/surface-app): ping accepted sockets and terminate
