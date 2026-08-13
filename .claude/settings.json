@@ -1,4 +1,6 @@
 {
+  "model": "opus",
+  "permissions": { "defaultMode": "bypassPermissions" },
   "hooks": {
     "Stop": [
       {
