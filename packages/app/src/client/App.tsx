@@ -78,6 +78,7 @@ import {
   convergenceBannerVisible,
 } from "./convergenceProjection";
 import { DaemonDialog } from "./DaemonDialog";
+import { Fault } from "./Fault";
 import { DaemonDialogGlyph, DaemonStatusChip } from "./DaemonStatusChip";
 import { chipFromDaemonStatus, chipGlanceVisible } from "./daemonStatusPresentation";
 import { HostCardGlance } from "./daemonHostGlance";
@@ -472,6 +473,12 @@ export default function App() {
       // (surface-app hands it `isStaleProcessClose`), which halts its own retry
       // schedule and reports the terminal `WireStatus` `"retired"`. There is no
       // consumer action left to hand out, so nothing here retires the socket.
+      //
+      // What an uncaught render throw looks like — REQUIRED (kolu#2164), the
+      // way the connect seams require `retired`: the provider wraps everything
+      // below in `SurfaceFaultBoundary` (catch + record + print); drishti owns
+      // only the markup. See `./Fault.tsx`.
+      fault={(text) => <Fault text={text} />}
     >
       <TransportOverlay />
       <MultiHostApp />
