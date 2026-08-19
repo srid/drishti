@@ -9,8 +9,8 @@
       },
       "branch": "surface-deltas-frame",
       "submodules": false,
-      "revision": "3d54d645f09bf707110f84e40b8d4961e781e42b",
-      "url": "https://github.com/juspay/kolu/archive/3d54d645f09bf707110f84e40b8d4961e781e42b.tar.gz",
+      "revision": "6af01eebf007a4dda1e78439584f6ca7156aed35",
+      "url": "https://github.com/juspay/kolu/archive/6af01eebf007a4dda1e78439584f6ca7156aed35.tar.gz",
       "hash": "sha256-1Z6BuauUjH/+0+7L6599eFG13nc+0HtAScq9FwUEhEM="
     },
     "nixpkgs": {
