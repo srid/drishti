@@ -112,30 +112,34 @@ export function processMatches(pid: Pid, process: Process, query: string): boole
   );
 }
 
+/** How a caller looks one pid's row up. A FUNCTION, not a `Record`: the process
+ *  table reads the surface framework's batched-deltas store, whose per-key contract
+ *  is exactly "ask for one key" — materialising a whole record to sort by would
+ *  re-copy per tick the very map the store exists to stop copying. */
+export type ProcessLookup = (pid: Pid) => Process | undefined;
+
 export function processComparator(
   key: ProcessSortKey,
-  procs: Record<Pid, Process>,
+  look: ProcessLookup,
 ): (a: Pid, b: Pid) => number {
-  if (key === "ppid")
-    return (a, b) => procs[a]!.ppid - procs[b]!.ppid || a - b;
+  if (key === "ppid") return (a, b) => look(a)!.ppid - look(b)!.ppid || a - b;
   if (key === "mem")
     return (a, b) =>
-      (procs[b]!.rssBytes ?? -1) - (procs[a]!.rssBytes ?? -1) || a - b;
+      (look(b)!.rssBytes ?? -1) - (look(a)!.rssBytes ?? -1) || a - b;
   if (key === "uptime")
     return (a, b) =>
-      (procs[a]!.startedAtMs ?? Number.POSITIVE_INFINITY) -
-        (procs[b]!.startedAtMs ?? Number.POSITIVE_INFINITY) || a - b;
+      (look(a)!.startedAtMs ?? Number.POSITIVE_INFINITY) -
+        (look(b)!.startedAtMs ?? Number.POSITIVE_INFINITY) || a - b;
   if (key === "command")
-    return (a, b) =>
-      procs[a]!.command.localeCompare(procs[b]!.command) || a - b;
+    return (a, b) => look(a)!.command.localeCompare(look(b)!.command) || a - b;
   if (key === "user")
-    return (a, b) => procs[a]!.user.localeCompare(procs[b]!.user) || a - b;
+    return (a, b) => look(a)!.user.localeCompare(look(b)!.user) || a - b;
   if (key === "cpu")
     return (a, b) => {
-      const aBlind = fullyBlindErrno(procs[a]!) !== null;
-      const bBlind = fullyBlindErrno(procs[b]!) !== null;
+      const aBlind = fullyBlindErrno(look(a)!) !== null;
+      const bBlind = fullyBlindErrno(look(b)!) !== null;
       if (aBlind !== bBlind) return aBlind ? 1 : -1;
-      return procs[b]!.cpuPct - procs[a]!.cpuPct || a - b;
+      return look(b)!.cpuPct - look(a)!.cpuPct || a - b;
     };
   return (a, b) => a - b;
 }

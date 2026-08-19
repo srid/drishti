@@ -17,7 +17,11 @@
 import type { EntryState } from "@kolu/surface-map";
 import { unenrolledStreamCall } from "@kolu/surface/client";
 import { probeSurfaceIdentity } from "@kolu/surface/identity";
-import { createSubscription, surfaceClientsHealth } from "@kolu/surface/solid";
+import {
+  createSubscription,
+  surfaceClientsHealth,
+  useCollectionDeltas,
+} from "@kolu/surface/solid";
 import { shellCommit } from "@kolu/surface-app/lifecycle";
 import { SurfaceAppProvider } from "@kolu/surface-app/solid";
 import { Meta, Title } from "@solidjs/meta";
@@ -66,6 +70,7 @@ import {
   type UnclaimedListener,
 } from "drishti-common";
 import {
+  browserSurface,
   type ConnectionInfo,
   type ConnectionState,
   DEFAULT_CONNECTION,
@@ -120,6 +125,7 @@ import {
   processInspectionNotes,
   processMatches,
   processRowCell,
+  type ProcessLookup,
   processRowUptime,
   PROCESS_SORT_KEYS,
   type ProcessTableCellPresentation,
@@ -134,27 +140,6 @@ import {
   mergeSourceErrorFacts,
   sourceErrorFacts,
 } from "./sourceErrorPresentation";
-import type { CollectionDeltasMsg } from "@kolu/surface/define";
-
-/** Fold one `processes` collection `deltas` frame into the accumulated process map
- *  (SR5 — the collection's `deltas` verb replaced the hand-rolled `processesSnapshot`
- *  stream; `CollectionDeltasMsg<Pid, Process>` is the same snapshot/delta shape the
- *  old `foldProcessesMessage` folded, so the accumulator is byte-identical). A
- *  `snapshot` replaces the whole set; a `delta` applies upserts then removes. */
-function foldProcessDeltas(
-  prev: Record<Pid, Process>,
-  msg: CollectionDeltasMsg<Pid, Process>,
-): Record<Pid, Process> {
-  if (msg.kind === "snapshot") {
-    const next: Record<Pid, Process> = {};
-    for (const [pid, value] of msg.entries) next[pid] = value;
-    return next;
-  }
-  const next = { ...prev };
-  for (const [pid, value] of msg.upserts) next[pid] = value;
-  for (const pid of msg.removes) delete next[pid];
-  return next;
-}
 import {
   coreUsageColor,
   processPctColor,
@@ -1261,39 +1246,35 @@ function HostView(props: {
     daemonStore.renew(props.host);
   };
 
-  // The live process table, consumed as a declarative value-bearing reactive
-  // subscription: `createSubscription` folds every snapshot|delta frame in-loop
-  // (via `foldProcessesMessage`) into the full process map, replacing the
-  // hand-rolled `unenrolledStreamCall` + `for await` loop this used to be. The
-  // table renders FINE-GRAINED off `processes()` below (`processes()[pid].cpuPct`),
-  // so an in-place `reconcile` leaf update re-notifies just that cell — reading
-  // the whole map coarsely and copying it into a store would drop same-shape
-  // deltas (the R8b lesson). `.streams.use()` exposes no `reduce`, so this
-  // drops one level to `createSubscription` (same reactive family). The
-  // AbortController that used to abort the underlying stream on unmount is
-  // GONE — the subscription's teardown is a fiber interrupt now.
-  const processesSub = createSubscription<
-    CollectionDeltasMsg<Pid, Process>,
-    Record<Pid, Process>
-  >(
-    // The bare `unenrolledStreamCall` is the right primitive HERE — the raw
-    // batched-deltas `Stream` feeding `createSubscription`, which owns its own
-    // pending/error. `processes` is a `deltas`-declaring collection
-    // (SR5 — one protocol across the wire, replacing the old `processesSnapshot`
-    // stream), and `unenrolledDeltas` is its DELIBERATELY un-enrolled reach: there
-    // is no per-host `health()` fact to join it to — every host's data rides the
-    // ONE admin transport now — so a dead process feed surfaces via this
-    // subscription's own reactive `error()`, read below (never a gate flicker).
-    unenrolledStreamCall(
-      hostCollections(props.host).processes.unenrolledDeltas,
-      undefined,
-    ),
+  // The live process table, over the framework's OWN batched-deltas store. The
+  // `processes` collection declares the `deltas` verb, so the wire sends ONE
+  // coalesced {upserts, removes} frame per poll tick, and `useCollectionDeltas`
+  // applies it by NAMED-KEY writes — the keys the frame mentions, nobody else. The
+  // table renders FINE-GRAINED off `process(pid)` below (`process(pid)?.cpuPct`),
+  // which is exactly that store's per-key contract (the R8b lesson: reading the
+  // whole map coarsely and copying it into a store drops same-shape deltas).
+  //
+  // `unenrolledDeltas` is the collection's DELIBERATELY un-enrolled reach: there is
+  // no per-host `health()` fact to join it to — every host's data rides the ONE
+  // admin transport — so a dead process feed surfaces via this view's own reactive
+  // `stream.error()`, read below, never as a gate flicker (kolu #1591). That reach
+  // is why the hook is exported at all; before it was, this file carried its own
+  // copy of the framework's fold, which re-copied the whole pid map per frame and
+  // then had `createSubscription`'s reconcile walk it again to rediscover the pids
+  // the frame had already named.
+  const processesView = useCollectionDeltas(
+    browserSurface.descriptors.collections.processes,
     {
-      reduce: foldProcessDeltas,
-      initial: {},
+      source: unenrolledStreamCall(
+        hostCollections(props.host).processes.unenrolledDeltas,
+        undefined,
+      ),
     },
   );
-  const processes = (): Record<Pid, Process> => processesSub() ?? {};
+  /** One pid's row, or `undefined` if it has left the set. A per-key read: only
+   *  the rows a frame named re-render. */
+  const process = (pid: Pid): Process | undefined =>
+    processesView.byKey(pid)?.();
   const unclaimedListeners = entry.collections.unclaimedListeners.use();
   const unclaimedListenerValues = createMemo(() =>
     [...unclaimedListeners.keys()]
@@ -1329,10 +1310,10 @@ function HostView(props: {
   // later-reused pid from silently re-opening the panel. Tracks only the
   // selected pid's slot (not its fields), so a cpu/mem tick doesn't re-run it.
   //
-  // Gate on the subscription having yielded its FIRST frame (`!processesSub
-  // .pending()`) — mirroring kolu's `pending()`-gated hydration in
-  // `useSessionRestore.ts`. `processesSub` REMOUNTS on a host switch and starts
-  // at its `initial: {}` (empty) with `pending() === true`; without this gate,
+  // Gate on the subscription having yielded its FIRST frame
+  // (`!processesView.stream.pending()`) — mirroring kolu's `pending()`-gated
+  // hydration in `useSessionRestore.ts`. The view REMOUNTS on a host switch and
+  // starts empty with `pending() === true`; without this gate,
   // switching back would read the RETAINED per-host `selectedPid` against that
   // empty first frame and clear it BEFORE the first real snapshot arrives —
   // silently defeating the scopedByEntry adoption (the expanded PID surviving
@@ -1340,7 +1321,11 @@ function HostView(props: {
   // genuinely-exited pid still clears against the LOADED table.
   createEffect(() => {
     const pid = selectedPid();
-    if (pid !== null && !processesSub.pending() && processes()[pid] === undefined)
+    if (
+      pid !== null &&
+      !processesView.stream.pending() &&
+      process(pid) === undefined
+    )
       setSelectedPid(null);
   });
 
@@ -1388,9 +1373,10 @@ function HostView(props: {
     />
   );
 
-  const allPids = createMemo<Pid[]>(() =>
-    Object.keys(processes()).map((k) => Number(k)),
-  );
+  // Arrival order, straight off the store's own key set — the same array by
+  // REFERENCE while membership is unchanged, so a values-only tick does not wake
+  // anything reading it.
+  const allPids = processesView.keys;
 
   // `cpuCores`/`networkInterfaces` ride the collection `deltas` verb, which
   // is ALSO void-input at the entry-router fold — the same omitted-`input`
@@ -1422,20 +1408,18 @@ function HostView(props: {
     const pids = allPids();
     const key = sortKey();
     const filtered: Pid[] = [];
-    const procs = processes();
     if (q.length === 0) {
       for (const pid of pids) {
-        if (procs[pid] !== undefined) filtered.push(pid);
+        if (process(pid) !== undefined) filtered.push(pid);
       }
     } else {
       for (const pid of pids) {
-        const proc = procs[pid];
+        const proc = process(pid);
         if (proc === undefined) continue;
-        if (processMatches(pid, proc, q))
-          filtered.push(pid);
+        if (processMatches(pid, proc, q)) filtered.push(pid);
       }
     }
-    filtered.sort(processComparator(key, procs));
+    filtered.sort(processComparator(key, process));
     return filtered;
   });
 
@@ -1470,7 +1454,7 @@ function HostView(props: {
   const selected = createMemo<{ pid: Pid; proc: Process } | null>(() => {
     const pid = selectedPid();
     if (pid === null) return null;
-    const proc = processes()[pid];
+    const proc = process(pid);
     return proc === undefined ? null : { pid, proc };
   });
 
@@ -1540,7 +1524,7 @@ function HostView(props: {
         <SourceErrorNotice
           facts={mergeSourceErrorFacts(
             partialSourceFacts(),
-            sourceErrorFacts([system.error(), processesSub.error()]),
+            sourceErrorFacts([system.error(), processesView.stream.error()]),
           )}
         />
         <div class="grid xl:grid-cols-[minmax(24rem,2fr)_minmax(0,3fr)]">
@@ -1577,7 +1561,7 @@ function HostView(props: {
               memTotal={currentSystem().memTotal}
               onClose={() => setSelectedPid(null)}
               onSelectParent={
-                processes()[s().proc.ppid] !== undefined
+                process(s().proc.ppid) !== undefined
                   ? () => setSelectedPid(s().proc.ppid)
                   : null
               }
@@ -1597,7 +1581,7 @@ function HostView(props: {
         >
           <ProcessTable
             pids={visiblePids()}
-            processes={processes}
+            process={process}
             toLocalTime={(remoteMs) => entry.clock.toLocal(remoteMs)}
             sortKey={sortKey()}
             onSort={setSortKey}
@@ -1978,7 +1962,7 @@ function SourceErrorNotice(props: { facts: readonly SourceErrorFact[] }) {
 
 function ProcessTable(props: {
   pids: readonly Pid[];
-  processes: Accessor<Record<Pid, Process>>;
+  process: ProcessLookup;
   toLocalTime: (remoteMs: number) => number | null;
   sortKey: ProcessSortKey;
   onSort: (k: ProcessSortKey) => void;
@@ -2044,7 +2028,7 @@ function ProcessTable(props: {
             {(pid) => (
               <ProcessRow
                 pid={pid}
-                processes={props.processes}
+                process={props.process}
                 nowMs={nowMs()}
                 toLocalTime={props.toLocalTime}
               />
@@ -2065,12 +2049,12 @@ function ProcessTable(props: {
 // per-field via Solid's store proxy.
 function ProcessRow(props: {
   pid: Pid;
-  processes: Accessor<Record<Pid, Process>>;
+  process: ProcessLookup;
   nowMs: number;
   toLocalTime: (remoteMs: number) => number | null;
 }) {
   const selection = useContext(SelectionContext);
-  const proc = () => props.processes()[props.pid];
+  const proc = () => props.process(props.pid);
   const uptime = () =>
     processRowUptime(
       proc()?.startedAtMs ?? null,

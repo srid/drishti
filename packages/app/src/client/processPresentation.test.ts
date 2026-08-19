@@ -4,6 +4,7 @@ import {
   DEFAULT_PROCESS_SORT_KEY,
   fallbackTableMarker,
   processComparator,
+  type ProcessLookup,
   processDetailMemoryText,
   processInspectionNotes,
   processMatches,
@@ -15,6 +16,13 @@ import {
   processThreadCell,
   unreadableTableMarker,
 } from "./processPresentation";
+
+/** The comparator takes a LOOKUP now (the process table reads a keyed store, not a
+ *  materialised record), so these fixtures hand it one over a plain object. */
+const look =
+  (procs: Record<number, Process>): ProcessLookup =>
+  (pid) =>
+    procs[pid];
 
 const process = (
   unreadable: Process["unreadable"],
@@ -186,8 +194,8 @@ describe("restored process sorting and search", () => {
       1: { ...process([]), cpuPct: 2, user: "root" },
       2: { ...process([]), cpuPct: 40, user: "1000" },
     };
-    expect([1, 2].sort(processComparator("cpu", procs))).toEqual([2, 1]);
-    expect([1, 2].sort(processComparator("user", procs))).toEqual([2, 1]);
+    expect([1, 2].sort(processComparator("cpu", look(procs)))).toEqual([2, 1]);
+    expect([1, 2].sort(processComparator("user", look(procs)))).toEqual([2, 1]);
   });
 
   it("sorts fully-blind rows below readable zero-CPU rows", () => {
@@ -196,7 +204,7 @@ describe("restored process sorting and search", () => {
       2: process([]),
     };
 
-    expect([1, 2].sort(processComparator("cpu", procs))).toEqual([2, 1]);
+    expect([1, 2].sort(processComparator("cpu", look(procs)))).toEqual([2, 1]);
   });
 
   it("searches uid presentation, cwd, and full argv", () => {
