@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "surface-deltas-frame",
+      "branch": "master",
       "submodules": false,
-      "revision": "6af01eebf007a4dda1e78439584f6ca7156aed35",
-      "url": "https://github.com/juspay/kolu/archive/6af01eebf007a4dda1e78439584f6ca7156aed35.tar.gz",
-      "hash": "sha256-1Z6BuauUjH/+0+7L6599eFG13nc+0HtAScq9FwUEhEM="
+      "revision": "f648f0a2083f3abe05dee1cf29d4d49edfb00866",
+      "url": "https://github.com/juspay/kolu/archive/f648f0a2083f3abe05dee1cf29d4d49edfb00866.tar.gz",
+      "hash": "sha256-ZfDKHYSaylSG4Yx41NQ7gA0UMVG/sZdFpcBcciiDDpA="
     },
     "nixpkgs": {
       "type": "Git",
