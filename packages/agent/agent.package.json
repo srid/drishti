@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "workspaces": ["packages/agent", "packages/common"],
-  "//": "THE agent projection's manifest — the one `nix/packages/drishti-agent` copies to package.json, and (since it stopped being duplicated in a shell heredoc) the one `scripts/regenerate-agent-deps.sh` resolves agent.lock/agent.bun.nix against. `effect` is overridden because the agent runs kolu's hydrated @kolu/surface sources, which must see the SAME effect kolu built them against; @effect/platform-node stays at .103 deliberately — its peer range accepts effect ^4.0.0-beta.103 (which .106 satisfies), while .106 widens an optional `ioredis` peer that makes bun mint a peer-specialized cache key the nix-provided read-only bun cache cannot be written into.",
+  "//": "THE agent projection's manifest — the one `nix/packages/drishti-agent` copies to package.json, and (since it stopped being duplicated in a shell heredoc) the one `scripts/regenerate-agent-deps.sh` resolves agent.lock/agent.bun.nix against. `effect` is overridden because the agent runs kolu's hydrated @kolu/surface sources, which must see the SAME effect kolu built them against. @effect/platform-node LAGS it deliberately, and the reason has only sharpened: at 4.0.0-rc.109 its `ioredis` peer became a `redis` peer, and `redis` is a metapackage pulling @redis/{client,json,bloom,search,time-series} + cluster-key-slot. Resolving that graph cold makes `bun install` hang indefinitely — measured in this projection's own temp workspace: rc.112 never finishes (killed at 200s, zero sockets, 0% CPU), rc.108 finishes in 554ms, and seeding the old lockfile does not help. rc.108 is the NEWEST platform-node that still peers `ioredis` rather than `redis`, and its `effect` peer (^4.0.0-rc.108) is satisfied by rc.112 — so it is the smallest possible lag, not a stale pin. Bump it only to a version whose peers no longer name `redis`.",
   "overrides": {
     "@babel/helper-module-imports": "^7.29.7",
-    "@effect/platform-node": "4.0.0-beta.103",
-    "effect": "4.0.0-beta.106"
+    "@effect/platform-node": "4.0.0-rc.108",
+    "effect": "4.0.0-rc.112"
   }
 }
