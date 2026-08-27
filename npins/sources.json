@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "master",
+      "branch": "early-wing",
       "submodules": false,
-      "revision": "f9ace75e6dc25a2bbada31bd1daacf0c28405934",
-      "url": "https://github.com/juspay/kolu/archive/f9ace75e6dc25a2bbada31bd1daacf0c28405934.tar.gz",
-      "hash": "sha256-+vIxBhOFvbMNgaLOBzQKGizc8QU7cm76I0+MoWL5I48="
+      "revision": "f563b33522126efc616d819515dfcd6e9abfce44",
+      "url": "https://github.com/juspay/kolu/archive/f563b33522126efc616d819515dfcd6e9abfce44.tar.gz",
+      "hash": "sha256-OH0aUZZKZEgKWF51DyUU4lFh8Bp7nuVBjret1BcaBg4="
     },
     "nixpkgs": {
       "type": "Git",

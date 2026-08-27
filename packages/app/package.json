@@ -12,7 +12,7 @@
   "dependencies": {
     "@babel/core": "^7.25.0",
     "@babel/preset-typescript": "^7.25.0",
-    "@effect/platform-node": "4.0.0-beta.106",
+    "@effect/platform-node": "4.0.0-rc.108",
     "@solid-primitives/keyed": "^1.5.3",
     "@solid-primitives/page-visibility": "^2.1.5",
     "@solid-primitives/scheduled": "^1.5.3",
@@ -22,7 +22,7 @@
     "cleye": "^2.3.0",
     "dequal": "^2.0.3",
     "drishti-common": "workspace:*",
-    "effect": "4.0.0-beta.106",
+    "effect": "4.0.0-rc.112",
     "neverthrow": "^8.2.0",
     "quick-lru": "^7.3.0",
     "solid-js": "^1.9.0",

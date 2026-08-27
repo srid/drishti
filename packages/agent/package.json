@@ -8,9 +8,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.0-beta.103",
+    "@effect/platform-node": "4.0.0-rc.108",
     "drishti-common": "workspace:*",
-    "effect": "4.0.0-beta.106",
+    "effect": "4.0.0-rc.112",
     "ts-pattern": "^5.9.0"
   },
   "exports": {
