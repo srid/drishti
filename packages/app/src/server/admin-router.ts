@@ -36,6 +36,7 @@
  * by hand after every mutation).
  */
 
+import { mergeDisjointGroups } from "@kolu/surface/define";
 import { directDispatch } from "@kolu/surface/links/direct";
 import {
   implementSurfaces,
@@ -263,7 +264,10 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
   // prefix baked in (`hostSurfaceMap.name`), and `implementSurfaces` does the
   // same for the two siblings — so the host merges two `{group, handlers}`
   // pairs and there is nothing left to widen, re-adapt, or cast.
-  const group = surfaces.group.merge(hostsMap.group);
+  const group = mergeDisjointGroups({
+    adminSiblings: surfaces.group,
+    hostMap: hostsMap.group,
+  });
   const handlers: SurfaceHandlers = Object.create(null);
   for (const [tag, handler] of [
     ...Object.entries(surfaces.handlers),
@@ -277,21 +281,14 @@ export function buildAdminRouter(opts: AdminRouterOptions) {
     }
     handlers[tag] = handler;
   }
-  // `RpcGroup.merge` is a last-writer-wins `Map.set` with no collision
-  // detection, so the size check is the collision detector — the same
-  // assertion `defineSurface` makes about the walk it owns. It is also the
-  // successor to the deleted matcher-tree reasoning: route-set identity, in
-  // both directions, is what "the map is actually served" means now.
-  const expected = surfaces.group.requests.size + hostsMap.group.requests.size;
-  if (group.requests.size !== expected) {
-    const collisions = [...hostsMap.group.requests.keys()].filter((tag) =>
-      surfaces.group.requests.has(tag),
-    );
-    throw new Error(
-      `buildAdminRouter: merging the admin siblings with the host map dropped ` +
-        `${expected - group.requests.size} tag(s) — colliding: ${collisions.join(", ")}.`,
-    );
-  }
+  // The group half of that disjointness is the FRAMEWORK's proof now
+  // (`mergeDisjointGroups`, juspay/kolu#2222): `RpcGroup.merge` is a
+  // last-writer-wins `Map.set` with no collision detection, and the counted
+  // merge above throws naming the tag and both halves rather than leaving a
+  // swallowed tag to answer under the other's schema. It replaces the hand-rolled
+  // size check this file used to carry, and it is the successor to the deleted
+  // matcher-tree reasoning: route-set identity, in both directions, is what "the
+  // map is actually served" means now.
   if (Object.keys(handlers).length !== group.requests.size) {
     throw new Error(
       `buildAdminRouter: ${Object.keys(handlers).length} handler(s) bound for ` +
