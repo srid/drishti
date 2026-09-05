@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "master",
+      "branch": "surface-app-live-upgrade-headers",
       "submodules": false,
-      "revision": "4de72349061cc3aee414a52df91f72a4b33d9882",
-      "url": "https://github.com/juspay/kolu/archive/4de72349061cc3aee414a52df91f72a4b33d9882.tar.gz",
-      "hash": "sha256-oeYJEQ5o2kkiaknWS88OaTvwk3N3rrbbkpmN5IaatmI="
+      "revision": "e4701318deadee895c156ada172e37d38eae929d",
+      "url": "https://github.com/juspay/kolu/archive/e4701318deadee895c156ada172e37d38eae929d.tar.gz",
+      "hash": "sha256-WPjW+Gq+zrmYg+TPOGvvEd2LUxQBVyARL09spJS79fQ="
     },
     "nixpkgs": {
       "type": "Git",
