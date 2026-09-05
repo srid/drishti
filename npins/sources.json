@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "surface-app-roster-in-place",
+      "branch": "master",
       "submodules": false,
-      "revision": "f7be52281cd586aca257f855fbe5c4b3cb44b2ab",
-      "url": "https://github.com/juspay/kolu/archive/f7be52281cd586aca257f855fbe5c4b3cb44b2ab.tar.gz",
-      "hash": "sha256-aVScbVgSvaL+coiv/CLnFbLGnRIfAPzG9mc+8xdZVkg="
+      "revision": "4b1758afad90b15624030e0fd00e1116586b4054",
+      "url": "https://github.com/juspay/kolu/archive/4b1758afad90b15624030e0fd00e1116586b4054.tar.gz",
+      "hash": "sha256-hQ+yq4GnYp7homn9iVXzyRpElGRSxoh52YAqO/lMp9E="
     },
     "nixpkgs": {
       "type": "Git",
