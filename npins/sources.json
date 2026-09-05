@@ -9,9 +9,9 @@
       },
       "branch": "feat/ssh-keepalive-policy",
       "submodules": false,
-      "revision": "41eccf7e2142abb877578f40d73ce808d7f14087",
-      "url": "https://github.com/juspay/kolu/archive/41eccf7e2142abb877578f40d73ce808d7f14087.tar.gz",
-      "hash": "sha256-iOep3KA2cm9SKl9wgy52ajH1gSdwHRf9+sa2ED3sgSA="
+      "revision": "427413caaf493b27de988976178b41a24e30c41f",
+      "url": "https://github.com/juspay/kolu/archive/427413caaf493b27de988976178b41a24e30c41f.tar.gz",
+      "hash": "sha256-BssbbdBIku5d3OsW8RoX0UlysNFxRINBTHIBmN0wuD0="
     },
     "nixpkgs": {
       "type": "Git",
