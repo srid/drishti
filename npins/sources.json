@@ -9,9 +9,9 @@
       },
       "branch": "surface-app-roster-in-place",
       "submodules": false,
-      "revision": "457a577bb153043f68dc0e4524710b7a411c8d9a",
-      "url": "https://github.com/juspay/kolu/archive/457a577bb153043f68dc0e4524710b7a411c8d9a.tar.gz",
-      "hash": "sha256-6xvDgPzBNoAaJrhTw8HQdNULMGxYItASCdFuU7kmH0o="
+      "revision": "8d78cf8579ae103fb223a3e1ce89f6b81f831bae",
+      "url": "https://github.com/juspay/kolu/archive/8d78cf8579ae103fb223a3e1ce89f6b81f831bae.tar.gz",
+      "hash": "sha256-xeqCCLY0Ywl/PaOsQ3ixba9l9NdQbw2gMm03kMK47fw="
     },
     "nixpkgs": {
       "type": "Git",
