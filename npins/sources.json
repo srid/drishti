@@ -9,9 +9,9 @@
       },
       "branch": "surface-app-live-upgrade-headers",
       "submodules": false,
-      "revision": "e4701318deadee895c156ada172e37d38eae929d",
-      "url": "https://github.com/juspay/kolu/archive/e4701318deadee895c156ada172e37d38eae929d.tar.gz",
-      "hash": "sha256-WPjW+Gq+zrmYg+TPOGvvEd2LUxQBVyARL09spJS79fQ="
+      "revision": "fea23365f09dbfb51c6aec7ca4c7aeb2ae877acb",
+      "url": "https://github.com/juspay/kolu/archive/fea23365f09dbfb51c6aec7ca4c7aeb2ae877acb.tar.gz",
+      "hash": "sha256-u9J7uMn/l6+LuXWY82yIaQPho72+jsFt9giZc/jqObc="
     },
     "nixpkgs": {
       "type": "Git",
