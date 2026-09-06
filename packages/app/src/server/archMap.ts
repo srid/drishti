@@ -1,5 +1,5 @@
 /**
- * Compose `@kolu/surface-remote`'s `resolveSystem` probe with the
+ * Compose the dial's own arch probe (`ctx.resolveSystem()`) with the
  * build-time `{system → drvPath}` map drishti bakes in `flake.nix` and
  * threads through `DRISHTI_AGENT_DRVS_JSON`.
  *
@@ -9,6 +9,13 @@
  * binary-cache declaration (`DRISHTI_AGENT_BINARY_CACHE`, from the
  * flake's nixConfig), produce the matching derivation, with a clear
  * error if no entry was baked for the resolved system.
+ *
+ * The probe comes PRE-BOUND on the connector's context — to this dial's
+ * host, signal, progress sink AND its ssh keepalive policy. Calling
+ * `resolveSystem(host, { signal, onProgress })` by hand instead would omit
+ * the keepalive and open the host's shared `ControlMaster` under the
+ * DEFAULT policy while every later command of the same dial asks for the
+ * stated one. `host` stays a parameter only to phrase the error below.
  */
 
 import {
@@ -16,13 +23,9 @@ import {
   type AgentDerivation,
   directAgentDerivation,
   type ResolveDrvPathContext,
-  resolveSystem,
 } from "@kolu/surface-remote";
 
-type HostProbeContext = Pick<
-  ResolveDrvPathContext,
-  "signal" | "localProgress"
->;
+type HostProbeContext = Pick<ResolveDrvPathContext, "resolveSystem">;
 
 export async function resolveDrvForHost(
   host: string,
@@ -30,10 +33,7 @@ export async function resolveDrvForHost(
   binaryCache: AgentBinaryCache,
   context: HostProbeContext,
 ): Promise<{ derivation: AgentDerivation; system: string }> {
-  const sys = await resolveSystem(host, {
-    signal: context.signal,
-    onProgress: context.localProgress,
-  });
+  const sys = await context.resolveSystem();
   const drv = drvBySystem[sys];
   if (drv === undefined) {
     throw new Error(
