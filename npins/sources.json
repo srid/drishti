@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "fix/remote-provision-honest-errors",
+      "branch": "master",
       "submodules": false,
-      "revision": "51abad247f8cf55ca06fd2f8a9fc23832946263e",
-      "url": "https://github.com/juspay/kolu/archive/51abad247f8cf55ca06fd2f8a9fc23832946263e.tar.gz",
-      "hash": "sha256-Lj3PENHvX8ExkrcGMrOKVups/i57ggsvYRDViZltZds="
+      "revision": "bd2e9e32fb38deabc1611dc8898aaa6d0b14e43f",
+      "url": "https://github.com/juspay/kolu/archive/bd2e9e32fb38deabc1611dc8898aaa6d0b14e43f.tar.gz",
+      "hash": "sha256-njYd7OYQy/5FV4/wc/manyFJqOG4jwgy02FMMGoeim4="
     },
     "nixpkgs": {
       "type": "Git",
