@@ -46,7 +46,9 @@ describe("extractAgentBootFatal", () => {
 
   it("returns null when no fatal prefix is present (transport path)", () => {
     expect(
-      extractAgentBootFatal(["host unreachable", "reconnecting in 2000ms…"]),
+      extractAgentBootFatal([
+        "attempt 1 failed: ssh: connect to host h port 22: Connection refused — retrying in 2000ms…",
+      ]),
     ).toBeNull();
     expect(isAgentBootRefusal(["ssh: connect to host failed"])).toBe(false);
   });
@@ -113,6 +115,7 @@ describe("withAgentBootBarrier", () => {
       await barrier({
         localProgress: () => {},
         remoteProgress: () => {},
+        activity: () => {},
         provisioning: () => {},
         connecting: () => {},
         signal: new AbortController().signal,
@@ -160,6 +163,7 @@ describe("withAgentBootBarrier", () => {
     const conn = await barrier({
       localProgress: () => {},
       remoteProgress: () => {},
+      activity: () => {},
       provisioning: () => {},
       connecting: () => {},
       signal: new AbortController().signal,
@@ -220,10 +224,9 @@ describe("withAgentBootBarrier", () => {
     expect(session.currentState().phase).toBe("failed");
     // Terminal ConnectError: one connect attempt, no retry campaign.
     expect(connectCalls).toBe(1);
-    expect(
-      progress.some((l) => l.includes("host unreachable — retrying")),
-    ).toBe(false);
-    expect(progress.some((l) => /reconnecting in \d+ms/.test(l))).toBe(false);
+    // No retry was even scheduled: kolu's session narrates every scheduled
+    // retry as "attempt N failed: <reason> — retrying in <ms>ms…" (juspay/kolu#2237).
+    expect(progress.some((l) => /— retrying in \d+ms/.test(l))).toBe(false);
 
     session.destroy();
   });
