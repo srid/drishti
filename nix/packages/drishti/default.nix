@@ -75,11 +75,11 @@ stdenv.mkDerivation {
   # aarch64-darwin as "AccessDenied: Failed to open node_modules folder
   # for entities". Production runtime/build never needs those packages;
   # local `bun install` / `just test` still gets them from bunfig + lock.
-  # Explicit install flags replace bun2nix's defaults. Preserve its Darwin
-  # backend: clonefile copies read-only Nix-cache directories, so a nested
-  # dependency (platform-node-shared's ws) cannot create node_modules there.
+  # Darwin clonefile preserves read-only Nix-cache directory modes, blocking
+  # nested dependencies such as platform-node-shared's ws. Use copyfile:
+  # unlike symlink, package realpaths stay beside their hoisted dependencies.
   bunInstallFlags = [ "--linker=hoisted" "--production" ]
-    ++ lib.optionals stdenv.hostPlatform.isDarwin [ "--backend=symlink" ];
+    ++ lib.optionals stdenv.hostPlatform.isDarwin [ "--backend=copyfile" ];
 
   # The fixupPhase walks node_modules and patches shebangs / ELF. For a
   # Bun app this is pure overhead — Bun runs the source directly, no
