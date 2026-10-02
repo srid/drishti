@@ -52,7 +52,11 @@ stdenv.mkDerivation {
     bunNix = ../../../packages/agent/agent.bun.nix;
   };
 
-  bunInstallFlags = [ "--linker=hoisted" ];
+  # Explicit install flags replace bun2nix's defaults. Preserve its Darwin
+  # backend: clonefile copies read-only Nix-cache directories, so a nested
+  # dependency (platform-node-shared's ws) cannot create node_modules there.
+  bunInstallFlags = [ "--linker=hoisted" ]
+    ++ lib.optionals stdenv.hostPlatform.isDarwin [ "--backend=symlink" ];
 
   dontFixup = true;
   dontPatchShebangs = true;

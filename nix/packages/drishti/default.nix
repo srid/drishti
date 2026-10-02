@@ -75,7 +75,11 @@ stdenv.mkDerivation {
   # aarch64-darwin as "AccessDenied: Failed to open node_modules folder
   # for entities". Production runtime/build never needs those packages;
   # local `bun install` / `just test` still gets them from bunfig + lock.
-  bunInstallFlags = [ "--linker=hoisted" "--production" ];
+  # Explicit install flags replace bun2nix's defaults. Preserve its Darwin
+  # backend: clonefile copies read-only Nix-cache directories, so a nested
+  # dependency (platform-node-shared's ws) cannot create node_modules there.
+  bunInstallFlags = [ "--linker=hoisted" "--production" ]
+    ++ lib.optionals stdenv.hostPlatform.isDarwin [ "--backend=symlink" ];
 
   # The fixupPhase walks node_modules and patches shebangs / ELF. For a
   # Bun app this is pure overhead — Bun runs the source directly, no
@@ -85,7 +89,7 @@ stdenv.mkDerivation {
 
   # @kolu/surface, @kolu/surface-remote, @kolu/surface-map and
   # @kolu/surface-app are NOT in bun.lock — they're Nix-store sources
-  # supplied by the overlay (same hydration strategy as `shell.nix`'s
+  # supplied by the overlay (same hydration strategy as the
   # `just install` recipe). Drop the copies in *after*
   # bun install populates node_modules, otherwise bun install would either
   # overwrite our copies or refuse to proceed.

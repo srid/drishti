@@ -1,5 +1,5 @@
 # Hoist workspace dependencies to root node_modules. The @kolu/* sources
-# (cp'd from the nix store into node_modules/@kolu/* by shellHook) need
+# (cp'd from the nix store into node_modules/@kolu/* by just install) need
 # @kolu/surface, `effect` and `@effect/platform-node` resolvable from one
 # node_modules. Isolated linker would leave each workspace package's deps in
 # its own node_modules — the hydrated sources would resolve nothing from root.
