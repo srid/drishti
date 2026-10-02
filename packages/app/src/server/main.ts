@@ -33,7 +33,7 @@ import { NodeHttpServer } from "@effect/platform-node";
 import { cli } from "cleye";
 import { WebSocketServer } from "ws";
 import { Effect, Scope, Schema } from "effect";
-import { HttpRouter } from "effect/unstable/http";
+import { HttpRouter } from "effect/http";
 import { gateWsOrigin, parseAllowedOrigins } from "@kolu/surface/ws-origin";
 import {
   type AgentBinaryCache,

@@ -52,7 +52,11 @@ stdenv.mkDerivation {
     bunNix = ../../../packages/agent/agent.bun.nix;
   };
 
-  bunInstallFlags = [ "--linker=hoisted" ];
+  # Darwin clonefile preserves read-only Nix-cache directory modes, blocking
+  # nested dependencies such as platform-node-shared's ws. Use copyfile:
+  # unlike symlink, package realpaths stay beside their hoisted dependencies.
+  bunInstallFlags = [ "--linker=hoisted" ]
+    ++ lib.optionals stdenv.hostPlatform.isDarwin [ "--backend=copyfile" ];
 
   dontFixup = true;
   dontPatchShebangs = true;

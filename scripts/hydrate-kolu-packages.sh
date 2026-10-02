@@ -4,7 +4,7 @@
 # Usage: hydrate-kolu-packages.sh <src1> <dest1> [<src2> <dest2> ...]
 #
 # Each (src, dest) pair: copy <src> to ./node_modules/<dest>. Callers
-# (shell.nix shellHook, just install, postBunNodeModulesInstallPhase)
+# (just install, postBunNodeModulesInstallPhase)
 # pass the npins-derived /nix/store paths and the @kolu/<name> destination.
 #
 # cp -rL (not symlink) because TypeScript resolves transitive imports

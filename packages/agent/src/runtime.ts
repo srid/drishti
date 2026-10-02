@@ -20,7 +20,7 @@ import {
 } from "@kolu/surface/server";
 import { derived, scan, source } from "@kolu/surface/reactor";
 import { Effect, Stream } from "effect";
-import type { Rpc, RpcGroup } from "effect/unstable/rpc";
+import type { Rpc, RpcGroup } from "effect/rpc";
 import {
   AGENT_SURFACE_VERSION,
   type CoreId,

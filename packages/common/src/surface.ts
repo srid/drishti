@@ -115,7 +115,7 @@ const ProcessSchema = Schema.Struct({
   user: Schema.String,
   /** Working directory from the independent cwd facet. */
   cwd: Schema.NullOr(Schema.String),
-  state: Schema.NullOr(Schema.String.check(Schema.isLengthBetween(1, 1))),
+  state: Schema.NullOr(Schema.String.check(Schema.isBetweenLength(1, 1))),
   nice: Schema.NullOr(Schema.Int),
   /** Darwin does not expose a thread count through this facet. */
   threads: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),

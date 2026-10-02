@@ -35,7 +35,7 @@ import {
 import { writeStdioReadiness } from "@kolu/surface/links/readiness";
 import type { SurfaceHandlers } from "@kolu/surface/server";
 import { Effect } from "effect";
-import type { Rpc, RpcGroup } from "effect/unstable/rpc";
+import type { Rpc, RpcGroup } from "effect/rpc";
 import { convergeAgentStdioFront } from "./convergeFront";
 import { HISTORY_RING_FILE } from "./historyRing";
 import {

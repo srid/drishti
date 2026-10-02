@@ -33,8 +33,8 @@
 #
 # All are hydrated into node_modules/@kolu/{surface,surface-remote,surface-map,
 # shell-quote,log,surface-app,solid-pwa-install,surface-daemon,
-# surface-daemon-supervisor} by scripts/hydrate-kolu-packages.sh (three
-# callers: shell.nix shellHook, the justfile install recipe, and the build
+# surface-daemon-supervisor} by scripts/hydrate-kolu-packages.sh (the
+# justfile install recipe and the build
 # derivations' postBunNodeModulesInstallPhase).
 { pkgs }:
 {
