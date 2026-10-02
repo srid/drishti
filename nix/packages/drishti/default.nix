@@ -86,7 +86,7 @@ stdenv.mkDerivation {
   # @kolu/surface, @kolu/surface-remote, @kolu/surface-map and
   # @kolu/surface-app are NOT in bun.lock — they're Nix-store sources
   # supplied by the overlay (same hydration strategy as `shell.nix`'s
-  # shellHook and the `just install` recipe). Drop the copies in *after*
+  # `just install` recipe). Drop the copies in *after*
   # bun install populates node_modules, otherwise bun install would either
   # overwrite our copies or refuse to proceed.
   postBunNodeModulesInstallPhase = ''
