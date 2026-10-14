@@ -279,7 +279,7 @@ export type HostPool = RemotePool<HostSession, undefined> & PoolControls;
  *   system→drv table and no per-system BUILD_ID table, and the identity is
  *   platform-independent by construction (default.nix), i.e. ONE value covers
  *   every host arch.
- * - Off-nix: no `resolveDrvPath` field at all (no agent provision path).
+ * - Off-nix: spells neither, so the arm has no agent provision path at all.
  */
 export type ProvisioningHostPoolOptions = {
   initialHosts: readonly string[];
@@ -635,11 +635,11 @@ function attachDaemonSession(args: {
 const NEVER_EXITS: Promise<void> = new Promise(() => {});
 
 export function buildHostPool(opts: HostPoolOptions): HostPool {
-  // W4.7: discriminated union — provisioning is "has resolveDrvPath", never
-  // an offNix boolean override.
+  // W4.7: discriminated union — provisioning is "has a baked agent source",
+  // never an offNix boolean override.
   if (!isProvisioningPool(opts)) {
     // W5.6: off-nix pool with hosts constructs real sessions under the
-    // can't-judge binder (empty build id). No resolveDrvPath.
+    // can't-judge binder (empty build id). No provision path.
     const fallbackBuildId = process.env.DRISHTI_AGENT_BUILD_ID ?? "";
     return buildRemotePool<HostSession, undefined>({
       initialHosts: opts.initialHosts,
@@ -662,7 +662,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
           terminal: false as const,
         };
         const OFF_NIX_MSG =
-          "off-nix pool: no agent derivation (can't-judge path has no resolveDrvPath)";
+          "off-nix pool: no agent provision path (can't-judge binder)";
         const inner = sshConnector({
           // Effect RPC cannot mint a client from a TYPE — it needs the flat
           // `RpcGroup` and the spec to re-nest the face from. `agentDialSurface`
