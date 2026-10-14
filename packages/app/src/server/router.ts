@@ -254,6 +254,16 @@ export function buildRouter(opts: BuildRouterOptions) {
   };
 
   // ── Bridge remote agent surface → parent's local surface ──────────
+  //
+  // The PIN is what brings the link up. `pumpRemoteSurface` holds nothing open
+  // — it mirrors whatever client the session produces, and a session nobody
+  // pins is never dialled at all. drishti wants every host's agent up whether
+  // or not a browser is reading it (the host dot, the fleet card and the metric
+  // ring are all answers about a host nobody is looking at), so it says so
+  // here, once, and never releases.
+  session.pin().catch(() => {
+    /* the failure rides the session's own state, which the host map publishes */
+  });
   void pumpRemoteSurface({
     source: surface,
     session: session as Session<AgentClient, SshProv>,
