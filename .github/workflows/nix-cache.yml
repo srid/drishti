@@ -32,7 +32,17 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      # `ref:` is LOAD-BEARING on `pull_request`. actions/checkout defaults to
+      # `github.ref`, which for that event is `refs/pull/N/merge` — a synthetic
+      # merge nothing else ever builds (developers, odu's lanes and a deploy all
+      # take the branch HEAD). `publish-closures` needs the HEAD too: its index
+      # key is the source's baked `commit-hash`, and the action refuses a key
+      # that is not a prefix of the commit being published. Empty on `push`, so
+      # checkout's own default (the pushed commit) stands — the correct tree
+      # there. Same note as kolu's own job.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       # Pin by commit (CodeQL: unpinned third-party action). v35 → 9f63be7.
       # v35 defaults to Nix 2.34.7, new enough for `nix profile add`.
@@ -104,7 +114,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Same `ref:` reasoning as build-and-push (see its note) — and here it is
+      # not merely cache warmth: the source bakes `commit-hash` from THIS
+      # checkout, and the action refuses an index key that is not a prefix of
+      # the commit being published. The fork-PR case is unchanged: no
+      # `ATTIC_TOKEN`, so nothing is pushed either way.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - id: agent
         # What the source publishes, DERIVED from the one inventory it carries:

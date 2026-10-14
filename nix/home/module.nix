@@ -17,7 +17,7 @@ let
 
   # Shared by both supervisors. systemd wants `[ "KEY=val" ]`; launchd wants
   # the attrset as a plist dict — converted at each call site. drishti's
-  # monitor wrapper already bakes DRISHTI_DIST_DIR / DRISHTI_AGENT_DRVS_JSON
+  # monitor wrapper already bakes DRISHTI_DIST_DIR / SURFACE_AGENT_FLAKE_REF
   # and prefixes openssh+nix onto PATH, so the only env we set here is the
   # optional hosts-file override and the optional WebSocket origin allowlist.
   envAttrs =

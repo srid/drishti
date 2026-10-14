@@ -153,7 +153,12 @@ for _arg in "\$@"; do
     break
   fi
 done
-exec "\$@"
+# A REAL ssh joins the remaining words into one line and hands it to the remote
+# shell — which is why the framework POSIX-quotes each token before passing it
+# (kolu's buildSshProbeCommand). Exec'ing the argv directly would deliver a quoted
+# token VERBATIM, so the arch probe's nix expression would arrive with its
+# surrounding single quotes on. Re-parse the line like the remote shell.
+exec sh -c "\$*"
 `,
     { mode: 0o755 },
   );

@@ -69,7 +69,7 @@ Host db-internal
 
 Then add `db-internal` like any other host. The agent spawn, the nix-system probe, and the `nix copy` of the agent closure all hop through the bastion automatically. The jump host must itself be non-interactive from where drishti runs (drishti forces `BatchMode=yes`), so a bastion that prompts for a password fails rather than hangs — use a key.
 
-Mixed-architecture host sets are supported: the monitor wrapper bakes a `{system → drv}` map for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`, and the parent probes each host's nix-system on add (via [`@kolu/surface-remote`'s `resolveSystem`](https://github.com/juspay/kolu/pull/1009), which asks the host's own Nix for `builtins.currentSystem`) to pick the matching `.drv`. A macOS user can drive a Linux remote (or both) from one `nix run` invocation.
+Mixed-architecture host sets are supported: the monitor bakes ONE agent source (`SURFACE_AGENT_FLAKE_REF`), and `@kolu/surface-remote` probes each host's nix-system on add (asking the host's own Nix for `builtins.currentSystem`) and evaluates `packages.<host-system>.drishti-agent` from it — so one `nix run` drives every architecture, and the agent identity (`DRISHTI_AGENT_BUILD_ID`) is the same value on all of them.
 
 ## Architecture
 
@@ -190,7 +190,6 @@ drishti/
          │  ├─ router.ts                        #   per-host router fragment
          │  ├─ admin-router.ts                  #   host-set router fragment
          │  ├─ hostRegistry.ts                  #   per-host session pool
-         │  ├─ archMap.ts                       #   compose kolu's resolveSystem with the drv map
          │  ├─ hostsStore.ts                    #   $XDG_STATE_HOME/drishti/hosts.json
          │  └─ build.ts                         #   client bundler
          └─ client/                             # SolidJS UI
