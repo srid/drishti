@@ -135,7 +135,7 @@ jobs:
       # installable — an attr with no line fails the run rather than passing
       # having proven nothing. `--help` loads the whole agent module graph and
       # exits 0, which is exactly "the rewritten program execs".
-      - uses: juspay/kolu/.github/actions/publish-closure@b1476908938f4fc5683e8b99404c36f01b438ab4
+      - uses: juspay/kolu/.github/actions/publish-closure@5b14790a4eb9c383dfd7fa247bbff1af60f9eb92
         with:
           source: .#agent-flake-source
           installables: drishti-agent
