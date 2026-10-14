@@ -48,14 +48,12 @@ import {
   type Admit,
   type AdmitVerdict,
   type AgentClient,
-  type AgentDerivation,
   buildRemotePool,
   type ClosedInfo,
   type Connector,
   type DaemonSession,
   makeSession,
   type PoolControls,
-  type ResolveDrvPathContext,
   type RemotePool,
   type Session,
   ResolveDrvError,
@@ -271,39 +269,37 @@ export type HostSession = Omit<
 /** The pool `serveHostMap` consumes directly. */
 export type HostPool = RemotePool<HostSession, undefined> & PoolControls;
 
-/** Result of resolving a host to an agent derivation — includes the
- *  probed nix system so multi-arch parents can pick the matching expected
- *  build id (UW3 convergeAdmit). */
-export type ResolvedHostAgent = {
-  derivation: AgentDerivation;
-  /** Nix system string from the arch probe (e.g. `x86_64-linux`). */
-  system: string;
-};
-
 /**
- * W4.7: pool construction is a discriminated union — the illegal state
- * "provisioning without ids" / "off-nix with a resolver" is unspellable.
+ * W4.7: pool construction is a discriminated union — "provisioning with no
+ * baked agent source" and "off-nix with a live resolver" are both unspellable.
  *
- * - Provisioning: resolver + non-empty ids map both required.
- * - Off-nix: no `resolveDrvPath` field at all (no agent provision path).
+ * - Provisioning: the baked agent source and the expected identity, both
+ *   required. `sshConnector` resolves `packages.<host-system>.drishti-agent`
+ *   from that source itself (`ctx.resolveAgentDrv`) — so this pool holds no
+ *   system→drv table and no per-system BUILD_ID table, and the identity is
+ *   platform-independent by construction (default.nix), i.e. ONE value covers
+ *   every host arch.
+ * - Off-nix: spells neither, so the arm has no agent provision path at all.
  */
 export type ProvisioningHostPoolOptions = {
   initialHosts: readonly string[];
   hostsFile: string;
-  /** Resolve a host string to its agent `.drv` + probed system. */
-  resolveDrvPath: (
-    host: string,
-    context: ResolveDrvPathContext,
-  ) => Promise<ResolvedHostAgent>;
-  /** Per-system expected agent BUILD_IDs — required, non-empty. */
-  buildIdBySystem: Readonly<Record<string, string>>;
+  /** The baked agent source (`SURFACE_AGENT_FLAKE_REF` — the assembled source
+   *  `packages.<system>.drishti-agent` is resolved from). A build fact, read
+   *  once at boot; never re-read per dial. */
+  agentFlakeRef: string;
+  /** The agent identity the supervisor expects (UW3 convergeAdmit): the same
+   *  value the agent wrapper bakes, so a host that is not running it drains
+   *  and replaces. Required — admitted paths have no "unknown" arm. */
+  expectedBuildId: string;
 };
 
 export type OffNixHostPoolOptions = {
   initialHosts: readonly string[];
   hostsFile: string;
-  /** Discriminant: off-nix arm must not spell a resolver (W5.6). */
-  resolveDrvPath?: never;
+  /** Discriminants: the off-nix arm must not spell a provision path (W5.6). */
+  agentFlakeRef?: never;
+  expectedBuildId?: never;
 };
 
 export type HostPoolOptions =
@@ -313,7 +309,7 @@ export type HostPoolOptions =
 function isProvisioningPool(
   opts: HostPoolOptions,
 ): opts is ProvisioningHostPoolOptions {
-  return "resolveDrvPath" in opts;
+  return "agentFlakeRef" in opts;
 }
 
 /** Live combined dial stashed under the app-scoped client admit receives. */
@@ -638,50 +634,12 @@ function attachDaemonSession(args: {
 /** Shared never-settling promise for non-exit closes (one allocation). */
 const NEVER_EXITS: Promise<void> = new Promise(() => {});
 
-/**
- * W2.6: resolve the expected agent BUILD_ID for a host.
- *
- * - `provisioning: true` (parent holds a drv map) ⇒ build-ids map MUST be
- *   non-empty and MUST contain the probed system. No single-ID / "" fallback.
- * - `provisioning: false` (genuine off-nix, no drv map) ⇒ can't-judge via
- *   fallbackBuildId (may be "").
- */
-export function expectProvisionedBuildId(args: {
-  system: string | undefined;
-  buildIdBySystem: Readonly<Record<string, string>>;
-  fallbackBuildId: string;
-  /** True when the parent holds a drv map and is provisioning agents. */
-  provisioning: boolean;
-}): string {
-  if (args.provisioning) {
-    const keys = Object.keys(args.buildIdBySystem);
-    if (keys.length === 0) {
-      throw new Error(
-        "drishti agent provision: drv map is present but BUILD_IDS map is empty — cannot admit without per-system expected build ids",
-      );
-    }
-    if (args.system === undefined) {
-      throw new Error(
-        "drishti agent provision: remote system unknown but BUILD_IDS map is present — cannot select expected build id",
-      );
-    }
-    const bySystem = args.buildIdBySystem[args.system];
-    if (bySystem === undefined || bySystem === "") {
-      throw new Error(
-        `drishti agent provision: missing BUILD_ID for system ${JSON.stringify(args.system)} — DRISHTI_AGENT_BUILD_IDS_JSON must cover every provisioned system (no silent "" fallback on the provisioned path)`,
-      );
-    }
-    return bySystem;
-  }
-  return args.fallbackBuildId;
-}
-
 export function buildHostPool(opts: HostPoolOptions): HostPool {
-  // W4.7: discriminated union — provisioning is "has resolveDrvPath", never
-  // an offNix boolean override.
+  // W4.7: discriminated union — provisioning is "has a baked agent source",
+  // never an offNix boolean override.
   if (!isProvisioningPool(opts)) {
     // W5.6: off-nix pool with hosts constructs real sessions under the
-    // can't-judge binder (empty build id). No resolveDrvPath.
+    // can't-judge binder (empty build id). No provision path.
     const fallbackBuildId = process.env.DRISHTI_AGENT_BUILD_ID ?? "";
     return buildRemotePool<HostSession, undefined>({
       initialHosts: opts.initialHosts,
@@ -704,7 +662,7 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
           terminal: false as const,
         };
         const OFF_NIX_MSG =
-          "off-nix pool: no agent derivation (can't-judge path has no resolveDrvPath)";
+          "off-nix pool: no agent provision path (can't-judge binder)";
         const inner = sshConnector({
           // Effect RPC cannot mint a client from a TYPE — it needs the flat
           // `RpcGroup` and the spec to re-nest the face from. `agentDialSurface`
@@ -831,18 +789,19 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
     });
   }
 
-  // Policy is pure config (mint once as fallback). Budget is minted PER host
-  // entry so flaps on host A don't exhaust host B's drain attempts — and so
-  // the expected build id can match the host's probed system (multi-arch).
-  const fallbackBuildId = process.env.DRISHTI_AGENT_BUILD_ID ?? "";
-  const buildIdBySystem = opts.buildIdBySystem;
-  if (Object.keys(buildIdBySystem).length === 0) {
+  // One agent identity for the whole fleet: it is platform-independent (it
+  // hashes the agent's source closure — see default.nix), so there is nothing
+  // to select after a host probe. The budget is still minted PER host entry so
+  // flaps on host A don't exhaust host B's drain attempts.
+  // `?? ""` rather than a bare comparison: the type forbids an absent field, but
+  // a JS caller (or an untyped test) must still land on the loud path.
+  const expectedBuildId = opts.expectedBuildId ?? "";
+  if (expectedBuildId === "") {
     throw new Error(
-      "buildHostPool: provisioning path requires a non-empty buildIdBySystem (drv map is in use via resolveDrvPath)",
+      "buildHostPool: provisioning path requires a non-empty expectedBuildId (the agent identity the wrapper bakes as DRISHTI_AGENT_BUILD_ID)",
     );
   }
-  const provisioning = true;
-  const resolveDrvPath = opts.resolveDrvPath;
+  const agentFlakeRef = opts.agentFlakeRef;
 
   return buildRemotePool<HostSession, undefined>({
     initialHosts: opts.initialHosts,
@@ -856,10 +815,10 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
         AgentAppClient,
         ActiveCombined
       >();
-      // Budget minted once per host, after the first drv resolve when we know
-      // the remote system and can pick the matching expected build id.
-      let budget: ReturnType<typeof createConnectorDrainBudget> | null = null;
-      let expectedBuildId = fallbackBuildId;
+      // Minted once per host entry, from the identity — no post-probe step.
+      const budget = createConnectorDrainBudget(
+        drishtiAgentConvergencePolicy(expectedBuildId),
+      );
 
       // sshConnector always runs `<binary> --stdio` (appended by the connector
       // itself — do NOT pass `--stdio` in extraArgs). That flag is the durable
@@ -890,22 +849,13 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
             .map((k): [string, string | undefined] => [k, process.env[k]])
             .filter((e): e is [string, string] => e[1] !== undefined),
         ),
-        resolveDrvPath: async (context) => {
-          const resolved = await resolveDrvPath(host, context);
-          // W2.6: provisioned path fail-fast via expectProvisionedBuildId.
-          if (budget === null) {
-            expectedBuildId = expectProvisionedBuildId({
-              system: resolved.system,
-              buildIdBySystem,
-              fallbackBuildId,
-              provisioning,
-            });
-            budget = createConnectorDrainBudget(
-              drishtiAgentConvergencePolicy(expectedBuildId),
-            );
-          }
-          return resolved.derivation;
-        },
+        // The framework resolves `packages.<probed-system>.drishti-agent` from
+        // the baked source and hands `provisionAgent` the source's own
+        // declaration (caches + closure index) — so drishti spells neither a
+        // `.drv` nor a cache URL here. `ctx.resolveAgentDrv` is bound by the
+        // connector to this dial's signal, progress sink, budget and keepalive.
+        resolveDrvPath: (ctx) =>
+          ctx.resolveAgentDrv(agentFlakeRef, "drishti-agent"),
       });
 
       // Connector wraps the combined dial: stash ActiveCombined, hand admit
@@ -956,15 +906,8 @@ export function buildHostPool(opts: HostPoolOptions): HostPool {
 
       const admit = makeAgentAdmit({
         combinedByScopedClient,
-        getBudget: () => {
-          if (budget === null) {
-            // resolveDrvPath always runs before admit; mint with fallback if not.
-            budget = createConnectorDrainBudget(
-              drishtiAgentConvergencePolicy(expectedBuildId),
-            );
-          }
-          return budget;
-        },
+        // Minted above, from the identity alone — no post-probe step.
+        getBudget: () => budget,
         getConvergence: () => convergence,
         setConvergence: (c) => {
           convergence = c;

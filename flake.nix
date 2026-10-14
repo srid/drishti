@@ -47,62 +47,36 @@
       # a sandbox-built `dev` client beside a git-resolved server. The rev
       # resolution (clean tree → short rev; dirty/non-flake → "dev") now comes
       # from surface-app's commit-stamp.nix rather than being repeated here.
-      rev = stamp.revFromSelf self;
+      commitHash = stamp.revFromSelf self;
 
-      # Per-system `drishti-agent.drvPath`. Pure eval — drvPath is just a
-      # string interpolation, not a built output — so a macOS evaluator
-      # can produce the linux .drv path without IFD or remote builders.
-      # The monitor wrapper bakes this entire map as JSON; the server
-      # picks the right entry per host at runtime via `uname -ms`.
-      #
-      # `unsafeDiscardStringContext` strips the closure-edge each drvPath
-      # carries. Without it, baking the JSON into the monitor wrapper
-      # would pull every system's drishti-agent.drv into the wrapper's
-      # closure, and realising the wrapper on (say) x86_64-linux would
-      # need an aarch64-linux builder — defeating the whole point of
-      # deferring agent realisation to the remote host.
-      agentDrvBySystem = builtins.mapAttrs
-        (_: { pkgs, b2n }:
-          builtins.unsafeDiscardStringContext
-            (import ./default.nix { inherit pkgs b2n; }).drishti-agent.drvPath)
-        perSystemAttrs;
-
-      # Per-system agent BUILD_ID — hash of that system's real inner wrapper
-      # derivation (W2.5). Parent convergeAdmit uses this so a multi-arch host
-      # expects the build id of the agent it actually provisions.
-      agentBuildIdBySystem = builtins.mapAttrs
-        (_: { pkgs, b2n }:
-          (import ./default.nix { inherit pkgs b2n; }).drishtiAgentBuildId)
-        perSystemAttrs;
-
-      # The caches provisioning prefetches the agent closure from before
-      # shipping it to a remote host (@kolu/surface-remote's AgentBinaryCache
-      # shape — both lists must be non-empty, the constructor throws
-      # otherwise). Sourced from THIS flake's own nixConfig block (flake.nix
-      # is a plain attrset, so importing it reads the same strings nix itself
-      # uses) — the cache CI pushes agent builds to is, by construction, the
-      # cache provisioning pulls from.
-      flakeNixConfig = (import ./flake.nix).nixConfig;
-      binaryCache = {
-        substituters = [ flakeNixConfig.extra-substituters ];
-        trustedPublicKeys = [ flakeNixConfig.extra-trusted-public-keys ];
-      };
+      # The agent's baked BUILD_ID. Platform-independent BY CONSTRUCTION — it
+      # hashes the agent's SOURCE closure, not a derivation (see
+      # `mkDaemonIdentity` in default.nix) — so ONE value answers for every
+      # system: no per-system map for the monitor to select from, and a
+      # cross-arch host is a comparison rather than a special case. Computed
+      # once, from one system's pkgs (only `lib.fileset` is needed).
+      agentBuildId = (import ./default.nix {
+        pkgs = perSystemAttrs."x86_64-linux".pkgs;
+        inherit commitHash;
+      }).drishtiAgentBuildId;
     in
     {
       packages = eachSystem ({ pkgs, b2n }:
         let
-          drvs = import ./default.nix {
-            inherit pkgs b2n agentDrvBySystem agentBuildIdBySystem binaryCache rev;
-          };
+          drvs = import ./default.nix { inherit pkgs b2n commitHash; };
 
         in
         {
           # `nix run github:srid/drishti -- user@host` → the monitor.
           default = drvs.drishti;
           inherit (drvs) drishti drishti-agent drishti-client drishtiBuilt drishtiAgentBuilt;
-          # Inner wrapper derivation only (packages.* must be derivations —
-          # raw BUILD_ID string lives on agentBuildIdsJson, not packages).
-          inherit (drvs) drishti-agent-inner;
+          # The ASSEMBLED agent source — what a remote resolves the agent from,
+          # what the monitor bakes as SURFACE_AGENT_FLAKE_REF, and the `source:`
+          # input of the `publish-closures` CI job (which reads its
+          # `binary-cache.json` + `commit-hash` for the cache, the index and the
+          # revision key). Exposed per system because the copy step is a
+          # derivation, though its contents are system-independent.
+          agent-flake-source = drvs.agentFlakeSource;
           # @kolu/* source paths — exposed so `nix build .#kolu-surface`
           # realizes the store path used by the dev shell's hydrate hook.
           kolu-surface = pkgs.kolu-surface;
@@ -117,19 +91,10 @@
           bun2nix = b2n.bun2nix;
         });
 
-      # Top-level (system-independent) — the JSON shape the monitor reads
-      # at runtime. `just dev` exports this verbatim as
-      # DRISHTI_AGENT_DRVS_JSON without having to know about the per-
-      # system attr structure.
-      agentDrvsJson = builtins.toJSON agentDrvBySystem;
-
-      # Twin of agentDrvsJson for multi-arch BUILD_IDs — parent exports as
-      # DRISHTI_AGENT_BUILD_IDS_JSON for convergeAdmit expected-build selection.
-      agentBuildIdsJson = builtins.toJSON agentBuildIdBySystem;
-
-      # Twin of agentDrvsJson for the cache declaration — `just dev` exports
-      # this verbatim as DRISHTI_AGENT_BINARY_CACHE.
-      agentBinaryCacheJson = builtins.toJSON binaryCache;
+      # The agent identity the monitor expects, system-independent (see above).
+      # `just dev` exports it as DRISHTI_AGENT_BUILD_ID, `just ci::drv-stability`
+      # probes it, and the wrapper bakes it — one value, three readers.
+      inherit agentBuildId;
 
       # home-manager module — runs the monitor as a systemd user service on
       # Linux and a launchd LaunchAgent on macOS. System-independent; the

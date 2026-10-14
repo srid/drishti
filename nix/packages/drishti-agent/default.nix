@@ -28,17 +28,12 @@
 # `@kolu/log`, which surface-daemon takes as `import type` only).
 { stdenv, lib, bun, bun2nix, kolu-surface, kolu-surface-daemon, kolu-surface-daemon-supervisor, osfacts-client }:
 let
-  src = lib.fileset.toSource {
-    root = ../../..;
-    fileset = lib.fileset.unions [
-      ../../../packages/agent
-      ../../../packages/common
-      # Single hydrate script — not the whole scripts/ directory (U6.1).
-      ../../../scripts/hydrate-kolu-packages.sh
-      # tsconfig.base is extended by packages/*/tsconfig.json.
-      ../../../tsconfig.base.json
-    ];
-  };
+  # The fileset policy lives in nix/agent-fileset.nix because the agent's
+  # BUILD_ID keys on the SAME closure (`mkDaemonIdentity` in default.nix): a file
+  # added here without being added there would ship code the identity does not
+  # cover, and a rebuilt agent would keep a stale id.
+  agentFileset = import ../../agent-fileset.nix { inherit lib; };
+  src = lib.fileset.toSource agentFileset;
 in
 stdenv.mkDerivation {
   pname = "drishti-agent-built";

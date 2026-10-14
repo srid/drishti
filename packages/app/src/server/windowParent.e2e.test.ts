@@ -32,10 +32,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  agentBinaryCache,
-  directAgentDerivation,
-} from "@kolu/surface-remote";
 import { daemonHome } from "@kolu/surface-daemon";
 import { Effect, Stream } from "effect";
 import type { MetricHistoryMsg } from "drishti-common";
@@ -120,79 +116,61 @@ afterEach(async () => {
 });
 
 /**
- * Fixture: prefer an already-valid agent .drv in the local store (warm provision
- * hit) so the e2e does not wedge on a cold `nix build` of the flake's current
- * agentDrvsJson entry. Fall back to flake maps when no warm path exists.
- */
-/**
- * W5.1: ONLY the flake's current agent .drv — never a random warm store
- * path. A pre-UW3 store agent is single-surface / ephemeral --stdio and
- * 404s on control.core.hello + app-scoped system.identity (the campaign's
- * lead root-cause).
+ * Fixture: the BAKED AGENT SOURCE a dial resolves from (and its identity), with
+ * the agent closure warmed so provisioning is a store hit rather than a cold
+ * build. Gated like every heavy pool e2e: without KOLU_DAEMON_TESTS the heavy
+ * nix work is skipped by answering null.
  */
 async function fixtureAgent(): Promise<{
-  drvPath: string;
-  system: string;
+  flakeRef: string;
   buildId: string;
-  binaryCache: ReturnType<typeof agentBinaryCache>;
 } | null> {
   try {
-    const sysProc = Bun.spawn(
-      ["nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    const system = (await new Response(sysProc.stdout).text()).trim();
-    await sysProc.exited;
-    if (!system) {
-      if (daemonTestsEnabled) throw new Error("fixtureAgent: no currentSystem");
-      return null;
-    }
-
-    const binaryCache = agentBinaryCache({
-      substituters: ["https://cache.nixos.org"],
-      trustedPublicKeys: [
-        "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=",
+    // The source DIRECTORY — `nix eval` yields a .drv, not the output the
+    // framework reads `binary-cache.json` from.
+    const srcProc = Bun.spawn(
+      [
+        "nix",
+        "build",
+        "--no-link",
+        "--print-out-paths",
+        "--accept-flake-config",
+        ".#agent-flake-source",
       ],
-    });
-
-    const drvsProc = Bun.spawn(
-      ["nix", "eval", "--raw", ".#agentDrvsJson"],
       { stdout: "pipe", stderr: "pipe" },
     );
-    const drvsJson = (await new Response(drvsProc.stdout).text()).trim();
-    await drvsProc.exited;
-    const drvs = JSON.parse(drvsJson) as Record<string, string>;
-    const drvPath = drvs[system];
-    if (!drvPath?.endsWith(".drv")) {
+    const flakeRef = (await new Response(srcProc.stdout).text()).trim();
+    await srcProc.exited;
+    if (!flakeRef.startsWith("/nix/store/")) {
       if (daemonTestsEnabled) {
-        throw new Error(`fixtureAgent: no .drv for ${system}`);
+        throw new Error(
+          `fixtureAgent: no agent source (got ${JSON.stringify(flakeRef)})`,
+        );
       }
       return null;
     }
 
-    // Ensure realised so the e2e does not wedge on cold nix-copy alone.
-    const outProc = Bun.spawn(["nix-store", "-r", drvPath], {
+    const idProc = Bun.spawn(["nix", "eval", "--raw", ".#agentBuildId"], {
       stdout: "pipe",
       stderr: "pipe",
     });
-    await outProc.exited;
-
-    const idsProc = Bun.spawn(
-      ["nix", "eval", "--raw", ".#agentBuildIdsJson"],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    const idsJson = (await new Response(idsProc.stdout).text()).trim();
-    await idsProc.exited;
-    const ids = JSON.parse(idsJson) as Record<string, string>;
-    const buildId = ids[system];
+    const buildId = (await new Response(idProc.stdout).text()).trim();
+    await idProc.exited;
     if (!buildId) {
       if (daemonTestsEnabled) {
-        throw new Error(`fixtureAgent: no buildId for ${system}`);
+        throw new Error("fixtureAgent: empty agentBuildId");
       }
       return null;
     }
 
-    return { drvPath, system, buildId, binaryCache };
+    // Warm the closure the target realises, so the dial is a store hit.
+    const warm = Bun.spawn(
+      ["nix", "build", "--no-link", "--accept-flake-config", ".#drishti-agent"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    await warm.exited;
+
+    return { flakeRef, buildId };
   } catch (err) {
     if (daemonTestsEnabled) {
       throw new Error(
@@ -242,7 +220,12 @@ fi
 if [[ -n "\${DRISHTI_OSFACTS_BIN:-}" ]]; then
   export DRISHTI_OSFACTS_BIN
 fi
-exec "\$@"
+# A REAL ssh joins the remaining words into one line and hands it to the remote
+# shell — which is why the framework POSIX-quotes each token before passing it
+# (kolu's buildSshProbeCommand). Exec'ing the argv directly would instead deliver
+# a quoted token VERBATIM, so the arch probe's nix expression would arrive with
+# its surrounding single quotes on. Re-parse the line like the remote shell.
+exec sh -c "\$*"
 `,
     { mode: 0o755 },
   );
@@ -359,14 +342,8 @@ describe("W3.1 buildHostPool via ssh-shim (production assembly)", () => {
       const pool = buildHostPool({
         initialHosts: [host],
         hostsFile,
-        buildIdBySystem: { [fixture.system]: currentBuildId },
-        resolveDrvPath: async () => ({
-          derivation: directAgentDerivation(
-            fixture.drvPath,
-            fixture.binaryCache,
-          ),
-          system: fixture.system,
-        }),
+        agentFlakeRef: fixture.flakeRef,
+        expectedBuildId: currentBuildId,
       });
       pools.push(pool);
 
@@ -544,14 +521,8 @@ describe("W6.4 real refuse + renew via production pool", () => {
       const pool = buildHostPool({
         initialHosts: [host],
         hostsFile,
-        buildIdBySystem: { [fixture.system]: fixture.buildId },
-        resolveDrvPath: async () => ({
-          derivation: directAgentDerivation(
-            fixture.drvPath,
-            fixture.binaryCache,
-          ),
-          system: fixture.system,
-        }),
+        agentFlakeRef: fixture.flakeRef,
+        expectedBuildId: fixture.buildId,
       });
       pools.push(pool);
       const session = pool.getSession(host)!;
@@ -700,14 +671,8 @@ describe("W9 contract-axis replaced outcome via production pool", () => {
       const pool = buildHostPool({
         initialHosts: [host],
         hostsFile,
-        buildIdBySystem: { [fixture.system]: fixture.buildId },
-        resolveDrvPath: async () => ({
-          derivation: directAgentDerivation(
-            fixture.drvPath,
-            fixture.binaryCache,
-          ),
-          system: fixture.system,
-        }),
+        agentFlakeRef: fixture.flakeRef,
+        expectedBuildId: fixture.buildId,
       });
       pools.push(pool);
       const session = pool.getSession(host)!;

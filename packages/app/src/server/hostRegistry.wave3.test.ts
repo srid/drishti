@@ -5,58 +5,58 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { directAgentDerivation } from "@kolu/surface-remote";
-import { TEST_BINARY_CACHE } from "@kolu/surface-remote/agentDerivation.testutil";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   buildHostPool,
   drainPersistFailureOf,
   convergenceFromDrainPersistFailure,
-  expectProvisionedBuildId,
+  type OffNixHostPoolOptions,
+  type ProvisioningHostPoolOptions,
 } from "./hostRegistry";
 
-const fakeResolve = async () => ({
-  derivation: directAgentDerivation(
-    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-drishti-agent.drv",
-    TEST_BINARY_CACHE,
-  ),
-  system: "x86_64-linux",
-});
+/** A baked agent source that is not there. The framework reads the source's
+ *  own `binary-cache.json` before any ssh or Nix work, so a resolve through it
+ *  fails instantly and deterministically — which is what makes the wiring
+ *  ("the pool's resolver IS `ctx.resolveAgentDrv(agentFlakeRef, …)`")
+ *  observable without a store fixture. */
+const MISSING_SOURCE = "/nix/store/does-not-exist-drishti-agent-source";
 
 describe("buildHostPool discriminated construction (W4.7)", () => {
-  it("construction crashes when provisioning without buildIdBySystem", () => {
+  it("construction crashes when provisioning without an expectedBuildId", () => {
     const dir = mkdtempSync(join(tmpdir(), "pool-w47-"));
     try {
-      // Omit buildIdBySystem via cast — runtime still requires non-empty map.
+      // Omit expectedBuildId via cast — the type forbids it, and runtime still
+      // refuses: no admitted path has an "unknown which agent" arm.
       const bad = {
         initialHosts: [] as const,
-        resolveDrvPath: fakeResolve,
+        agentFlakeRef: MISSING_SOURCE,
         hostsFile: join(dir, "hosts.json"),
       };
       expect(() =>
         buildHostPool(bad as unknown as Parameters<typeof buildHostPool>[0]),
-      ).toThrow(/non-empty buildIdBySystem|buildIdBySystem|resolveDrvPath/);
+      ).toThrow(/non-empty expectedBuildId/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("construction crashes when buildIdBySystem is empty object", () => {
+  it("construction crashes when expectedBuildId is empty", () => {
     const dir = mkdtempSync(join(tmpdir(), "pool-w47e-"));
     try {
       expect(() =>
         buildHostPool({
           initialHosts: [],
-          resolveDrvPath: fakeResolve,
+          agentFlakeRef: MISSING_SOURCE,
+          expectedBuildId: "",
           hostsFile: join(dir, "hosts.json"),
-          buildIdBySystem: {},
         }),
-      ).toThrow(/non-empty buildIdBySystem/);
+      ).toThrow(/non-empty expectedBuildId/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("off-nix pool constructs without resolveDrvPath", async () => {
+  it("off-nix pool constructs without a provision path", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pool-w47off-"));
     try {
       const pool = buildHostPool({
@@ -70,14 +70,14 @@ describe("buildHostPool discriminated construction (W4.7)", () => {
     }
   });
 
-  it("type pin: provisioning pool without ids is unspellable (@ts-expect-error)", () => {
+  it("type pin: provisioning pool without a baked source is unspellable (@ts-expect-error)", () => {
     // Compile-time pin: the following line must type-error. If it stops
     // erroring, the discriminated union regressed.
-    // @ts-expect-error W4.7 provisioning requires buildIdBySystem
-    const _bad: import("./hostRegistry").ProvisioningHostPoolOptions = {
+    // @ts-expect-error W4.7 provisioning requires agentFlakeRef + expectedBuildId
+    const _bad: ProvisioningHostPoolOptions = {
       initialHosts: [],
       hostsFile: "/tmp/x",
-      resolveDrvPath: fakeResolve,
+      expectedBuildId: "id",
     };
     void _bad;
   });
@@ -126,97 +126,56 @@ describe("buildHostPool discriminated construction (W4.7)", () => {
     }
   });
 
-  it("type pin: off-nix pool with resolver is unspellable (@ts-expect-error)", () => {
+  it("type pin: off-nix pool with a provision path is unspellable (@ts-expect-error)", () => {
     const _bad = {
       initialHosts: [] as string[],
       hostsFile: "/tmp/x",
-      resolveDrvPath: fakeResolve,
+      agentFlakeRef: MISSING_SOURCE,
     };
-    // @ts-expect-error W5.6 off-nix arm must not spell resolveDrvPath
-    const _x: import("./hostRegistry").OffNixHostPoolOptions = _bad;
+    // @ts-expect-error W5.6 off-nix arm must not spell a provision path
+    const _x: OffNixHostPoolOptions = _bad;
     void _x;
   });
 
-  it("missing system fails through REAL pool resolve with a host (W6.6)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pool-w66miss-"));
+  it("a provisioning pool resolves THROUGH the configured baked source (W6.6)", async () => {
+    // The pool's resolver is `ctx.resolveAgentDrv(agentFlakeRef, …)`, so the
+    // ref it was constructed with is what the framework reads. A source that is
+    // not a baked agent tree therefore fails at resolve — before any ssh or Nix
+    // work — and says so with the framework's own words.
+    const dir = mkdtempSync(join(tmpdir(), "pool-w66src-"));
     try {
       writeFileSync(join(dir, "hosts.json"), JSON.stringify({ hosts: [] }));
       const pool = buildHostPool({
         initialHosts: ["localhost"],
         hostsFile: join(dir, "hosts.json"),
-        buildIdBySystem: { "aarch64-linux": "only-arm" },
-        resolveDrvPath: async () => ({
-          derivation: directAgentDerivation(
-            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-drishti-agent.drv",
-            TEST_BINARY_CACHE,
-          ),
-          system: "x86_64-linux",
-        }),
+        agentFlakeRef: MISSING_SOURCE,
+        expectedBuildId: "id-x",
       });
       const session = pool.getSession("localhost");
       expect(session).toBeDefined();
-      // Production buildEntry calls expectProvisionedBuildId at resolve time.
+      // pin() drives the real dial; a resolve failure rejects it.
       let err: unknown = null;
       try {
         await session!.pin();
       } catch (e) {
         err = e;
       }
-      // W7.4: exact missing-BUILD_ID failure (not bare architecture substring).
-      const MISSING_RE = /missing BUILD_ID for system "x86_64-linux"/;
+      const RE = /binary-cache\.json[\s\S]*does-not-exist-drishti-agent-source/;
       if (err !== null) {
         expect(err).toBeInstanceOf(Error);
-        expect((err as Error).message).toMatch(MISSING_RE);
+        expect((err as Error).message).toMatch(RE);
       } else {
-        const deadline = Date.now() + 10_000;
-        let st = session!.currentState();
-        while (Date.now() < deadline) {
-          st = session!.currentState();
-          if (
-            (st.phase === "failed" || st.phase === "disconnected") &&
-            "error" in st &&
-            typeof st.error === "string" &&
-            MISSING_RE.test(st.error)
-          ) {
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 50));
+        // Slower arm: the state cell carries the same reason.
+        let seen = "";
+        const deadline = Date.now() + 15_000;
+        while (Date.now() < deadline && !RE.test(seen)) {
+          const st = session!.currentState();
+          if ("error" in st && typeof st.error === "string") seen = st.error;
+          if (!RE.test(seen)) await delay(50);
         }
-        expect(st.phase === "failed" || st.phase === "disconnected").toBe(true);
-        expect("error" in st ? String(st.error) : "").toMatch(MISSING_RE);
+        expect(seen).toMatch(RE);
       }
       await pool.destroyAll();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("missing system at resolve throws via expectProvisionedBuildId (real helper)", () => {
-    expect(() =>
-      expectProvisionedBuildId({
-        system: "x86_64-linux",
-        buildIdBySystem: { "aarch64-linux": "only-arm" },
-        fallbackBuildId: "",
-        provisioning: true,
-      }),
-    ).toThrow(/missing BUILD_ID for system/);
-  });
-
-  it("PRODUCTION mutation pin: provisioning is not ids-map emptiness", () => {
-    // Construction with resolver + non-empty ids succeeds; empty ids crashes.
-    // Re-deriving provisioning from ids emptiness would accept empty+resolver
-    // as off-nix and silently construct — this asserts the loud path.
-    const dir = mkdtempSync(join(tmpdir(), "pool-w47mut-"));
-    try {
-      writeFileSync(join(dir, "hosts.json"), JSON.stringify({ hosts: [] }));
-      expect(() =>
-        buildHostPool({
-          initialHosts: [],
-          resolveDrvPath: fakeResolve,
-          hostsFile: join(dir, "hosts.json"),
-          buildIdBySystem: {},
-        }),
-      ).toThrow(/non-empty buildIdBySystem/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

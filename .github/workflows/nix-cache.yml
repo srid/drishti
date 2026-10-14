@@ -1,5 +1,12 @@
-# Build the default package on linux + darwin and push each closure to the
-# shared Attic cache (https://cache.nixos.asia/oss).
+# Two jobs, one cache (https://cache.nixos.asia/oss):
+#
+#   build-and-push    — build the default package on linux + darwin and push
+#                       each closure (input-addressed) to the shared cache.
+#   publish-closures  — the AGENT closure, content-addressed: rewrite it with
+#                       Nix 2.34.8, smoke it, push it, and publish the index
+#                       `@kolu/surface-remote` reads (`<rev>/<system>/<attr>.json`
+#                       on the `ca-index` branch) so a host with NO Nix trust on
+#                       it can still take a binder's agent (juspay/kolu#2294).
 name: nix-cache
 
 on:
@@ -7,7 +14,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Least privilege — this job only needs the checkout and ATTIC_TOKEN secret.
+# Least privilege — the jobs need the checkout, and publish-closures the
+# ATTIC_TOKEN secret plus write access to the `ca-index` branch it pushes.
 permissions:
   contents: read
 
@@ -24,7 +32,17 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      # `ref:` is LOAD-BEARING on `pull_request`. actions/checkout defaults to
+      # `github.ref`, which for that event is `refs/pull/N/merge` — a synthetic
+      # merge nothing else ever builds (developers, odu's lanes and a deploy all
+      # take the branch HEAD). `publish-closures` needs the HEAD too: its index
+      # key is the source's baked `commit-hash`, and the action refuses a key
+      # that is not a prefix of the commit being published. Empty on `push`, so
+      # checkout's own default (the pushed commit) stands — the correct tree
+      # there. Same note as kolu's own job.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       # Pin by commit (CodeQL: unpinned third-party action). v35 → 9f63be7.
       # v35 defaults to Nix 2.34.7, new enough for `nix profile add`.
@@ -70,3 +88,59 @@ jobs:
             | comm -13 "$RUNNER_TEMP/pre-build-paths" - \
             | grep -Ev '\.(drv|drv\.chroot|check|lock)$' \
             | attic push --stdin oss
+
+  # The AGENT closure, published content-addressed, plus the index
+  # `@kolu/surface-remote` reads (`publish-closure` from juspay/kolu#2294).
+  # A dedicated job because the action installs the Nix it rewrites with
+  # (2.34.8 — a line whose content-addressed hashes consumers on 2.17–2.34
+  # recompute identically), and that must be the job's only Nix.
+  #
+  # On a pull request this validates: it rewrites, smokes and import-verifies
+  # every exposed attr, and pushes nothing but the rewritten paths' absence of
+  # an index (the index push is skipped for pull_request). On a push to master
+  # it also writes `<rev>/<system>/<attr>.json` to `ca-index` (born on the
+  # first such run) — the entry a dial from that revision pulls with no trust
+  # on the host.
+  publish-closures:
+    # After build-and-push so the input-addressed closures this job
+    # substitutes from are already in the cache.
+    needs: build-and-push
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # Pushes the `ca-index` branch of this repository.
+    permissions:
+      contents: write
+    steps:
+      # Same `ref:` reasoning as build-and-push (see its note) — and here it is
+      # not merely cache warmth: the source bakes `commit-hash` from THIS
+      # checkout, and the action refuses an index key that is not a prefix of
+      # the commit being published. The fork-PR case is unchanged: no
+      # `ATTIC_TOKEN`, so nothing is pushed either way.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - id: agent
+        # What the source publishes, DERIVED from the one inventory it carries:
+        # `.#agent-flake-source`'s sidecar names the cache and the index branch,
+        # and its `commit-hash` is the index key. `attic-client` comes from the
+        # same npins-pinned nixpkgs the build job installs it from.
+        run: |
+          echo "nixpkgs=$(jq -r .pins.nixpkgs.url npins/sources.json)" >> "$GITHUB_OUTPUT"
+
+      # Pinned by commit (the tag would float). `smoke` is REQUIRED for every
+      # installable — an attr with no line fails the run rather than passing
+      # having proven nothing. `--help` loads the whole agent module graph and
+      # exits 0, which is exactly "the rewritten program execs".
+      - uses: juspay/kolu/.github/actions/publish-closure@5b14790a4eb9c383dfd7fa247bbff1af60f9eb92
+        with:
+          source: .#agent-flake-source
+          installables: drishti-agent
+          latest: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          smoke: |
+            drishti-agent=bin/drishti-agent --help
+          attic-nixpkgs: ${{ steps.agent.outputs.nixpkgs }}
+          attic-token: ${{ secrets.ATTIC_TOKEN }}
