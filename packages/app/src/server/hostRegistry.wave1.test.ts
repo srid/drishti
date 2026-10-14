@@ -1,68 +1,13 @@
 /**
- * Wave parent-side proofs: W2.6 fail-fast, W2.7 production policy shape.
+ * Wave parent-side proofs: W2.1 production policy shape.
+ *
+ * The W2.6 per-system build-id fail-fast tests that used to live here are gone
+ * with the mechanism they pinned: the agent identity is platform-independent
+ * now (one value, so no per-system selection to refuse), and its non-emptiness
+ * is enforced where the pool is built.
  */
 import { describe, expect, it } from "bun:test";
-import {
-  drishtiAgentConvergencePolicy,
-  expectProvisionedBuildId,
-} from "./hostRegistry";
-
-describe("W3.6 provisioned build-id fail-fast (helper)", () => {
-  it("throws when provisioning with empty BUILD_IDS map", () => {
-    expect(() =>
-      expectProvisionedBuildId({
-        system: "x86_64-linux",
-        buildIdBySystem: {},
-        fallbackBuildId: "parent-arch",
-        provisioning: true,
-      }),
-    ).toThrow(/BUILD_IDS map is empty/);
-  });
-
-  it("throws when system id is missing under provisioning", () => {
-    expect(() =>
-      expectProvisionedBuildId({
-        system: "x86_64-linux",
-        buildIdBySystem: { "aarch64-linux": "abc" },
-        fallbackBuildId: "",
-        provisioning: true,
-      }),
-    ).toThrow(/missing BUILD_ID for system/);
-  });
-
-  it("returns the per-system id when present", () => {
-    expect(
-      expectProvisionedBuildId({
-        system: "x86_64-linux",
-        buildIdBySystem: { "x86_64-linux": "build-xyz" },
-        fallbackBuildId: "",
-        provisioning: true,
-      }),
-    ).toBe("build-xyz");
-  });
-
-  it("off-nix path (not provisioning) keeps empty can't-judge id", () => {
-    expect(
-      expectProvisionedBuildId({
-        system: "x86_64-linux",
-        buildIdBySystem: {},
-        fallbackBuildId: "",
-        provisioning: false,
-      }),
-    ).toBe("");
-  });
-
-  it("off-nix path with env fallback uses fallback", () => {
-    expect(
-      expectProvisionedBuildId({
-        system: "x86_64-linux",
-        buildIdBySystem: {},
-        fallbackBuildId: "from-env",
-        provisioning: false,
-      }),
-    ).toBe("from-env");
-  });
-});
+import { drishtiAgentConvergencePolicy } from "./hostRegistry";
 
 describe("W2.1 production policy object", () => {
   it("drishtiAgentConvergencePolicy is the drain-and-replace build arm", () => {

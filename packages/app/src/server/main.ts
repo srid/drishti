@@ -32,13 +32,10 @@ import { fileURLToPath } from "node:url";
 import { NodeHttpServer } from "@effect/platform-node";
 import { cli } from "cleye";
 import { WebSocketServer } from "ws";
-import { Effect, Scope, Schema } from "effect";
+import { Effect, Scope } from "effect";
 import { HttpRouter } from "effect/http";
 import { gateWsOrigin, parseAllowedOrigins } from "@kolu/surface/ws-origin";
-import {
-  type AgentBinaryCache,
-  agentBinaryCache,
-} from "@kolu/surface-remote";
+import { readBakedAgentSource } from "@kolu/surface-remote";
 import {
   gateStaleSocket,
   serveSurfaceSocket,
@@ -49,12 +46,8 @@ import { ADMIN_HOST_SENTINEL, isValidHost } from "../common/host";
 import { BRAND_DARK } from "../client/brand";
 import { appNameForHost } from "../client/title";
 import { buildAdminRouter } from "./admin-router";
-import { resolveDrvForHost } from "./archMap";
 import { buildClient } from "./build";
-import {
-  buildHostPool,
-  type ProvisioningHostPoolOptions,
-} from "./hostRegistry";
+import { buildHostPool } from "./hostRegistry";
 import { loadHosts, resolveHostsFile, saveHosts } from "./hostsStore";
 import { installStderrTimestamps, makeLogger } from "./log";
 import { startWakeMonitor } from "./wakeMonitor";
@@ -86,80 +79,38 @@ const argv = cli({
 });
 
 async function main(): Promise<void> {
-  const drvsJson = process.env.DRISHTI_AGENT_DRVS_JSON;
-  if (drvsJson === undefined || drvsJson.length === 0) {
+  // The ONE agent declaration (juspay/kolu#2294): the assembled agent source a
+  // remote host resolves `packages.<system>.drishti-agent` from. Read through
+  // the framework's own reader, so the env-var NAME and the "not baked" fault
+  // have one source of truth (@kolu/surface-remote owns both). The wrapper
+  // bakes it; `just dev` exports the same value.
+  //
+  // Fail fast at boot rather than lazily per host: without it no host can ever
+  // be provisioned, so a monitor that started anyway would serve a fleet view
+  // that can never fill in.
+  const baked = readBakedAgentSource();
+  if (baked.isErr()) {
     log(
-      "DRISHTI_AGENT_DRVS_JSON is required (no fallback). Set it to a JSON object mapping nix-system → agent .drv path — e.g. `DRISHTI_AGENT_DRVS_JSON=$(nix eval --raw .#agentDrvsJson)`. The monitor wrapper bakes this map from flake.nix.",
+      `${baked.error.message} (or build one: SURFACE_AGENT_FLAKE_REF=$(nix build --no-link --print-out-paths .#agent-flake-source))`,
     );
     process.exit(1);
   }
-  const drvMapSchema = Schema.Record(
-    Schema.String,
-    Schema.String.check(Schema.isMinLength(1)),
-  );
-  const parseDrvMap = Schema.decodeUnknownSync(drvMapSchema);
-  let agentDrvBySystem: Record<string, string>;
-  try {
-    agentDrvBySystem = { ...parseDrvMap(JSON.parse(drvsJson)) };
-  } catch (err) {
-    log(`DRISHTI_AGENT_DRVS_JSON: invalid — ${(err as Error).message}`);
-    process.exit(1);
-  }
-  log(
-    `agent drvs (${Object.keys(agentDrvBySystem).length}): ${Object.keys(agentDrvBySystem).join(", ")}`,
-  );
+  const agentFlakeRef = baked.value;
+  log(`agent source: ${agentFlakeRef}`);
 
-  const binaryCacheJson = process.env.DRISHTI_AGENT_BINARY_CACHE;
-  if (binaryCacheJson === undefined || binaryCacheJson.length === 0) {
+  // The identity the supervisor expects the running agent to report (UW3).
+  // Platform-INDEPENDENT by construction (default.nix hashes the agent's
+  // source closure), so this one value answers for every host arch: no
+  // per-system map to select from, and a cross-arch host is a comparison
+  // rather than a build mismatch.
+  const expectedBuildId = process.env.DRISHTI_AGENT_BUILD_ID ?? "";
+  if (expectedBuildId === "") {
     log(
-      "DRISHTI_AGENT_BINARY_CACHE is required (no fallback). Set it to a JSON object { substituters: string[], trustedPublicKeys: string[] } naming the caches the agent closure is prefetched from — e.g. `DRISHTI_AGENT_BINARY_CACHE=$(nix eval --raw .#agentBinaryCacheJson)`. The monitor wrapper bakes this from flake.nix's nixConfig.",
+      "DRISHTI_AGENT_BUILD_ID is required (no fallback) — it is the agent identity this parent expects a host to be running; the wrapper bakes it, and `just dev` exports `nix eval --raw .#agentBuildId`.",
     );
     process.exit(1);
   }
-  // `agentBinaryCache` is surface-remote's own smart constructor: it owns the
-  // "could this declaration act?" gate (non-empty, non-blank, trimmed) and is
-  // the ONLY way to produce the nominal AgentBinaryCache. Validating here
-  // instead would be a second, drifting copy of that gate.
-  let binaryCache: AgentBinaryCache;
-  try {
-    binaryCache = agentBinaryCache(JSON.parse(binaryCacheJson));
-  } catch (err) {
-    log(`DRISHTI_AGENT_BINARY_CACHE: invalid — ${(err as Error).message}`);
-    process.exit(1);
-  }
-  log(`agent binary cache: ${binaryCache.substituters.join(", ")}`);
-
-  const resolveDrvPath: ProvisioningHostPoolOptions["resolveDrvPath"] = (
-    host,
-    context,
-  ) => resolveDrvForHost(host, agentDrvBySystem, binaryCache, context);
-
-  // Per-system agent BUILD_IDs for multi-arch convergeAdmit (UW3).
-  // W2.6: DRVS map is already required above — the build-ids map is therefore
-  // also required (per-system). A single parent-arch DRISHTI_AGENT_BUILD_ID
-  // cannot satisfy the provisioned path. Off-nix (no DRVS) never reaches here.
-  const buildIdsJson = process.env.DRISHTI_AGENT_BUILD_IDS_JSON;
-  if (buildIdsJson === undefined || buildIdsJson === "") {
-    log(
-      "DRISHTI_AGENT_BUILD_IDS_JSON is required on the provisioned path (drv map is present) — a single DRISHTI_AGENT_BUILD_ID cannot cover multi-arch hosts. The monitor wrapper and `just dev` bake/export the per-system map.",
-    );
-    process.exit(1);
-  }
-  let buildIdBySystem: Record<string, string>;
-  try {
-    buildIdBySystem = { ...parseDrvMap(JSON.parse(buildIdsJson)) };
-  } catch (err) {
-    log(
-      `DRISHTI_AGENT_BUILD_IDS_JSON: invalid — ${(err as Error).message}`,
-    );
-    process.exit(1);
-  }
-  if (Object.keys(buildIdBySystem).length === 0) {
-    log(
-      "DRISHTI_AGENT_BUILD_IDS_JSON is empty — provisioned path requires at least one system → build id",
-    );
-    process.exit(1);
-  }
+  log(`agent identity: ${expectedBuildId}`);
 
   const hostsFile = resolveHostsFile();
   const cliHosts = argv._.host;
@@ -191,9 +142,9 @@ async function main(): Promise<void> {
 
   const pool = buildHostPool({
     initialHosts,
-    resolveDrvPath,
     hostsFile,
-    buildIdBySystem,
+    agentFlakeRef,
+    expectedBuildId,
   });
 
   const admin = buildAdminRouter({ pool });

@@ -37,33 +37,21 @@ install:
       "$DRISHTI_OSFACTS_CLIENT" osfacts-client'
 
 # Boot the parent server. Defaults to localhost; pass any number of
-# user@host targets after it. Exports DRISHTI_AGENT_DRVS_JSON (the
-# per-system agent .drv map from the flake) so the parent can probe each
-# host's arch on add and pick the matching .drv — no shell-side probe.
+# user@host targets after it. Exports SURFACE_AGENT_FLAKE_REF — the assembled
+# agent source every host's agent is resolved from — and DRISHTI_AGENT_BUILD_ID,
+# the identity the supervisor expects. Nothing else about delivery is spelled
+# here: the source bakes its own `binary-cache.json` (caches + closure index)
+# beside `commit-hash`, and @kolu/surface-remote reads both.
 dev host='localhost' *args: install
     #!/usr/bin/env bash
     set -euo pipefail
-    drvs_json=$(nix eval --raw "{{ justfile_directory() }}#agentDrvsJson")
-    cache_json=$(nix eval --raw "{{ justfile_directory() }}#agentBinaryCacheJson")
-    # W6: provisioned path needs the same build-id map the wrapper bakes —
-    # no silent "" fallback when the parent holds a drv map.
-    build_ids_json=$(nix eval --raw "{{ justfile_directory() }}#agentBuildIdsJson")
-    local_sys=$(nix eval --impure --raw --expr 'builtins.currentSystem')
-    build_id=$(printf '%s' "$build_ids_json" | {{ nix_shell }} bun -e '
-      const m = JSON.parse(await Bun.stdin.text());
-      const s = process.argv[1];
-      if (m[s] === undefined || m[s] === "") {
-        console.error("missing BUILD_ID for system", s, "in agentBuildIdsJson");
-        process.exit(1);
-      }
-      process.stdout.write(m[s]);
-    ' "$local_sys")
-    echo "» agent drvs: $drvs_json"
-    echo "» agent binary cache: $cache_json"
-    echo "» agent build id ($local_sys): $build_id"
-    DRISHTI_AGENT_DRVS_JSON="$drvs_json" \
-    DRISHTI_AGENT_BINARY_CACHE="$cache_json" \
-    DRISHTI_AGENT_BUILD_IDS_JSON="$build_ids_json" \
+    # `nix build`, not `nix eval`: the source must EXIST as a directory for the
+    # framework to read its sidecar from.
+    agent_source=$(nix build --no-link --print-out-paths "{{ justfile_directory() }}#agent-flake-source")
+    build_id=$(nix eval --raw "{{ justfile_directory() }}#agentBuildId")
+    echo "» agent source: $agent_source"
+    echo "» agent identity: $build_id"
+    SURFACE_AGENT_FLAKE_REF="$agent_source" \
     DRISHTI_AGENT_BUILD_ID="$build_id" \
     {{ nix_shell }} bun --cwd packages/app dev {{ host }} {{ args }}
 

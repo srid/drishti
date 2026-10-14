@@ -22,7 +22,7 @@ nix_shell := if env('IN_NIX_SHELL', '') != '' { '' } else { 'nix develop --accep
 [macos]
 [parallel]
 [metadata("ci")]
-default: nix typecheck fmt-check bun-nix-fresh flake-check home-manager drv-stability agent-boots test-daemon
+default: nix typecheck fmt-check bun-nix-fresh flake-check home-manager drv-stability agent-flake-nix agent-boots test-daemon
 
 # Single per-platform `bun install`. Funnel every bun consumer through this
 # node so concurrent `bun install` runs against the same workspace don't race.
@@ -66,9 +66,11 @@ typecheck: install
     {{ nix_shell }} bun run typecheck
 
 # Acceptance guard for issue #38: a client/server-only edit must NOT change the
-# agent's .drv hash — otherwise every remote re-copies + rebuilds the agent on
-# Fleet BUILD_ID stability (W2.5 / U5.1 / U6.1). Identity is the INNER wrapper.
-# Probes (throwaway worktrees; host tree untouched); full map for freeze probes:
+# agent's BUILD_ID — otherwise every remote re-copies + rebuilds the agent on
+# Fleet BUILD_ID stability (UW3 / U5.1 / U6.1). The identity hashes the agent's
+# SOURCE closure (@kolu/surface-daemon's mkDaemonIdentity), so it is one scalar
+# that answers for every platform, not a per-system map. Probes (throwaway
+# worktrees; host tree untouched):
 #   (a) client .ts edit
 #   (b) REAL app-only devDependency + lock + bun.nix regen
 #   (c) root package.json only (manifest noise — not an agent input)
@@ -86,22 +88,17 @@ drv-stability:
     if [ -z "${IN_NIX_SHELL:-}" ] && { ! command -v bun >/dev/null 2>&1 || ! command -v nixpkgs-fmt >/dev/null 2>&1; }; then
       exec nix develop --accept-flake-config -c bash "$0" "$@"
     fi
-    extract_id() {
-      sed -n 's/.*"x86_64-linux"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
-    }
-    base_map=$(nix eval --raw --no-eval-cache '.#agentBuildIdsJson')
-    base=$(printf '%s' "$base_map" | extract_id)
+    base=$(nix eval --raw --no-eval-cache '.#agentBuildId')
     if [ -z "$base" ]; then
-      echo "drv-stability: FAIL — empty x86_64-linux BUILD_ID from agentBuildIdsJson"
+      echo "drv-stability: FAIL — empty BUILD_ID from agentBuildId"
       exit 1
     fi
-    echo "drv-stability: base BUILD_ID map=$base_map"
+    echo "drv-stability: base BUILD_ID=$base"
 
     run_probe() {
-      local name="$1" expect_change="$2" # 0=unchanged, 1=rotated (x86 only)
+      local name="$1" expect_change="$2" # 0=unchanged, 1=rotated
       local mutator="$3"
-      local compare_full_map="${4:-0}"
-      local tmp wt after after_map
+      local tmp wt after
       tmp=$(mktemp -d)
       wt="$tmp/wt"
       git worktree add -q --detach "$wt" HEAD
@@ -109,22 +106,11 @@ drv-stability:
       git -C "$wt" -c user.email=ci@drishti -c user.name=ci add -A
       git -C "$wt" -c user.email=ci@drishti -c user.name=ci \
         commit -qm "drv-stability probe: $name" || true
-      after_map=$(nix eval --raw --no-eval-cache "$wt#agentBuildIdsJson")
-      after=$(printf '%s' "$after_map" | extract_id)
+      after=$(nix eval --raw --no-eval-cache "$wt#agentBuildId")
       git worktree remove --force "$wt" 2>/dev/null || true
       rm -rf "$tmp"
       if [ "$expect_change" = "0" ]; then
-        if [ "$compare_full_map" = "1" ]; then
-          if [ "$base_map" = "$after_map" ]; then
-            echo "drv-stability: PASS ($name) — all three BUILD_IDs byte-identical"
-            echo "  map: $base_map"
-          else
-            echo "drv-stability: FAIL ($name) — BUILD_ID map rotated (must stay put)"
-            echo "  before: $base_map"
-            echo "  after:  $after_map"
-            exit 1
-          fi
-        elif [ "$base" = "$after" ]; then
+        if [ "$base" = "$after" ]; then
           echo "drv-stability: PASS ($name) — BUILD_ID unchanged ($base)"
         else
           echo "drv-stability: FAIL ($name) — BUILD_ID rotated (must stay put)"
@@ -147,8 +133,7 @@ drv-stability:
 
     # (a) client-only source edit
     run_probe "client-ts" 0 \
-      'printf "\n// drv-stability probe — client edit must not churn agent BUILD_ID\n" >> "$WT/packages/app/src/client/theme.ts"' \
-      1
+      'printf "\n// drv-stability probe — client edit must not churn agent BUILD_ID\n" >> "$WT/packages/app/src/client/theme.ts"'
 
     # (b) REAL app-only devDependency + root lock/bun.nix regen (bun from outer shell)
     run_probe "app-only-devDep" 0 \
@@ -158,21 +143,41 @@ drv-stability:
        nix run .#bun2nix -- -l bun.lock -o bun.nix
        nixpkgs-fmt bun.nix >/dev/null
        git diff --exit-code packages/agent/agent.lock packages/agent/agent.bun.nix packages/agent/agent.package.json
-      ' 1
+      '
 
     # (c) root package.json only (U6.1 — not an agent input)
     run_probe "root-manifest-only" 0 \
-      'printf "\n  , \"//drv-stability\": \"root package.json only\"\n" >> "$WT/package.json"' \
-      1
+      'printf "\n  , \"//drv-stability\": \"root package.json only\"\n" >> "$WT/package.json"'
 
     # (d) app-only script (U6.1 — scripts/ except hydrate is not an agent input)
     run_probe "app-only-script" 0 \
-      'printf "\n// drv-stability probe — app-only script must not churn agent BUILD_ID\n" >> "$WT/scripts/gen-pwa-icons.ts"' \
-      1
+      'printf "\n// drv-stability probe — app-only script must not churn agent BUILD_ID\n" >> "$WT/scripts/gen-pwa-icons.ts"'
 
     # (e) agent-touching edit must rotate
     run_probe "agent-touch" 1 \
       'printf "\n// drv-stability probe — agent touch must rotate BUILD_ID\n" >> "$WT/packages/agent/src/main.ts"'
+
+# The agent SOURCE must EVALUATE for the systems a remote host can be — the
+# eval-time gate mkProvenAgentSource's prove cannot give drishti (the assembled
+# tree's own default.nix needs bun2nix, which reaches a tree only as a flake
+# input; see default.nix). Every exposed attr's `drvPath` is forced from the
+# EXACT source the monitor bakes as SURFACE_AGENT_FLAKE_REF, including
+# aarch64-linux, which no CI runner builds on. Pure eval, no build.
+agent-flake-nix:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src=$(nix build --no-link --print-out-paths --accept-flake-config '.#agent-flake-source')
+    echo "agent-flake-nix: source $src"
+    for system in x86_64-linux aarch64-linux aarch64-darwin; do
+      drv=$(nix eval --raw --accept-flake-config "$src#packages.$system.drishti-agent.drvPath")
+      case "$drv" in
+        *.drv) echo "agent-flake-nix: PASS ($system) $drv" ;;
+        *)
+          echo "agent-flake-nix: FAIL ($system) — not a derivation: $drv"
+          exit 1
+          ;;
+      esac
+    done
 
 # Flake schema check — packages.* must be derivations (U4.2). Catches raw
 # strings under packages.<system> that GHA build alone misses. After `nix`

@@ -8,9 +8,12 @@
 # (the full app tree + client bundle); the agent is backed by its own minimal
 # `drishtiAgentBuilt` so client/server edits don't churn its `.drv` (issue #38).
 #
-#   drishti-agent  — the remote-side binary. `nix copy --derivation` ships
-#                     this .drv to the SSH target host, which realises it
-#                     locally. Wraps bun → packages/agent/src/main.ts, built by
+#   drishti-agent  — the remote-side binary. A host resolves it from the
+#                     ASSEMBLED AGENT SOURCE (`agentFlakeSource` below, built
+#                     from nix/agent-flake.nix) and realises it locally; the
+#                     monitor bakes that source's flake ref and
+#                     @kolu/surface-remote does the rest (juspay/kolu#2294).
+#                     Wraps bun → packages/agent/src/main.ts, built by
 #                     `drishtiAgentBuilt` (NOT the full `drishtiBuilt` tree — see
 #                     nix/packages/drishti-agent/default.nix for why scoping the
 #                     agent's inputs is the fix for the reconnect re-provision).
@@ -20,36 +23,30 @@
 #
 #   drishti        — the monitor (default attr). Wraps bun →
 #                     packages/app/src/server/main.ts; bakes
-#                     DRISHTI_AGENT_DRVS_JSON (system→drv map, sourced
-#                     from flake.nix), DRISHTI_AGENT_BINARY_CACHE (the
-#                     prefetch cache declaration, from flake.nix's
-#                     nixConfig) and DRISHTI_DIST_DIR (drishti-client).
-#                     meta.mainProgram is "drishti" so `nix run`
-#                     resolves cleanly.
+#                     SURFACE_AGENT_FLAKE_REF (the ONE agent declaration — the
+#                     remote host resolves its agent from it; the caches ride
+#                     the source's own `binary-cache.json` sidecar, derived from
+#                     nix/agent-flake.nix's nixConfig), the agent identity pair
+#                     and DRISHTI_DIST_DIR (drishti-client). meta.mainProgram is
+#                     "drishti" so `nix run` resolves cleanly.
 #
 # `b2n` carries the bun2nix helpers; passed in from flake.nix via
 # `lib.mkBun2nix { inherit pkgs; }` (juspay/bun2nix rawflake standalone API).
 #
-# `agentDrvBySystem` is the cross-system map flake.nix builds eagerly
-# (drvPath is pure eval; no IFD) and threads in here so the monitor can
-# pick the right agent at runtime per the remote host's `uname -ms`.
-# Only the `drishti` monitor needs it — `drishti-agent` and
-# `drishti-client` realize fine without it; throws on use if missing.
+# Agent delivery is ONE declaration, not an env-var family: the agent source
+# bakes `binary-cache.json` (caches + closure index) beside `commit-hash`, and
+# @kolu/surface-remote reads both. Nothing here threads a system→drv map, a
+# per-system build-id map or a cache URL into the monitor any more — the
+# framework resolves `packages.<host-system>.drishti-agent` from the baked
+# source itself, and the identity is platform-independent (below).
 { pkgs ? null
 , b2n ? null
-, agentDrvBySystem ? null
-  # Per-system agent BUILD_ID map ({ system → hash }) for multi-arch
-  # convergeAdmit. Same bake rules as agentDrvBySystem (string-only JSON).
-, agentBuildIdBySystem ? null
-  # Binary-cache declaration ({ substituters; trustedPublicKeys; } — lists,
-  # both non-empty) baked for @kolu/surface-remote's agent prefetch. flake.nix
-  # derives it from its own nixConfig block; like agentDrvBySystem, only the
-  # `drishti` monitor needs it — throws on use if missing.
-, binaryCache ? null
-  # Build commit, stamped into the client bundle AND the server wrapper from
-  # one source (flake.nix passes `self.rev`), so the freshness rail is
-  # self-consistent. Defaults to "dev" for non-flake (`nix-build`) invocations.
-, rev ? "dev"
+  # Navigable commit this build is stamped from: baked into the client bundle,
+  # the server wrapper's freshness rail AND the agent's identity pair, from one
+  # source (flake.nix passes `self.rev`). Defaults to "dev" for non-flake
+  # (`nix-build`) invocations. `nix/agent-flake.nix` reads the same value back
+  # out of the baked `commit-hash` file.
+, commitHash ? "dev"
 }:
 let
   # surface-app's build-commit helper (upstream single source for the env-var
@@ -66,7 +63,7 @@ let
   # if needed without bun2nix wired up.
   drishtiBuilt =
     if b2n != null
-    then resolvedPkgs.callPackage ./nix/packages/drishti { bun2nix = b2n; surfaceAppCommit = rev; }
+    then resolvedPkgs.callPackage ./nix/packages/drishti { bun2nix = b2n; surfaceAppCommit = commitHash; }
     else throw "drishti build derivation needs `b2n` (lib.mkBun2nix output) — invoke via flake.nix";
 
   # The agent's own minimal build tree. Scoped to packages/agent + the wire
@@ -77,20 +74,90 @@ let
     then resolvedPkgs.callPackage ./nix/packages/drishti-agent { bun2nix = b2n; }
     else throw "drishti agent build derivation needs `b2n` (lib.mkBun2nix output) — invoke via flake.nix";
 
-  # Identity env for the durable daemon (UW3). Two-stage wrapper (W2.5):
+  # ── Agent delivery (juspay/kolu#2294 — the surface closure-delivery seam) ──
+  kolu = (import ./npins).kolu;
+
+  # The framework's own registry for the env-var NAME the wrapper bakes and
+  # @kolu/surface-remote's `readBakedAgentSource()` reads. Reading it from the
+  # pin keeps the two sides one edit apart instead of two literals that drift.
+  agentEnv = resolvedPkgs.lib.importJSON "${kolu}/packages/surface-remote/agent-env.json";
+
+  # WHICH closure IS the agent — one policy (nix/agent-fileset.nix), shared with
+  # the derivation that builds it and with the identity below.
+  agentFileset = import ./nix/agent-fileset.nix { inherit (resolvedPkgs) lib; };
+
+  # The agent's currency key (`DRISHTI_AGENT_BUILD_ID`) — @kolu/surface-daemon's
+  # ONE recipe, the Nix half of the `readBakedIdentity("DRISHTI_AGENT")` the
+  # agent already calls. It hashes the SOURCE closure, so the id is
+  # platform-INDEPENDENT: a macOS laptop and the linux host it dials bake the
+  # SAME id, and convergence is a comparison rather than a per-system map that
+  # can drift. `pinnedSources` carries the kolu pin: the `@kolu/*` packages the
+  # agent hydrates arrive through it, so a pin bump moves the id exactly like a
+  # source edit (and the repo's `just ci::drv-stability` probes pin both
+  # directions).
+  agentIdentity =
+    (import "${kolu}/packages/surface-daemon/nix/daemon-identity.nix" {
+      inherit (resolvedPkgs) lib;
+    }) {
+      name = "drishti-agent";
+      prefix = "DRISHTI_AGENT";
+      root = agentFileset.root;
+      behavioralFileset = agentFileset.fileset;
+      pinnedSources = { kolu = "${kolu}"; };
+      commitHash = commitHash;
+    };
+  drishtiAgentBuildId = agentIdentity.buildId;
+
+  # WHAT the assembled agent source carries: enough for the copied
+  # nix/agent-flake.nix + default.nix to evaluate
+  # `packages.<system>.drishti-agent` with no fetch beyond the locked bun2nix
+  # input. Deliberately not the app — this store path is baked onto the monitor
+  # wrapper and therefore rides the monitor's own closure.
+  agentSourceTree = {
+    root = ./.;
+    fileset = resolvedPkgs.lib.fileset.unions [
+      ./default.nix
+      ./nix
+      ./npins
+      # The bun2nix input's lock, so the assembled flake evaluates offline
+      # against whatever this machine already has (see nix/agent-flake.nix).
+      ./flake.lock
+      ./packages/agent
+      ./packages/common
+      ./scripts/hydrate-kolu-packages.sh
+      ./tsconfig.base.json
+    ];
+  };
+
+  # The flake-shaped agent source a remote resolves `drishti-agent` from — the
+  # ONE thing flake.nix bakes as SURFACE_AGENT_FLAKE_REF, and what CI publishes
+  # content-addressed (`publish-closures` in .github/workflows/nix-cache.yml).
   #
-  #   INNER — bun / osfacts / entrypoint. Its store path is the sole input to
-  #           BUILD_ID. A client-only monorepo commit must NOT churn this
-  #           (drv-stability / issue #38): no monorepo rev here.
-  #   OUTER — stamps BUILD_ID (hash of the inner path) AND COMMIT_HASH (monorepo
-  #           `rev`). The outer path may change when `rev` advances; that is
-  #           ZERO identity cost — convergeAdmit keys on BUILD_ID only, so no
-  #           drain / no id rotation. Pre-W2.5 the single wrapper could not
-  #           carry `rev` without rotating the id; that reasoning is obsolete.
-  #
-  # Joint invariant: a nix-built agent with non-empty BUILD_ID must also carry
-  # a non-empty COMMIT_HASH (identity fragment serves both; CI pins this).
-  drishti-agent-inner = resolvedPkgs.runCommand "drishti-agent-inner"
+  # `mkAgentSourceTree` (assemble) rather than `mkProvenAgentSource` (assemble +
+  # prove): the prove re-imports the assembled tree's own default.nix with
+  # `{ pkgs, commitHash }`, and drishti's agent derivation needs bun2nix — which
+  # reaches a tree only as a FLAKE INPUT, i.e. not at plain-import time. The
+  # eval-time gate therefore lives where it can act: `just ci::agent-flake-nix`
+  # evaluates every system's `drvPath` from this exact source, and the publisher
+  # builds each exposed attr from it on every PR.
+  agentFlakeSource =
+    import "${kolu}/packages/surface-daemon/nix/agent-source-tree.nix" { inherit (resolvedPkgs) lib; } {
+      pkgs = resolvedPkgs;
+      name = "drishti-agent-source";
+      src = resolvedPkgs.lib.fileset.toSource agentSourceTree;
+      flakeNix = ./nix/agent-flake.nix;
+      label = "drishti";
+      # Where each system's content-addressed build is published, keyed by
+      # `commit-hash` — a dial from a published revision has the host pull it
+      # with NO trust (the `ca-index` branch is born on the first master run).
+      closureIndex = { repo = "srid/drishti"; branch = "ca-index"; };
+      extraFiles = { "commit-hash" = commitHash; };
+    };
+
+  # ONE wrapper. It used to be two (inner = bun+entry, outer = identity) so a
+  # monorepo rev could not rotate the id; with the identity hashing SOURCE
+  # instead of the inner `.drv`, that split buys nothing.
+  drishti-agent = resolvedPkgs.runCommand "drishti-agent"
     {
       nativeBuildInputs = [ resolvedPkgs.makeWrapper ];
       meta.mainProgram = "drishti-agent";
@@ -98,18 +165,9 @@ let
     mkdir -p $out/bin
     makeWrapper ${resolvedPkgs.bun}/bin/bun $out/bin/drishti-agent \
       --add-flags "${drishtiAgentBuilt}/lib/drishti/packages/agent/src/main.ts" \
-      --set DRISHTI_OSFACTS_BIN "${resolvedPkgs.osfacts}/bin/osfacts"
-  '';
-  drishtiAgentBuildId = builtins.hashString "sha256" (toString drishti-agent-inner);
-  drishti-agent = resolvedPkgs.runCommand "drishti-agent"
-    {
-      nativeBuildInputs = [ resolvedPkgs.makeWrapper ];
-      meta.mainProgram = "drishti-agent";
-    } ''
-    mkdir -p $out/bin
-    makeWrapper ${drishti-agent-inner}/bin/drishti-agent $out/bin/drishti-agent \
-      --set DRISHTI_AGENT_BUILD_ID "${drishtiAgentBuildId}" \
-      --set DRISHTI_AGENT_COMMIT_HASH "${rev}"
+      --set DRISHTI_OSFACTS_BIN "${resolvedPkgs.osfacts}/bin/osfacts" \
+      `# The identity pair the supervisor reads (both-or-neither, UW5).` \
+      ${agentIdentity.bakeArgs}
   '';
 
   drishti-client = resolvedPkgs.runCommand "drishti-client"
@@ -120,10 +178,8 @@ let
   '';
 
   drishti =
-    if agentDrvBySystem == null || binaryCache == null
-    then throw "the `drishti` monitor wrapper requires `agentDrvBySystem` and `binaryCache` — invoke via flake.nix (which threads in the per-system agent .drv map and the cache declaration)"
-    else if agentBuildIdBySystem == null
-    then throw "the `drishti` monitor wrapper requires `agentBuildIdBySystem` whenever `agentDrvBySystem` is given (W2.6 — provisioned path has no silent empty build-id map)"
+    if b2n == null
+    then throw "the `drishti` monitor wrapper needs `b2n` (lib.mkBun2nix output) — invoke via flake.nix"
     else
       resolvedPkgs.runCommand "drishti"
         {
@@ -138,37 +194,24 @@ let
           `# (above) as window.__SURFACE_APP_COMMIT__, so the server's buildInfo` \
           `# cell and the client's shellCommit() agree — the freshness rail` \
           `# reads one consistent commit.` \
-          --set ${stamp.envVar} "${rev}" \
-          `# Expected agent build identity for convergeAdmit (UW3). Same hash` \
-          `# the agent wrapper bakes; multi-arch remotes may mismatch and` \
-          `# ride adopt-stale after the drain budget (onGiveUp).` \
-          --set DRISHTI_AGENT_BUILD_ID "${drishtiAgentBuildId}" \
-          --set DRISHTI_AGENT_COMMIT_HASH "${rev}" \
-          `# DRISHTI_AGENT_DRVS_JSON: {system -> drvPath} JSON map. flake.nix` \
-          `# pre-evaluates one entry per system in its 'systems' list; the` \
-          `# server picks the right entry at runtime via 'uname -ms' on each` \
-          `# host (see packages/app/src/server/archMap.ts). drvPath is a STRING` \
-          `# interpolation, not a Nix dependency edge — rename the attribute` \
-          `# and this wrapper compiles fine but HostSession crashes at` \
-          `# 'nix copy --derivation' time.` \
-          --set-default DRISHTI_AGENT_DRVS_JSON '${builtins.toJSON agentDrvBySystem}' \
-          `# Per-system BUILD_IDs so multi-arch hosts expect the agent they` \
-          `# provision (not the parent-arch-only DRISHTI_AGENT_BUILD_ID).` \
-          `# Required whenever agentDrvBySystem is set (W2.6).` \
-          --set DRISHTI_AGENT_BUILD_IDS_JSON '${builtins.toJSON agentBuildIdBySystem}' \
-          `# DRISHTI_AGENT_BINARY_CACHE: {substituters, trustedPublicKeys}` \
-          `# JSON (surface-remote's AgentBinaryCache shape) — the caches the` \
-          `# agent closure is prefetched from before shipping to a remote` \
-          `# host. Sourced from flake.nix's nixConfig block, so the cache CI` \
-          `# pushes builds to is the cache provisioning pulls from.` \
-          --set-default DRISHTI_AGENT_BINARY_CACHE '${builtins.toJSON binaryCache}' \
+          --set ${stamp.envVar} "${commitHash}" \
+          `# Expected agent identity for convergeAdmit (UW3) — the SAME pair the` \
+          `# agent wrapper bakes. Platform-independent, so one value answers for` \
+          `# every host arch: no per-system map, and a cross-arch host is not` \
+          `# misread as a build mismatch.` \
+          ${agentIdentity.bakeArgs} \
+          `# SURFACE_AGENT_FLAKE_REF (the NAME comes from kolu's own agent-env` \
+          `# registry): the assembled agent source a remote resolves` \
+          `# 'packages.<host-system>.drishti-agent' from. A build fact, so --set,` \
+          `# not --set-default — an ambient stale ref must never override it.` \
+          `# Its sidecar carries the caches + closure index; nothing else about` \
+          `# delivery is spelled here.` \
+          --set ${agentEnv.flakeRef} "${agentFlakeSource}" \
           --prefix PATH : ${resolvedPkgs.lib.makeBinPath [ resolvedPkgs.openssh resolvedPkgs.nix ]}
       '';
 in
 {
   inherit drishti drishti-agent drishti-client drishtiBuilt drishtiAgentBuilt;
-  inherit drishtiAgentBuildId;
-  # Exposed so W2.5 nix proofs can hash the real inner wrapper drv.
-  inherit drishti-agent-inner;
+  inherit drishtiAgentBuildId agentFlakeSource;
   inherit (resolvedPkgs) kolu-surface kolu-surface-remote kolu-surface-map osfacts osfacts-client;
 }

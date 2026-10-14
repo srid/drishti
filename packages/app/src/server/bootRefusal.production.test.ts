@@ -22,8 +22,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  agentBinaryCache,
-  directAgentDerivation,
   type ClosedInfo,
   type Connector,
   makeSession,
@@ -48,66 +46,54 @@ const hostRegistrySrc = readFileSync(
 );
 
 async function fixtureAgent(): Promise<{
-  drvPath: string;
-  system: string;
+  flakeRef: string;
   buildId: string;
-  binaryCache: ReturnType<typeof agentBinaryCache>;
 } | null> {
   try {
-    const sysProc = Bun.spawn(
-      ["nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"],
+    // The source DIRECTORY — `nix eval` yields a .drv, not the output the
+    // framework reads its declaration from.
+    const srcProc = Bun.spawn(
+      [
+        "nix",
+        "build",
+        "--no-link",
+        "--print-out-paths",
+        "--accept-flake-config",
+        ".#agent-flake-source",
+      ],
       { stdout: "pipe", stderr: "pipe" },
     );
-    const system = (await new Response(sysProc.stdout).text()).trim();
-    await sysProc.exited;
-    if (!system) {
-      if (daemonTestsEnabled) throw new Error("fixtureAgent: no currentSystem");
-      return null;
-    }
-
-    const binaryCache = agentBinaryCache({
-      substituters: ["https://cache.nixos.org"],
-      trustedPublicKeys: [
-        "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=",
-      ],
-    });
-
-    const drvsProc = Bun.spawn(["nix", "eval", "--raw", ".#agentDrvsJson"], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const drvsJson = (await new Response(drvsProc.stdout).text()).trim();
-    await drvsProc.exited;
-    const drvs = JSON.parse(drvsJson) as Record<string, string>;
-    const drvPath = drvs[system];
-    if (!drvPath?.endsWith(".drv")) {
+    const flakeRef = (await new Response(srcProc.stdout).text()).trim();
+    await srcProc.exited;
+    if (!flakeRef.startsWith("/nix/store/")) {
       if (daemonTestsEnabled) {
-        throw new Error(`fixtureAgent: no .drv for ${system}`);
+        throw new Error(
+          `fixtureAgent: no agent source (got ${JSON.stringify(flakeRef)})`,
+        );
       }
       return null;
     }
 
-    await Bun.spawn(["nix-store", "-r", drvPath], {
-      stdout: "pipe",
-      stderr: "pipe",
-    }).exited;
-
-    const idsProc = Bun.spawn(["nix", "eval", "--raw", ".#agentBuildIdsJson"], {
+    const idProc = Bun.spawn(["nix", "eval", "--raw", ".#agentBuildId"], {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const idsJson = (await new Response(idsProc.stdout).text()).trim();
-    await idsProc.exited;
-    const ids = JSON.parse(idsJson) as Record<string, string>;
-    const buildId = ids[system];
+    const buildId = (await new Response(idProc.stdout).text()).trim();
+    await idProc.exited;
     if (!buildId) {
       if (daemonTestsEnabled) {
-        throw new Error(`fixtureAgent: no buildId for ${system}`);
+        throw new Error("fixtureAgent: empty agentBuildId");
       }
       return null;
     }
 
-    return { drvPath, system, buildId, binaryCache };
+    // Warm the closure the target realises, so the dial is a store hit.
+    await Bun.spawn(
+      ["nix", "build", "--no-link", "--accept-flake-config", ".#drishti-agent"],
+      { stdout: "pipe", stderr: "pipe" },
+    ).exited;
+
+    return { flakeRef, buildId };
   } catch (err) {
     if (daemonTestsEnabled) {
       throw new Error(
@@ -302,14 +288,8 @@ describe("U3.1 production assembly — REAL buildHostPool planted 0755", () => {
       const pool = buildHostPool({
         initialHosts: [host],
         hostsFile,
-        buildIdBySystem: { [fixture.system]: fixture.buildId },
-        resolveDrvPath: async () => ({
-          derivation: directAgentDerivation(
-            fixture.drvPath,
-            fixture.binaryCache,
-          ),
-          system: fixture.system,
-        }),
+        agentFlakeRef: fixture.flakeRef,
+        expectedBuildId: fixture.buildId,
       });
       pools.push(pool);
 
