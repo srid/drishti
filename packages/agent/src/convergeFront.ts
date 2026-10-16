@@ -85,6 +85,7 @@ import {
   dialSocket,
   outcomeAnomaly,
   probeDaemonIdentity,
+  processStateReader,
   readControlCoreHello,
 } from "@kolu/surface-daemon-supervisor";
 import { buildSurfaceFace } from "@kolu/surface/client";
@@ -248,6 +249,10 @@ export function convergeAgentStdioFront(
       probe: probeDaemonIdentity({ capability: "not-drainable" }),
       readProcessIdentity: (pid) => processIdentityAsync(osfactsBin, pid),
       readSocketHolders: osfactsSocketHolders(osfactsBin),
+      // A STOPPED holder (SIGSTOP, a suspended job) cannot run its SIGTERM
+      // handler, so the reap skips the graceful leg for it (juspay/kolu#2300) —
+      // asked of the same osfacts binary.
+      readProcessState: processStateReader(osfactsBin),
       driver,
       connect: (path) => connectControlCore(path),
       log,

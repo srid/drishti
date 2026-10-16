@@ -44,6 +44,10 @@ in
   # The zero-dep logging leaf surface-remote imports (the `log:Logger` seam,
   # juspay/kolu#1876) — hydrated so its `@kolu/log` import resolves.
   kolu-log = mkKoluPackage "log";
+  # The zero-dep byte-count leaf surface-remote imports (its Nix-log progress
+  # lines, juspay/kolu#2298) — hydrated so its `@kolu/byte-units` import
+  # resolves.
+  kolu-byte-units = mkKoluPackage "byte-units";
   # Durable-daemon spine (UW3): the agent binary depends on surface-daemon
   # (daemonHome / daemonMain / front / controlCore); the parent depends on
   # surface-daemon-supervisor (convergeAdmit / probeDaemonIdentityFrom).
