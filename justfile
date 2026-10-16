@@ -30,6 +30,7 @@ install:
       "$DRISHTI_KOLU_SURFACE_MAP" @kolu/surface-map \
       "$DRISHTI_KOLU_SHELL_QUOTE" @kolu/shell-quote \
       "$DRISHTI_KOLU_LOG" @kolu/log \
+      "$DRISHTI_KOLU_BYTE_UNITS" @kolu/byte-units \
       "$DRISHTI_KOLU_SURFACE_APP" @kolu/surface-app \
       "$DRISHTI_KOLU_SOLID_PWA_INSTALL" @kolu/solid-pwa-install \
       "$DRISHTI_KOLU_SURFACE_DAEMON" @kolu/surface-daemon \
