@@ -9,9 +9,9 @@
       },
       "branch": "vivid-climax",
       "submodules": false,
-      "revision": "7c7d077e8ac8fa21468f99b0b8f12c71e16141be",
-      "url": "https://github.com/juspay/kolu/archive/7c7d077e8ac8fa21468f99b0b8f12c71e16141be.tar.gz",
-      "hash": "sha256-FJoutToUdxXUpa3HckPzPV5Cn5A0iTWeIs3kqKqfaGM="
+      "revision": "248d8c2da781dfb890c02352e55da008e00184fe",
+      "url": "https://github.com/juspay/kolu/archive/248d8c2da781dfb890c02352e55da008e00184fe.tar.gz",
+      "hash": "sha256-m1NoII4OCr4HIQF52nzUscgdxlCRDvKo8yHO72EvyJ8="
     },
     "nixpkgs": {
       "type": "Git",
