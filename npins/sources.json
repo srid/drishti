@@ -7,11 +7,11 @@
         "owner": "juspay",
         "repo": "kolu"
       },
-      "branch": "vivid-climax",
+      "branch": "master",
       "submodules": false,
-      "revision": "b2d812d00d87e36b5ecf23b0283bf074cdb49e3d",
-      "url": "https://github.com/juspay/kolu/archive/b2d812d00d87e36b5ecf23b0283bf074cdb49e3d.tar.gz",
-      "hash": "sha256-tyJW5TgVZvHss6abTLELNScqV6NyGv4mdu+Q6gpUAxs="
+      "revision": "3061124f677acf2ce5fc036ce8d8a753ae4c09eb",
+      "url": "https://github.com/juspay/kolu/archive/3061124f677acf2ce5fc036ce8d8a753ae4c09eb.tar.gz",
+      "hash": "sha256-IyJhftxLH50b6aBP6xIXiVym+xZ5zXKzTT4dCBeLMG8="
     },
     "nixpkgs": {
       "type": "Git",
