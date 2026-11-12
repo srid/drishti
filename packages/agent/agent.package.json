@@ -6,10 +6,10 @@
     "packages/agent",
     "packages/common"
   ],
-  "//": "The agent projection manifest, used both by the Nix build and scripts/regenerate-agent-deps.sh. Effect and platform-node are pinned to stable 4.0.0, matching the hydrated @kolu sources.",
+  "//": "The agent projection manifest, used both by the Nix build and scripts/regenerate-agent-deps.sh. Effect and platform-node are pinned to stable 4.1.4, matching the hydrated @kolu sources.",
   "overrides": {
     "@babel/helper-module-imports": "^7.29.7",
-    "@effect/platform-node": "4.0.0",
-    "effect": "4.0.0"
+    "@effect/platform-node": "4.1.4",
+    "effect": "4.1.4"
   }
 }
