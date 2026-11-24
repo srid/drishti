@@ -30,11 +30,8 @@ import {
   createContext,
   createEffect,
   createMemo,
-  createResource,
   createSignal,
   For,
-  type JSX,
-  on,
   onCleanup,
   type Setter,
   Show,
@@ -42,6 +39,7 @@ import {
   untrack,
   useContext,
 } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import {
   scopedByEntry,
   type ScopedByEntry,
@@ -81,6 +79,7 @@ import {
   applyConvergencePollError,
   applyConvergencePollOk,
   convergenceBannerVisible,
+  type ConvergencePollState,
 } from "./convergenceProjection";
 import { DaemonDialog } from "./DaemonDialog";
 import { Fault } from "./Fault";
@@ -168,7 +167,7 @@ import { TransportOverlay } from "./TransportOverlay";
 import { prefKey, readPref, writePref } from "./localStorageState";
 import { brandColorForTheme } from "./brand";
 import { APP_TITLE } from "./title";
-import { createPageVisibility } from "@solid-primitives/page-visibility";
+import { createPageVisibility } from "@solid-primitives/page-utilities";
 import { createVisibilityGate } from "./visibility";
 import {
   applyTheme,
@@ -245,8 +244,16 @@ function createPersistedSignal<T extends string>(
   accept?: (raw: string) => boolean,
 ): Signal<T> {
   const key = prefKey(pref, host);
-  const [value, setValue] = createSignal<T>(readPref(key, fallback, accept));
-  createEffect(on(value, (v) => writePref(key, v), { defer: true }));
+  // The compute form of `createSignal` — a writable signal whose initial value
+  // is derived rather than passed. The seed reads nothing reactive, so it is
+  // computed once and never again; writes land on top of it as on any signal.
+  // (The value form cannot type a generic `T`: its parameter is
+  // `Exclude<T, Function>`, which TypeScript cannot resolve for an unresolved
+  // type parameter even one constrained to `string`.)
+  const [value, setValue] = createSignal<T>(() =>
+    readPref(key, fallback, accept),
+  );
+  createEffect(value, (v) => writePref(key, v), { defer: true });
   return [value, setValue];
 }
 
@@ -547,15 +554,14 @@ function MultiHostApp() {
     );
   };
   // Re-probe on the becoming-visible edge, off the shared signal (not a second
-  // listener); `defer` skips the initial value so only real transitions fire.
+  // listener): the compute tracks visibility, the effect fires the RPC. `defer`
+  // skips the initial value so only real transitions fire.
   createEffect(
-    on(
-      pageVisible,
-      (v) => {
-        if (v) recheckAllHosts();
-      },
-      { defer: true },
-    ),
+    pageVisible,
+    (v) => {
+      if (v) recheckAllHosts();
+    },
+    { defer: true },
   );
   window.addEventListener("online", recheckAllHosts);
   onCleanup(() => window.removeEventListener("online", recheckAllHosts));
@@ -578,17 +584,21 @@ function MultiHostApp() {
   // Bound to `view` (intent), not `resolvedView`: while the admin collection
   // is still loading a deep-linked host isn't in the set yet, and binding to
   // the resolved value would rewrite the URL to fleet before the host arrives.
-  // The guard skips redundant writes, including the no-op first run.
-  createEffect(() => {
-    const search = searchForView(view());
-    if (search !== window.location.search) {
-      window.history.replaceState(
-        null,
-        "",
-        `${window.location.pathname}${search}`,
-      );
-    }
-  });
+  // The guard skips redundant writes, including the no-op first run. The
+  // compute derives the search string (the only reactive read); the effect
+  // owns the one imperative act, writing it to the address bar.
+  createEffect(
+    () => searchForView(view()),
+    (search) => {
+      if (search !== window.location.search) {
+        window.history.replaceState(
+          null,
+          "",
+          `${window.location.pathname}${search}`,
+        );
+      }
+    },
+  );
   // Resolve intent against the live host set: a host view whose host has
   // been removed falls back to the fleet overview rather than a blank
   // pane, and the fleet view always resolves to itself.
@@ -680,24 +690,26 @@ function MultiHostApp() {
   const [raisedSince, setRaisedSince] = createSignal<Record<string, number>>(
     {},
   );
-  createEffect(() => {
+  createEffect(
     // Reactive over the fleet's live alert sets (hostList + each watched value).
-    const live = new Set<string>();
-    for (const host of hostList()) {
-      const w = alertsWatch.get(host);
-      if (w?.kind === "live")
-        for (const id of w.value.items) live.add(raiseKey(host, id));
-    }
-    // `untrack` the stamp map's own read/write: this effect DERIVES the map from
-    // the alert sets, so depending on the map it produces would self-trigger.
-    // `reconcileRaiseTimes` (pure, unit-tested) returns the same ref when nothing
-    // moved, so the signal write — and any re-render — is skipped on quiet ticks.
-    untrack(() => {
-      const prev = raisedSince();
-      const next = reconcileRaiseTimes(prev, live, Date.now());
-      if (next !== prev) setRaisedSince(next);
-    });
-  });
+    () => {
+      const live = new Set<string>();
+      for (const host of hostList()) {
+        const w = alertsWatch.get(host);
+        if (w?.kind === "live")
+          for (const id of w.value.items) live.add(raiseKey(host, id));
+      }
+      return live;
+    },
+    // The stamp map is DERIVED from those sets, so the fold reads its own
+    // previous value through the setter's updater rather than the signal —
+    // depending on the map it produces would self-trigger. `reconcileRaiseTimes`
+    // (pure, unit-tested) returns the same ref when nothing moved, so the write
+    // — and any re-render — is skipped on quiet ticks.
+    (live) => {
+      setRaisedSince((prev) => reconcileRaiseTimes(prev, live, Date.now()));
+    },
+  );
   const raisedSinceFor = (host: string, id: AlertId): number | undefined =>
     raisedSince()[raiseKey(host, id)];
 
@@ -714,9 +726,9 @@ function MultiHostApp() {
       return n + (w?.kind === "live" && w.value.items.length > 0 ? 1 : 0);
     }, 0),
   );
-  // Guard the Badging API (absent on some browsers) at the call site.
-  createEffect(() => {
-    const count = badgeCount();
+  // Guard the Badging API (absent on some browsers) at the call site. The
+  // compute is the memoized count; the effect spends the API call.
+  createEffect(badgeCount, (count) => {
     if (typeof navigator === "undefined") return;
     const nav = navigator as BadgingNavigator;
     // The Badging API can REJECT even when present (permission, security, or
@@ -741,14 +753,12 @@ function MultiHostApp() {
   // write: the pre-paint bootstrap in index.html already applied the
   // initial theme and storage already holds it.
   createEffect(
-    on(
-      theme,
-      (t) => {
-        applyTheme(t);
-        writePref(THEME_KEY, t);
-      },
-      { defer: true },
-    ),
+    theme,
+    (t) => {
+      applyTheme(t);
+      writePref(THEME_KEY, t);
+    },
+    { defer: true },
   );
   const toggleTheme = () => setTheme(otherTheme(theme()));
 
@@ -783,16 +793,22 @@ function MultiHostApp() {
   // so we read it back from that one source — the manifest's `short_name` —
   // rather than re-deriving the host client-side (the browser never exposes
   // it). Falls back to the product title until the fetch resolves, or if it
-  // fails (offline / blocked).
-  const [appName] = createResource(async () => {
-    try {
-      const res = await fetch("/manifest.webmanifest");
-      const m = (await res.json()) as { short_name?: string };
-      return m.short_name ?? null;
-    } catch {
-      return null;
-    }
-  });
+  // fails (offline / blocked) — and because `<Title>` reads it bare, outside
+  // any `Loading` boundary, the memo declares that pre-answer window as its
+  // `loadingValue`: the head never waits on this read, it simply carries the
+  // product title until the real name lands.
+  const appName = createMemo<string | null>(
+    async () => {
+      try {
+        const res = await fetch("/manifest.webmanifest");
+        const m = (await res.json()) as { short_name?: string };
+        return m.short_name ?? null;
+      } catch {
+        return null;
+      }
+    },
+    { loadingValue: null },
+  );
 
   // Pause the data views once the tab is backgrounded past the grace window —
   // see `createVisibilityGate`. 20s of grace lets a quick alt-tab keep the
@@ -817,7 +833,7 @@ function MultiHostApp() {
     // StatusFooter (plus the phone home-indicator inset it absorbs), so the
     // last table rows / fleet cards are never hidden under the bar. The
     // baseline is the shared --status-footer-height constant from styles.css.
-    <DaemonStatusCtx.Provider value={daemonStore}>
+    <DaemonStatusCtx value={daemonStore}>
     <div class="flex h-dvh flex-col bg-gray-50 p-2 pb-[calc(var(--status-footer-height)+env(safe-area-inset-bottom))] font-mono text-sm dark:bg-gray-950">
       {/* Reactive head, kolu's app-shell pattern over `@solidjs/meta`: the tab
           title is the server's own `drishti@<host>` identity (read from the
@@ -904,7 +920,7 @@ function MultiHostApp() {
       </div>
       <StatusFooter health={adminHealth} />
     </div>
-    </DaemonStatusCtx.Provider>
+    </DaemonStatusCtx>
   );
 }
 
@@ -1213,34 +1229,24 @@ function HostView(props: {
   const daemonStatus = () => daemonStore.byHost()[props.host] ?? null;
   const daemonPollError = () =>
     daemonStore.pollErrorByHost()[props.host] ?? null;
-  const [convergence, setConvergence] = createSignal<{
-    kind: string;
-    detail: string;
-    error?: string;
-  } | null>(null);
-  const [convergencePollError, setConvergencePollError] = createSignal<
-    string | null
-  >(null);
+  // The banner's convergence state is ONE signal holding the pair the pure
+  // folds take and return (`{ anomaly, pollError }`), with two readers over it.
+  // That is what lets each mirror below read its own previous value through the
+  // setter's updater instead of re-reading the signals it is about to write —
+  // reads an effect's compute would have to declare as dependencies, and so
+  // self-trigger on.
+  const [convergenceState, setConvergenceState] =
+    createSignal<ConvergencePollState>({ anomaly: null, pollError: null });
+  const convergence = () => convergenceState().anomaly;
+  const convergencePollError = () => convergenceState().pollError;
   // Mirror store status → banner convergence (no second poll).
-  createEffect(() => {
-    const s = daemonStatus();
+  createEffect(daemonStatus, (s) => {
     if (s === null) return;
-    const next = applyConvergencePollOk(
-      { anomaly: convergence(), pollError: convergencePollError() },
-      s.anomaly,
-    );
-    setConvergence(next.anomaly);
-    setConvergencePollError(next.pollError);
+    setConvergenceState((prev) => applyConvergencePollOk(prev, s.anomaly));
   });
-  createEffect(() => {
-    const err = daemonPollError();
+  createEffect(daemonPollError, (err) => {
     if (err === null || err === undefined) return;
-    const next = applyConvergencePollError(
-      { anomaly: convergence(), pollError: convergencePollError() },
-      err,
-    );
-    setConvergence(next.anomaly);
-    setConvergencePollError(next.pollError);
+    setConvergenceState((prev) => applyConvergencePollError(prev, err));
   });
   const onRenew = () => {
     daemonStore.renew(props.host);
@@ -1298,7 +1304,9 @@ function HostView(props: {
   // active host's scope is stable for this HostView's lifetime (a tab switch
   // remounts HostView with the new host's scope) and is defined by construction:
   // HostView only mounts for a live `selectedHost`, which the map has activated.
-  const scope = props.scopes.active();
+  // That stability is why the read is a deliberate one-time `untrack` snapshot:
+  // this body never wants the NEXT host's scope, it wants its own.
+  const scope = untrack(() => props.scopes.active());
   if (scope === undefined)
     throw new Error("HostView: the active host has no scope");
   const { selectedPid, setSelectedPid } = scope;
@@ -1319,15 +1327,15 @@ function HostView(props: {
   // silently defeating the scopedByEntry adoption (the expanded PID surviving
   // tab-away). Once the first snapshot lands, `pending()` latches false and a
   // genuinely-exited pid still clears against the LOADED table.
-  createEffect(() => {
-    const pid = selectedPid();
-    if (
-      pid !== null &&
+  createEffect(
+    () =>
+      selectedPid() !== null &&
       !processesView.stream.pending() &&
-      process(pid) === undefined
-    )
-      setSelectedPid(null);
-  });
+      process(selectedPid()!) === undefined,
+    (stale) => {
+      if (stale) setSelectedPid(null);
+    },
+  );
 
   // Escape closes the panel — the conventional dismiss key, wired once for the
   // host body and torn down with it.
@@ -1576,9 +1584,7 @@ function HostView(props: {
             />
           )}
         </Show>
-        <SelectionContext.Provider
-          value={{ selectedPid, toggle: toggleSelected }}
-        >
+        <SelectionContext value={{ selectedPid, toggle: toggleSelected }}>
           <ProcessTable
             pids={visiblePids()}
             process={process}
@@ -1586,7 +1592,7 @@ function HostView(props: {
             sortKey={sortKey()}
             onSort={setSortKey}
           />
-        </SelectionContext.Provider>
+        </SelectionContext>
       </Show>
     </>
   );
@@ -1745,7 +1751,7 @@ function UnclaimedListeners(props: {
         <button
           type="button"
           class="cursor-pointer font-semibold text-amber-700 hover:underline dark:text-amber-400"
-          aria-expanded={expanded()}
+          aria-expanded={expanded() ? "true" : "false"}
           onClick={() => setExpanded((value) => !value)}
         >
           {props.listeners.length} unclaimed {props.listeners.length === 1 ? "listener" : "listeners"}
@@ -1814,25 +1820,25 @@ function ConnectingOverlay(props: {
   // parent's connect watchdog trips it to `failed`.
   const [elapsedSec, setElapsedSec] = createSignal(0);
   createEffect(
-    on(
-      () => c()?.phase,
-      (state) => {
-        setElapsedSec(0);
-        // Only the in-progress states render the counter — `pending` is
-        // the canonical "is this state in-flight" flag, so consult it
-        // rather than leave the interval running in `connected`/`failed`
-        // where `elapsedSec()` is never read. No payload = nothing in flight
-        // to count (a failed entry), so the interval never starts.
-        if (state === undefined || !STATE[state].pending) return;
-        const startedAt = performance.now();
-        const id = setInterval(
-          () =>
-            setElapsedSec(Math.floor((performance.now() - startedAt) / 1000)),
-          1000,
-        );
-        onCleanup(() => clearInterval(id));
-      },
-    ),
+    () => c()?.phase,
+    (state) => {
+      setElapsedSec(0);
+      // Only the in-progress states render the counter — `pending` is
+      // the canonical "is this state in-flight" flag, so consult it
+      // rather than leave the interval running in `connected`/`failed`
+      // where `elapsedSec()` is never read. No payload = nothing in flight
+      // to count (a failed entry), so the interval never starts.
+      if (state === undefined || !STATE[state].pending) return;
+      const startedAt = performance.now();
+      const id = setInterval(
+        () => setElapsedSec(Math.floor((performance.now() - startedAt) / 1000)),
+        1000,
+      );
+      // The effect phase's RETURNED cleanup — it runs before the next phase
+      // change and on unmount, which is what `onCleanup` inside the old
+      // single-phase body did.
+      return () => clearInterval(id);
+    },
   );
   return (
     <div class="px-4 py-12 text-center text-gray-600 dark:text-gray-400">
@@ -2053,6 +2059,8 @@ function ProcessRow(props: {
   nowMs: number;
   toLocalTime: (remoteMs: number) => number | null;
 }) {
+  // `SelectionContext` has no default, so a row drawn outside `HostView`'s
+  // provider throws on its own — the value here is always the real selection.
   const selection = useContext(SelectionContext);
   const proc = () => props.process(props.pid);
   const uptime = () =>
@@ -2091,10 +2099,10 @@ function ProcessRow(props: {
   const uptimeCell = () => cell("start_time", uptime());
   const commandCell = () => cell("proc", proc()?.name || "(unreadable)");
   const cwdCell = () => cell("cwd", proc()?.cwd ?? "—");
-  const isSelected = () => selection?.selectedPid() === props.pid;
+  const isSelected = () => selection.selectedPid() === props.pid;
   return (
     <tr
-      onClick={() => selection?.toggle(props.pid)}
+      onClick={() => selection.toggle(props.pid)}
       class={`cursor-pointer border-b border-gray-100 dark:border-gray-800/50 ${
         isSelected()
           ? "bg-emerald-50 dark:bg-emerald-900/30"

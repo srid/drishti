@@ -60,27 +60,33 @@ dev host='localhost' *args: install
 typecheck: install
     {{ nix_shell }} bun run typecheck
 
-# Run the test suite. `--conditions=browser` resolves solid-js to its client
-# build (dist/solid.js): under bun's default `node` condition solid resolves to
-# its inert SSR build, where createEffect/createStore reactivity silently
+# Run the test suite. `--conditions=browser` resolves solid-js and @solidjs/web
+# to their client builds: under bun's default `node` condition they resolve to
+# the inert SSR build, where createEffect/createStore reactivity silently
 # no-ops — so a reactive client test (e.g. processesStream.test.ts) would pass
-# vacuously. The flag is safe for the node-side agent/server tests; their
-# resolution is unchanged.
+# vacuously. `--conditions=development` then picks the DEV build of those two
+# (`dist/solid.dev.js`), which is the one that raises Solid's diagnostics —
+# strict reads, writes in owned scopes, cleanups in forbidden scopes. The
+# preload below fails any test that raises one, and refuses to run at all
+# against a production build, so dropping either flag reds immediately rather
+# than quietly disarming the gate. Both are safe for the node-side
+# agent/server tests; their resolution is unchanged.
 #
 # Heavy pool/window e2e legs key on KOLU_DAEMON_TESTS (kolu daemon-test-gate);
 # this default leaves them OFF so GHA/shared runners skip them. Use
 # `just test-daemon` (or `ci::test-daemon` on odu linux) for the full suite.
 # App-scoped Solid/happy-dom preload (NOT root bunfig — agent BUILD_ID).
 test_preload := "--preload ./packages/app/src/client/test-setup.ts"
+test_conditions := "--conditions=browser --conditions=development"
 
 test *args: install
-    {{ nix_shell }} bun test --conditions=browser {{ test_preload }} {{ args }}
+    {{ nix_shell }} bun test {{ test_conditions }} {{ test_preload }} {{ args }}
 
 # Full suite including daemon-gated e2e (KOLU_DAEMON_TESTS=1). Same env kolu's
 # `describeDaemon` / odu daemon lane uses — no new knob. Forks real agents and
 # may realise agent .drvs; CI/odu linux only (not GHA default `just test`).
 test-daemon *args: install
-    KOLU_DAEMON_TESTS=1 {{ nix_shell }} bun test --conditions=browser {{ test_preload }} {{ args }}
+    KOLU_DAEMON_TESTS=1 {{ nix_shell }} bun test {{ test_conditions }} {{ test_preload }} {{ args }}
 
 # Format all *.nix files (and any future biome target — drishti doesn't
 # bring biome in by default; add when JS formatting becomes a chore).

@@ -45,7 +45,9 @@ describe("App.tsx daemon status UI confinement (U2.2 / U2.7)", () => {
   it("single fleet store + dialog wiring (not six loose name regexes alone)", () => {
     expect(appSrc).toMatch(/createDaemonStatusStore\s*\(/);
     expect(appSrc).toMatch(/startDaemonStatusPoll\s*\(/);
-    expect(appSrc).toMatch(/DaemonStatusCtx\.Provider/);
+    // Under Solid 2 a context IS its own provider component: the store is
+    // scoped with `<DaemonStatusCtx value={…}>`, not `.Provider`.
+    expect(appSrc).toMatch(/<DaemonStatusCtx\s+value=\{daemonStore\}>/);
     expect(appSrc).toMatch(
       /DaemonDialog[\s\S]{0,400}onRenew=\{\(\)\s*=>\s*\{[\s\S]*daemonStore\.renew/,
     );

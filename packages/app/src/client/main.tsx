@@ -1,6 +1,5 @@
 import { retireServiceWorker } from "@kolu/surface-app/lifecycle";
-import { MetaProvider } from "@solidjs/meta";
-import { render } from "solid-js/web";
+import { render } from "@solidjs/web";
 import App from "./App";
 // NB: styles.css is NOT imported here. drishti delivers CSS via the
 // `<link rel="stylesheet">` in index.html (built separately by the Tailwind
@@ -18,15 +17,8 @@ retireServiceWorker();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("No #root element");
-// `MetaProvider` collects the reactive `<Title>` / `<Meta>` nodes App renders
-// and projects them onto the document head — the kolu app-shell pattern
-// (client/index.tsx) for a host-aware tab title and a theme-tracking PWA
-// `theme-color`.
-render(
-  () => (
-    <MetaProvider>
-      <App />
-    </MetaProvider>
-  ),
-  root,
-);
+// `@solidjs/meta` 2 needs no provider: the `<Title>` / `<Meta>` nodes App
+// renders write the document head directly (last one wins), which is what
+// gives drishti its host-aware tab title and theme-tracking PWA
+// `theme-color` — the kolu app-shell pattern (client/index.tsx).
+render(() => <App />, root);

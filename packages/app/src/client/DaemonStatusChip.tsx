@@ -8,8 +8,9 @@
  *
  * Presentation from chipFromDaemonStatus only (no string parsing).
  */
-import type { Component, JSX } from "solid-js";
+import type { Component } from "solid-js";
 import { Show } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import type { DaemonStatus } from "../common/daemonStatus";
 import {
   type DaemonChipPresentation,
@@ -74,14 +75,16 @@ export const DaemonStatusChip: Component<{
       }}
     >
       <span
-        classList={{
-          "h-1.5 w-1.5 shrink-0 rounded-full": true,
-          "bg-emerald-500": p().tone === "ok",
-          "bg-amber-500": p().tone === "warn" || p().tone === "warming",
-          "bg-red-500": p().tone === "down",
-          "bg-gray-400": p().tone === "muted",
-          "animate-pulse": p().tone === "warming",
-        }}
+        class={[
+          "h-1.5 w-1.5 shrink-0 rounded-full",
+          {
+            "bg-emerald-500": p().tone === "ok",
+            "bg-amber-500": p().tone === "warn" || p().tone === "warming",
+            "bg-red-500": p().tone === "down",
+            "bg-gray-400": p().tone === "muted",
+            "animate-pulse": p().tone === "warming",
+          },
+        ]}
       />
       <span data-testid="daemon-status-chip-label">{p().label}</span>
       <Show when={p().showNudge}>

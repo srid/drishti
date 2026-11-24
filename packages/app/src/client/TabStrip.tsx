@@ -98,7 +98,7 @@ function PinAppButton() {
           type="button"
           class="flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-indigo-50 px-2.5 py-0.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/40"
           title="Install drishti as an app on this device"
-          aria-expanded={open()}
+          aria-expanded={open() ? "true" : "false"}
           onClick={() => {
             // Chromium: the one-click native prompt. Otherwise toggle the inline
             // per-platform steps (the package owns the recipe).

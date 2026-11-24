@@ -6,8 +6,8 @@
  */
 import {
   createContext,
+  createEffect,
   createSignal,
-  onCleanup,
   useContext,
   type Accessor,
   type Setter,
@@ -39,12 +39,11 @@ export type DaemonStatusStore = {
 
 const DaemonStatusCtx = createContext<DaemonStatusStore>();
 
+// `DaemonStatusCtx` has no default, so a chip/dialog drawn outside
+// `MultiHostApp`'s provider throws on its own (`ContextNotFoundError`) and
+// `useContext` returns the store, never `undefined`.
 export function useDaemonStatusStore(): DaemonStatusStore {
-  const s = useContext(DaemonStatusCtx);
-  if (s === undefined) {
-    throw new Error("useDaemonStatusStore: missing DaemonStatusProvider");
-  }
-  return s;
+  return useContext(DaemonStatusCtx);
 }
 
 export { DaemonStatusCtx };
@@ -121,14 +120,22 @@ export function createDaemonStatusStore(): DaemonStatusStore {
   };
 }
 
-/** Start the fleet poll interval; returns cleanup. */
+/** Start the fleet poll under the caller's owner; it stops with that owner. */
 export function startDaemonStatusPoll(
   store: DaemonStatusStore,
   hosts: Accessor<readonly string[]>,
   intervalMs = 5_000,
 ): void {
-  const tick = () => store.pollAll(hosts());
-  tick();
-  const iv = setInterval(tick, intervalMs);
-  onCleanup(() => clearInterval(iv));
+  // The membership read lives in the compute, so the first poll fires from the
+  // effect phase rather than the caller's component body (where reading `hosts()`
+  // is a strict read and the poll's writes are writes in an owned scope). A
+  // membership change re-runs it: the new fleet is polled at once instead of up
+  // to `intervalMs` later, and the returned cleanup clears the previous interval
+  // — the same teardown the `onCleanup` here used to do, now on the effect's own
+  // schedule.
+  createEffect(hosts, (list) => {
+    store.pollAll(list);
+    const iv = setInterval(() => store.pollAll(list), intervalMs);
+    return () => clearInterval(iv);
+  });
 }
