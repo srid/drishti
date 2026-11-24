@@ -13,7 +13,7 @@
     "@types/bun": "^1.2.0",
     "typescript": "^5.8.0"
   },
-  "//overrides": "ONE effect copy fleet-wide. The hydrated @kolu/* sources resolve `effect` from THIS node_modules (bunfig linker=hoisted), and Effect's tagged-error narrowing is `_tag`-structural precisely because two module instances would otherwise stop recognising each other's classes — but `instanceof`, Context keys and Schema identity are not. Pinning here means a transitive bump cannot smuggle in a second copy. Mirrored verbatim in packages/agent/agent.package.json and scripts/regenerate-agent-deps.sh's heredoc — all three must move together.",
+  "//overrides": "ONE effect copy fleet-wide. The hydrated @kolu/* sources resolve `effect` from THIS node_modules (bunfig linker=hoisted), and Effect's tagged-error narrowing is `_tag`-structural precisely because two module instances would otherwise stop recognising each other's classes — but `instanceof`, Context keys and Schema identity are not. Pinning here means a transitive bump cannot smuggle in a second copy. Mirrored verbatim in packages/agent/agent.package.json (the ONE agent manifest, which scripts/regenerate-agent-deps.sh copies rather than re-spells) — both must move together. `@babel/helper-module-imports` is the same one-copy rule for the JSX compiler: `@solidjs/babel-plugin` depends on an exact 7.18.6, which would otherwise sit beside the copy @babel/core's own transforms resolve.",
   "overrides": {
     "@babel/helper-module-imports": "^7.29.7",
     "@effect/platform-node": "4.1.5",
