@@ -9,9 +9,9 @@
       },
       "branch": "solid-2-switch",
       "submodules": false,
-      "revision": "6592b07af41b94a5efa661b48bc22b98c2e432d7",
-      "url": "https://github.com/juspay/kolu/archive/6592b07af41b94a5efa661b48bc22b98c2e432d7.tar.gz",
-      "hash": "sha256-rmh403e6yQAu+gNZp63Xuvs1j8vwUTnen+XzLfU2AVY="
+      "revision": "f536c1d6e5fdde1e94f63ce5e85761f4f91bc406",
+      "url": "https://github.com/juspay/kolu/archive/f536c1d6e5fdde1e94f63ce5e85761f4f91bc406.tar.gz",
+      "hash": "sha256-qmgXbRX1ogE/TloABfYnuLcYo5cM/HBFYJVDJD6sL6c="
     },
     "nixpkgs": {
       "type": "Git",
