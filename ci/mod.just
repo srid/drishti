@@ -248,7 +248,7 @@ test-daemon: install
     # App-scoped Solid preload (must not live on root bunfig — agent BUILD_ID).
     {{ nix_shell }} sh -c '\
       if [ "$(uname -s)" = Linux ]; then \
-        KOLU_DAEMON_TESTS=1 bun test --conditions=browser \
+        KOLU_DAEMON_TESTS=1 bun test --conditions=browser --conditions=development \
           --preload ./packages/app/src/client/test-setup.ts; \
       else \
         echo "test-daemon: skip on $(uname -s) — pool e2e is odu-linux / KOLU_DAEMON_TESTS"; \

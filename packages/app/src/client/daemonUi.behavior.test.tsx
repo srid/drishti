@@ -12,7 +12,7 @@ import {
   render,
   screen,
 } from "@solidjs/testing-library";
-import { createSignal, type Accessor, type Setter } from "solid-js";
+import { createSignal, flush, type Accessor, type Setter } from "solid-js";
 import type { DaemonStatus } from "../common/daemonStatus";
 import {
   DaemonStatusChip,
@@ -362,6 +362,9 @@ describe("U3.2 / U3.3 rendered DaemonDialog", () => {
     ));
     expect(screen.queryByText("Renew ok — reconnecting")).toBeNull();
     await fireEvent.click(screen.getByTestId("daemon-dialog-renew"));
+    // Solid 2 stages writes: the handler's `setRenew` lands on the next
+    // microtask, so read (and assert the DOM) only after a flush.
+    flush();
     expect(renew().kind).toBe("ok");
     expect(screen.getByText("Renew ok — reconnecting")).toBeTruthy();
   });
@@ -424,9 +427,9 @@ describe("U3.2 store binding — FleetDaemonStatusChip", () => {
       },
     });
     render(() => (
-      <DaemonStatusCtx.Provider value={store}>
+      <DaemonStatusCtx value={store}>
         <FleetDaemonStatusChip host="host-a" />
-      </DaemonStatusCtx.Provider>
+      </DaemonStatusCtx>
     ));
     // Bound status paints boot-refused label — not the null/unknown word.
     expect(screen.getByTestId("daemon-status-chip-label").textContent).toBe(
@@ -450,9 +453,9 @@ describe("U3.2 store binding — FleetDaemonStatusChip", () => {
       },
     });
     render(() => (
-      <DaemonStatusCtx.Provider value={store}>
+      <DaemonStatusCtx value={store}>
         <FleetDaemonStatusChip host="host-ok" />
-      </DaemonStatusCtx.Provider>
+      </DaemonStatusCtx>
     ));
     expect(screen.getByTestId("daemon-dialog-glyph")).toBeTruthy();
     expect(screen.queryByTestId("daemon-status-chip")).toBeNull();
@@ -470,9 +473,9 @@ describe("U3.2 store binding — FleetDaemonStatusChip", () => {
       },
     });
     render(() => (
-      <DaemonStatusCtx.Provider value={store}>
+      <DaemonStatusCtx value={store}>
         <FleetDaemonStatusChip host="host-a" />
-      </DaemonStatusCtx.Provider>
+      </DaemonStatusCtx>
     ));
     expect(screen.getByTestId("daemon-dialog-glyph")).toBeTruthy();
     expect(screen.getByTestId("daemon-status-chip-label").textContent).toBe(
@@ -531,7 +534,7 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
     });
     // PRODUCTION component (TabChip mounts this) — not a hand-written mirror.
     const { container } = render(() => (
-      <DaemonStatusCtx.Provider value={store}>
+      <DaemonStatusCtx value={store}>
         <TabHostGlance
           host="tab-host"
           active={false}
@@ -543,7 +546,7 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
           }}
           onClose={() => {}}
         />
-      </DaemonStatusCtx.Provider>
+      </DaemonStatusCtx>
     ));
     assertNoNestedButtons(container as HTMLElement);
     await fireEvent.click(screen.getByTestId("tab-select-tab-host"));
@@ -563,7 +566,7 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
       },
     });
     const { container } = render(() => (
-      <DaemonStatusCtx.Provider value={store}>
+      <DaemonStatusCtx value={store}>
         <TabHostGlance
           host="tab-ok"
           active={true}
@@ -573,7 +576,7 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
           onSelect={() => {}}
           onClose={() => {}}
         />
-      </DaemonStatusCtx.Provider>
+      </DaemonStatusCtx>
     ));
     assertNoNestedButtons(container as HTMLElement);
     expect(screen.getByTestId("daemon-dialog-glyph")).toBeTruthy();
@@ -594,7 +597,7 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
     });
     // PRODUCTION component (HostCard mounts this) — not a hand-written mirror.
     const { container } = render(() => (
-      <DaemonStatusCtx.Provider value={store}>
+      <DaemonStatusCtx value={store}>
         <HostCardGlance
           host="card-host"
           connectionPhase="failed"
@@ -606,7 +609,7 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
         >
           <div>metrics</div>
         </HostCardGlance>
-      </DaemonStatusCtx.Provider>
+      </DaemonStatusCtx>
     ));
     assertNoNestedButtons(container as HTMLElement);
     await fireEvent.click(screen.getByTestId("host-card-select-card-host"));
@@ -625,7 +628,7 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
       },
     });
     const { container } = render(() => (
-      <DaemonStatusCtx.Provider value={store}>
+      <DaemonStatusCtx value={store}>
         <HostCardGlance
           host="card-ok"
           connectionPhase="connected"
@@ -635,7 +638,7 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
         >
           <div>metrics</div>
         </HostCardGlance>
-      </DaemonStatusCtx.Provider>
+      </DaemonStatusCtx>
     ));
     assertNoNestedButtons(container as HTMLElement);
     expect(screen.getByTestId("daemon-dialog-glyph")).toBeTruthy();
@@ -647,7 +650,7 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
   it("anomaly glance surfaces paint the loud chip", () => {
     const store = mockStore({ byHost: { "tab-bad": bootRefused } });
     render(() => (
-      <DaemonStatusCtx.Provider value={store}>
+      <DaemonStatusCtx value={store}>
         <TabHostGlance
           host="tab-bad"
           active={false}
@@ -657,7 +660,7 @@ describe("U4.3 production glance placements (real TabHostGlance / HostCardGlance
           onSelect={() => {}}
           onClose={() => {}}
         />
-      </DaemonStatusCtx.Provider>
+      </DaemonStatusCtx>
     ));
     expect(screen.getByTestId("daemon-dialog-glyph")).toBeTruthy();
     expect(screen.getByTestId("daemon-status-chip-label").textContent).toBe(

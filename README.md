@@ -202,7 +202,10 @@ drishti/
 
 `@kolu/surface`, `@kolu/surface-remote`, `@kolu/surface-app`, and `@kolu/solid-pwa-install` aren't on npm. They're vendored from the `juspay/kolu` repo via npins, exposed as Nix-store paths through `nix/overlay.nix`, and hydrated into `node_modules/@kolu/*` by `scripts/hydrate-kolu-packages.sh`. Run `just install` to install and hydrate dependencies before invoking tools directly. Entering `nix develop` supplies tools and environment only; it does not rewrite dependencies while another check may be reading them. The CI DAG shares one install prerequisite before its parallel checks. The hydrate script takes `(src, dest)` pairs so adding another `@kolu/*` package is a one-line addition to the overlay + env — as `@kolu/solid-pwa-install` demonstrates.
 
-To bump the kolu pin:
+The pin currently tracks kolu's `solid-2-switch` branch (the Solid 2 move,
+juspay/kolu#2438) rather than `master`, so the hydrated sources and this repo
+are on the same Solid major. `npins update kolu` follows whatever branch
+`npins/sources.json` records; to bump the pin:
 
 ```sh
 nix shell nixpkgs#npins -c npins update kolu
@@ -210,7 +213,13 @@ nix shell nixpkgs#npins -c npins update kolu
 
 ### Why Bun.build, not Vite
 
-The client bundler is a hand-rolled `Bun.build` pipeline (`packages/app/src/server/build.ts`) with a small `solidJsxPlugin` (babel-preset-solid + babel-preset-typescript). Same bundle code path runs in dev (server invokes it at startup) and Nix (build derivation runs it during `buildPhase`). Tailwind v4 compiles via `@tailwindcss/cli` as part of the same pipeline.
+The client bundler is a hand-rolled `Bun.build` pipeline (`packages/app/src/server/build.ts`) with a small `solidJsxPlugin` (`@solidjs/babel-plugin` + `babel-preset-typescript`). Same bundle code path runs in dev (server invokes it at startup) and Nix (build derivation runs it during `buildPhase`). Tailwind v4 compiles via `@tailwindcss/cli` as part of the same pipeline.
+
+### Solid 2
+
+The UI is on [Solid 2](https://docs.solidjs.com/migration/from-solid-1), in lockstep with the `@kolu/*` packages it hydrates: `solid-js` 2 for reactivity and `@solidjs/web` for the DOM renderer (`render`, the JSX runtime — hence `jsxImportSource: "@solidjs/web"` in `tsconfig.base.json`), with `@solidjs/babel-plugin` as the JSX compiler in place of `babel-preset-solid`. What that means for code here: effects are two-phase (`createEffect(compute, effect)` — every reactive read in the compute, every side effect in the untracked effect, which returns its own cleanup), a context is its own provider component (`<DaemonStatusCtx value={…}>`) and throws when read outside one, `classList` is the object/array form of `class`, async data is an async `createMemo` with a declared `loadingValue`, and writes are staged — a read in the same synchronous block sees the old value until the next microtask or an explicit `flush()`.
+
+`just test` runs the suite with `--conditions=browser --conditions=development`, which resolves `solid-js` and `@solidjs/web` to their DEV builds. `packages/app/src/client/test-setup.ts` subscribes to Solid's diagnostics there and fails any test that raises one — a strict read in a component body or effect callback, a write in an owned scope, an effect with no owner — and refuses to run at all against a production build, so the gate cannot be silently disarmed by dropping a flag.
 
 ### CI
 

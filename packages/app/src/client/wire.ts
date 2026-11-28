@@ -37,6 +37,7 @@ import type { WatchableWire } from "@kolu/surface/link";
 import { createNotify } from "@kolu/surface-app/notify";
 import { connectSurfaces } from "@kolu/surface-app/solid";
 import { connectSurfaceMap } from "@kolu/surface-map/client";
+import { createRoot } from "solid-js";
 import type { ClientErrorPolicy } from "drishti-common/browser";
 import { adminSurfaces } from "../common/admin-surface";
 import { ADMIN_HOST_SENTINEL } from "../common/host";
@@ -147,14 +148,25 @@ export const wire: WatchableWire = conn.link.wire;
 //    construction (the handle is unforgeable), so every chip floors on the
 //    real socket — there is no raw `{ live }` seam to pass a
 //    green-over-dead accessor through.
-export const hostMap = connectSurfaceMap(hostSurfaceMap, conn.transport, {
-  // SR11 — the host map's membership `entries` collection AND every per-host entry member
-  // (system / alerts / cpuCores / networkInterfaces) declare `{ kind: "log", label }`
-  // policies; route them all through the ONE `interpretClientError`. The membership
-  // collection fires ORIGIN-FREE; a per-key member would carry `{ key }`, which drishti's
-  // log arm ignores (it renders the label + err, host-agnostic).
-  onClientError: (p, e) => interpretClientError(p as ClientErrorPolicy, e),
-});
+//
+// Dialled inside an app-lifetime `createRoot`: `connectSurfaceMap` captures
+// `getOwner()` as the client-lifetime owner for its per-key client caches AND
+// creates the departed-membership prune effect under it. At module scope there
+// is no owner, so that effect would be created unowned (Solid 2's
+// NO_OWNER_EFFECT: "effects created outside a reactive context will never be
+// disposed"). This root is never disposed — the map lives as long as the tab —
+// which is exactly what the owner expresses.
+export const hostMap = createRoot(() =>
+  connectSurfaceMap(hostSurfaceMap, conn.transport, {
+    // SR11 — the host map's membership `entries` collection AND every per-host entry
+    // member (system / alerts / cpuCores / networkInterfaces) declare
+    // `{ kind: "log", label }` policies; route them all through the ONE
+    // `interpretClientError`. The membership collection fires ORIGIN-FREE; a per-key
+    // member would carry `{ key }`, which drishti's log arm ignores (it renders the
+    // label + err, host-agnostic).
+    onClientError: (p, e) => interpretClientError(p as ClientErrorPolicy, e),
+  }),
+);
 
 // The origin's ONE notification seam (kolu W5, `@kolu/surface-app/notify`) —
 // the last hop of cross-host attention. App-scoped alongside the host map it

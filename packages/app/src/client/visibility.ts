@@ -11,7 +11,7 @@
  * parent re-seeds each ring's snapshot — history is intact on return.
  *
  * The two bounded leaves are LIBRARY code, not hand-rolled: page-visibility
- * DETECTION comes from `@solid-primitives/page-visibility` (the single
+ * DETECTION comes from `@solid-primitives/page-utilities` (the single
  * `visibilitychange` subscription, SSR-safe) and the grace window from
  * `@solid-primitives/scheduled`'s trailing `debounce`. Only the asymmetric
  * policy is ours — resume IMMEDIATELY on becoming visible, pause only after the
@@ -24,30 +24,34 @@
  * visible link re-probe) from one subscription — no parallel listener to drift.
  */
 
-import { createEffect, createSignal, on, onCleanup } from "solid-js";
+import { createEffect, createSignal, onCleanup, untrack } from "solid-js";
 import { debounce } from "@solid-primitives/scheduled";
 
 export function createVisibilityGate(
   visible: () => boolean,
   graceMs: number,
 ): () => boolean {
-  const [active, setActive] = createSignal(visible());
+  // A deliberate one-time snapshot: the seed is the state the gate STARTS in,
+  // and every later change arrives through the effect below (which owns the
+  // asymmetric policy). Without `untrack` this plain read in the caller's
+  // component body would read as a dependency that can never update.
+  const [active, setActive] = createSignal(untrack(() => visible()));
   const pauseSoon = debounce(() => setActive(false), graceMs);
-  // `defer` so the initial value (already seeded into `active`) doesn't schedule
-  // a redundant pause; react only to genuine visibility CHANGES.
+  // The compute phase tracks `visible`; the effect phase does the imperative
+  // work (cancel or schedule the pause, flip the gate). `defer` so the initial
+  // value — already seeded into `active` — doesn't schedule a redundant pause;
+  // react only to genuine visibility CHANGES.
   createEffect(
-    on(
-      visible,
-      (v) => {
-        if (v) {
-          pauseSoon.clear(); // back in view — cancel a pending pause, resume now
-          setActive(true);
-        } else {
-          pauseSoon(); // hidden — pause only once the grace window elapses
-        }
-      },
-      { defer: true },
-    ),
+    visible,
+    (v) => {
+      if (v) {
+        pauseSoon.clear(); // back in view — cancel a pending pause, resume now
+        setActive(true);
+      } else {
+        pauseSoon(); // hidden — pause only once the grace window elapses
+      }
+    },
+    { defer: true },
   );
   onCleanup(() => pauseSoon.clear());
   return active;

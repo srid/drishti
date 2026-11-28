@@ -5,8 +5,9 @@
  * mirrors. Behavior tests render these components (with a store provider)
  * so re-nesting buttons in production reds the rendered tree.
  */
-import type { Component, JSX } from "solid-js";
+import type { Component } from "solid-js";
 import { Show } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import type { EntryState } from "@kolu/surface-map";
 import type { ConnectionInfo, ConnectionState } from "drishti-common/browser";
 import { STATE } from "./connectionColors";

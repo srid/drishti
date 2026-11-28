@@ -5,7 +5,7 @@
 // unset.
 //
 // Bun.serve's HTML-import bundler does not honor plugins registered
-// through bunfig preload — `babel-preset-solid`'s JSX transform never
+// through bunfig preload — `@solidjs/babel-plugin`'s JSX transform never
 // fires there, and Bun's default JSX transform emits `React.createElement`
 // calls that break at runtime. Bun.build accepts a `plugins` array
 // directly, so we drive the build ourselves.
@@ -25,17 +25,22 @@ import { fileURLToPath } from "node:url";
 import { transformAsync } from "@babel/core";
 // @ts-expect-error - babel preset types are loose
 import babelTypeScript from "@babel/preset-typescript";
-// @ts-expect-error - babel preset types are loose
-import babelSolid from "babel-preset-solid";
+// @ts-expect-error - the JSX plugin ships no types
+import solidBabelPlugin from "@solidjs/babel-plugin";
 import type { BunPlugin } from "bun";
 import { buildSurfaceClient } from "@kolu/surface-app/bun";
 import { makeLogger } from "./log";
 
 const log = makeLogger("build");
 
-// Solid JSX transform. babel-preset-solid emits the compiled-template
-// runtime (template/insert/createComponent) so signals drive DOM updates;
-// the typescript preset strips type annotations first.
+// Solid JSX transform. `@solidjs/babel-plugin` (Solid 2's compiler, which
+// replaced `babel-preset-solid`) emits the compiled-template runtime
+// (template/insert/createComponent) against `@solidjs/web` — its default
+// `moduleName`, and the package the DOM renderer now lives in — so signals
+// drive DOM updates; the typescript preset strips type annotations first.
+// It is a PLUGIN, not a preset: plugins run before presets and in source
+// order, which is the order this transform needs anyway (JSX first, then the
+// type strip).
 const solidJsxPlugin: BunPlugin = {
   name: "drishti-solid",
   setup(build) {
@@ -43,10 +48,8 @@ const solidJsxPlugin: BunPlugin = {
       const code = await Bun.file(args.path).text();
       const result = await transformAsync(code, {
         filename: args.path,
-        presets: [
-          [babelSolid, {}],
-          [babelTypeScript, {}],
-        ],
+        plugins: [[solidBabelPlugin, {}]],
+        presets: [[babelTypeScript, {}]],
       });
       if (!result?.code)
         throw new Error(`Babel transform produced no output for ${args.path}`);

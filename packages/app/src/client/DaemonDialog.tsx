@@ -112,13 +112,15 @@ export const DaemonDialog: Component<{
             >
               {(b) => (
                 <div
-                  classList={{
-                    "rounded-md border px-2.5 py-1.5 text-[11px]": true,
-                    "border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200":
-                      b().tone === "warn",
-                    "border-red-500/40 bg-red-500/10 text-red-800 dark:text-red-200":
-                      b().tone === "down",
-                  }}
+                  class={[
+                    "rounded-md border px-2.5 py-1.5 text-[11px]",
+                    {
+                      "border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200":
+                        b().tone === "warn",
+                      "border-red-500/40 bg-red-500/10 text-red-800 dark:text-red-200":
+                        b().tone === "down",
+                    },
+                  ]}
                   role="status"
                 >
                   <div class="font-medium">{b().title}</div>
@@ -158,15 +160,17 @@ export const DaemonDialog: Component<{
 
             <Show when={props.renewState.kind !== "idle"}>
               <div
-                classList={{
-                  "rounded border px-2 py-1 text-[11px]": true,
-                  "border-gray-300 text-gray-600":
-                    props.renewState.kind === "pending",
-                  "border-emerald-500/40 text-emerald-700 dark:text-emerald-300":
-                    props.renewState.kind === "ok",
-                  "border-red-500/40 text-red-700 dark:text-red-300":
-                    props.renewState.kind === "error",
-                }}
+                class={[
+                  "rounded border px-2 py-1 text-[11px]",
+                  {
+                    "border-gray-300 text-gray-600":
+                      props.renewState.kind === "pending",
+                    "border-emerald-500/40 text-emerald-700 dark:text-emerald-300":
+                      props.renewState.kind === "ok",
+                    "border-red-500/40 text-red-700 dark:text-red-300":
+                      props.renewState.kind === "error",
+                  },
+                ]}
                 role="status"
               >
                 {props.renewState.kind === "pending" && "Renewing…"}
